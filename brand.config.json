@@ -1,37 +1,40 @@
 {
-    "brand_name": "Trading Platform",
+    "brand_name": "Fancy Trading",
     "brand_logo": "brand/platform-logo.svg",
     "brand_logo_dark": "brand/platform-logo.svg",
-    "brand_domain": "deriv.com",
+    "brand_domain": "fancytrading.org",
     "brand_hostname": {
-        "staging": "staging.dtrader-template.pages.dev",
-        "production": "dtrader-template.pages.dev"
+        "staging": "staging.fancytrading.org",
+        "production": "fancytrading.org"
     },
     "platform": {
-        "name": "Trading Platform",
-        "description": "A whole new trading experience on a powerful yet easy to use platform.",
+        "name": "Fancy Trading",
+        "description": "A FANCIER trading platform.",
         "logo": "brand/platform-logo.svg",
-        "home_url": "https://home.deriv.com/dashboard",
-        "help_centre_url": "https://trade.deriv.com/help-centre"
+        "home_url": "https://fancytrading.org",
+        "help_centre_url": "https://fancytrading.org/help"
     },
     "signup_url": {
         "production": "https://home.deriv.com/dashboard/signup",
         "staging": "https://staging-home.deriv.com/dashboard/signup"
     },
     "deposit_url": {
-        "staging": "https://staging.dtrader-template.pages.dev/transfer",
-        "production": "https://dtrader-template.pages.dev/transfer"
+        "staging": "https://staging.fancytrading.org/transfer",
+        "production": "https://fancytrading.org/transfer"
     },
     "auth": {
         "staging": "https://staging-auth.deriv.com",
         "production": "https://auth.deriv.com",
-        "oauth_scopes": ["trade", "account_manage"],
-        "oauth_redirect_uri_staging": "https://staging.dtrader-template.pages.dev",
-        "oauth_redirect_uri_production": "https://dtrader-template.pages.dev",
-        "oauth_app_id": ""
+        "oauth_scopes": [
+            "trade",
+            "account_manage"
+        ],
+        "oauth_redirect_uri_production": "https://fancytrading.org",
+        "oauth_redirect_uri_staging": "https://localhost:8443",
+        "client_id": "34gg96QDX933LPyjHTogG"
     },
     "derivws": {
-        "staging": "https://staging-api.derivws.com",
+        "staging": "https://api.derivws.com",
         "production": "https://api.derivws.com"
     },
     "api_core": {
@@ -42,22 +45,18 @@
         "staging": "staging-api.deriv.com",
         "production": "api.deriv.com"
     },
-    "app_id": {
-        "staging": 16929,
-        "production": 16929
-    },
-    "colors": {
-        "primary": "#118e1c",
-        "secondary": "#85acb0",
-        "tertiary": "#ff6b35",
-        "success": "#4bb4b3",
-        "danger": "#ec3f3f",
-        "warning": "#ffad3a",
-        "info": "#2196f3",
-        "neutral": "#999999",
-        "black": "#181c25",
-        "white": "#ffffff"
-    },
+"colors": {
+    "primary": "#0054A6",
+    "secondary": "#0072CE",
+    "tertiary": "#00AEEF",
+    "danger": "#D32F2F",
+    "success": "#0072CE",
+    "warning": "#F9A825",
+    "info": "#2196F3",
+    "neutral": "#6B7280",
+    "black": "#111827",
+    "white": "#FFFFFF"
+},
     "color_variants": {
         "auto_generate": true,
         "lighten_percentage": 10,

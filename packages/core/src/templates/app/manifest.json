@@ -1,7 +1,7 @@
 {
-    "name": "Deriv",
-    "short_name": "Deriv",
-    "description": "Deriv gives everyone an easy way to participate in the financial markets.",
+    "name": "Fancy Trading",
+    "short_name": "Fancy Trading",
+    "description": "A FANCIER trading platform.",
     "id": "/",
     "start_url": "{start_url_base}",
     "display": "standalone",

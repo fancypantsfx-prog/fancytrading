@@ -119,6 +119,7 @@
         "node-abort-controller": "^3.1.1",
         "postcss": "^8.5.10",
         "prettier": "^3.0.0",
+        "sharp": "^0.35.4",
         "stylelint": "^16.23.1",
         "stylelint-formatter-pretty": "^2.1.1",
         "stylelint-no-unsupported-browser-features": "^4.0.0",

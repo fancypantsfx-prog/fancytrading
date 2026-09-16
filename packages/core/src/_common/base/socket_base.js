@@ -573,4 +573,4 @@ const proxyForAuthorize = obj =>
 
 BinarySocketBase.authorized = proxyForAuthorize(proxied_socket_base);
 
-module.exports = proxied_socket_base;
+export default proxied_socket_base;

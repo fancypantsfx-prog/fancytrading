@@ -1,7 +1,7 @@
 {
     "name": "@deriv/core",
     "version": "0.1.0",
-    "description": "Deriv Core",
+    "description": "Fancy Trading",
     "main": "index.js",
     "private": true,
     "scripts": {
@@ -12,20 +12,20 @@
     },
     "repository": {
         "type": "git",
-        "url": "https://github.com/deriv-com/derivatives-trader.git"
+        "url": "https://github.com/fancypantsfx-prog/fancytrading.git"
     },
     "keywords": [
         "deriv"
     ],
-    "author": "Deriv",
+    "author": "FancypantsFX",
     "license": "Apache-2.0",
     "bugs": {
-        "url": "https://github.com/deriv-com/derivatives-trader/issues"
+        "url": "https://github.com/fancypantsfx-prog/fancytrading/issues"
     },
     "engines": {
         "node": "^22.14.0 || ^24.10.0"
     },
-    "homepage": "https://github.com/deriv-com/derivatives-trader",
+    "homepage": "https://github.com/fancypantsfx-prog/fancytrading",
     "devDependencies": {
         "@babel/eslint-parser": "^7.25.1",
         "@babel/plugin-transform-private-property-in-object": "^7.12.1",

@@ -82,7 +82,7 @@ const getRegion = (landing_company_shortcode, residence) => {
     return landing_company_shortcode === 'svg' ? 'row' : 'eu';
 };
 
-module.exports = {
+export {
     createElement,
     getStaticHash,
     isEuCountry,

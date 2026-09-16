@@ -1,5 +1,5 @@
 const { localize } = require('@deriv-com/translations');
-const BinarySocket = require('./socket_base');
+const BinarySocket = require('./socket_base').default;
 
 /*
  * Monitors the network status and initialises the WebSocket connection
