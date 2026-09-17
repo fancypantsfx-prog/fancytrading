@@ -27,7 +27,6 @@ jobs:
       with:
         NODE_ENV: production
         REF_NAME: ${{ github.ref_name }}
-        TRANSLATIONS_CDN_URL: ${{ vars.TRANSLATIONS_CDN_URL }}
         OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
     - name: Versioning
       uses: "./.github/actions/versioning"

@@ -20,6 +20,6 @@ runs:
     run: |
       npm i wrangler@3.1.0
       cd packages/core
-      npx wrangler pages deploy dist/ --project-name=${{ inputs.CLOUDFLARE_PROJECT_NAME }} --branch=production
+      npx wrangler pages deploy dist/ --project-name=${{ inputs.CLOUDFLARE_PROJECT_NAME }}
       echo "New website - https://${{ inputs.CLOUDFLARE_PROJECT_NAME }}.pages.dev"
     shell: bash
