@@ -24,6 +24,7 @@ import TradeParamsFooter from 'AppV2/Components/TradeParamsFooter';
 // import MarketSelector from 'AppV2/Components/MarketSelector';
 import useContractsFor from 'AppV2/Hooks/useContractsFor';
 import useDefaultSymbol from 'AppV2/Hooks/useDefaultSymbol';
+import AutomatedTradingPanel from 'AppV2/Components/AutomatedTrading';
 import useTabletLandscape from 'AppV2/Hooks/useTabletLandscape';
 import { getDisplayedContractTypes } from 'AppV2/Utils/trade-types-utils';
 import { useTraderStore } from 'Stores/useTraderStores';
@@ -156,6 +157,7 @@ const TradeDesktop = observer(() => {
                             <TradeParameters />
                             <ClosedMarketMessage />
                             {!is_market_closed && <PurchaseButton />}
+                            <AutomatedTradingPanel />
                             <TradeParamsFooter />
                         </div>
                     </div>

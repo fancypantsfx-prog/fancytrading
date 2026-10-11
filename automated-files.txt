@@ -1,0 +1,1495 @@
+]633;E;{   echo "===== automated-trading.engine.ts ====="\x3b   cat packages/trader/src/AutomatedTrading/engine/automated-trading.engine.ts\x3b    echo\x3b   echo "===== strategy-factory.ts ====="\x3b   cat packages/trader/src/AutomatedTrading/strategies/strategy-factory.ts\x3b    echo\x3b   echo "===== over-under.strategy.ts ====="\x3b   cat packages/trader/src/AutomatedTrading/strategies/over-under.strategy.ts\x3b    echo\x3b   echo "===== even-odd.strategy.ts ====="\x3b   cat packages/trader/src/AutomatedTrading/strategies/even-odd.strategy.ts\x3b    echo\x3b   echo "===== matches-differs.strategy.ts ====="\x3b   cat packages/trader/src/AutomatedTrading/strategies/matches-differs.strategy.ts\x3b    echo\x3b   echo "===== index.ts ====="\x3b   cat packages/trader/src/AutomatedTrading/index.ts\x3b } > automated-files.txt;6849e9bf-bebf-4905-ac8c-e7cd82ef5ca5]633;C===== automated-trading.engine.ts =====
+import fancyApiAdapter from '../adapter/FancyApiAdapter';
+import automatedContractService from '../services/automated-contract.service';
+import automatedProposalService from '../services/automated-proposal.service';
+import automatedTicksService from '../services/automated-ticks.service';
+
+import {
+    createAutomatedStrategy,
+    type AutomatedStrategy,
+} from '../strategies/strategy-factory';
+
+import type {
+    AutomatedSignal,
+    AutomatedTick,
+    AutomatedTradeConfig,
+    AutomatedTradeResult,
+} from '../types/automated-trading.types';
+
+export type AutomationState =
+    | 'idle'
+    | 'starting'
+    | 'running'
+    | 'trading'
+    | 'stopped'
+    | 'error';
+
+export type AutomationActivity =
+    | 'idle'
+    | 'checking_market'
+    | 'loading_history'
+    | 'watching_market'
+    | 'analysing'
+    | 'signal_found'
+    | 'requesting_proposal'
+    | 'proposal_received'
+    | 'buying'
+    | 'monitoring_contract'
+    | 'trade_won'
+    | 'trade_lost'
+    | 'stopped'
+    | 'error';
+
+type EngineListeners = {
+    state?: (
+        state: AutomationState
+    ) => void;
+
+    activity?: (
+        activity: AutomationActivity,
+        message: string
+    ) => void;
+
+    signal?: (
+        signal: AutomatedSignal
+    ) => void;
+
+    trade?: (
+        trade: AutomatedTradeResult
+    ) => void;
+
+    error?: (
+        error: Error
+    ) => void;
+};
+
+const STRATEGY_LABELS = {
+    OVER_UNDER: 'Over / Under',
+    EVEN_ODD: 'Even / Odd',
+    MATCHES_DIFFERS:
+        'Matches / Differs',
+} as const;
+
+const getStrategyLabel = (
+    strategy:
+        | AutomatedTradeConfig['strategy']
+        | undefined
+) =>
+    STRATEGY_LABELS[
+        strategy ?? 'OVER_UNDER'
+    ];
+
+export class AutomatedTradingEngine {
+    private state: AutomationState =
+        'idle';
+
+    private activity: AutomationActivity =
+        'idle';
+
+    private message =
+        'Automation is ready.';
+
+    private config:
+        | AutomatedTradeConfig
+        | null = null;
+
+    private strategy:
+        | AutomatedStrategy
+        | null = null;
+
+    private subscriptionKey:
+        | string
+        | null = null;
+
+    private history: AutomatedTick[] =
+        [];
+
+    private tradeCount = 0;
+
+    private totalProfit = 0;
+
+    private lastTradeAt = 0;
+
+    private lastTickAt = 0;
+
+    private tickCount = 0;
+
+    private listeners: EngineListeners =
+        {};
+
+    private tradeInProgress = false;
+
+    getState() {
+        return this.state;
+    }
+
+    getActivity() {
+        return this.activity;
+    }
+
+    getMessage() {
+        return this.message;
+    }
+
+    getStats() {
+        return {
+            state: this.state,
+            activity: this.activity,
+            message: this.message,
+            tradeCount: this.tradeCount,
+            totalProfit:
+                this.totalProfit,
+            lastTradeAt:
+                this.lastTradeAt,
+            lastTickAt:
+                this.lastTickAt,
+            tradeInProgress:
+                this.tradeInProgress,
+            tickCount:
+                this.tickCount,
+            historyLength:
+                this.history.length,
+            strategy:
+                this.config
+                    ?.strategy ??
+                'OVER_UNDER',
+        };
+    }
+
+    on(
+        listeners: EngineListeners
+    ) {
+        const registeredListeners = {
+            ...listeners,
+        };
+
+        this.listeners = {
+            ...this.listeners,
+            ...registeredListeners,
+        };
+
+        return () => {
+            Object.keys(
+                registeredListeners
+            ).forEach(key => {
+                const listenerKey =
+                    key as keyof EngineListeners;
+
+                if (
+                    this.listeners[
+                        listenerKey
+                    ] ===
+                    registeredListeners[
+                        listenerKey
+                    ]
+                ) {
+                    delete this.listeners[
+                        listenerKey
+                    ];
+                }
+            });
+        };
+    }
+
+    async start(
+        config: AutomatedTradeConfig
+    ) {
+        if (
+            this.state === 'running' ||
+            this.state === 'starting' ||
+            this.state === 'trading'
+        ) {
+            throw new Error(
+                'Automated trading is already running'
+            );
+        }
+
+        if (!config.symbol) {
+            throw new Error(
+                'A trading symbol is required'
+            );
+        }
+
+        if (
+            !Number.isFinite(
+                config.amount
+            ) ||
+            config.amount <= 0
+        ) {
+            throw new Error(
+                'Amount must be greater than 0'
+            );
+        }
+
+        if (
+            config.maxStake != null &&
+            config.amount >
+                config.maxStake
+        ) {
+            throw new Error(
+                'Stake exceeds maxStake'
+            );
+        }
+
+        if (
+            !Number.isInteger(
+                config.duration
+            ) ||
+            config.duration <= 0
+        ) {
+            throw new Error(
+                'Duration must be a positive integer'
+            );
+        }
+
+        const normalizedConfig: AutomatedTradeConfig =
+            {
+                ...config,
+
+                strategy:
+                    config.strategy ??
+                    'OVER_UNDER',
+            };
+
+        this.config =
+            normalizedConfig;
+
+        this.strategy =
+            createAutomatedStrategy(
+                normalizedConfig.strategy,
+                normalizedConfig
+            );
+
+        this.history = [];
+
+        this.tradeCount = 0;
+
+        this.totalProfit = 0;
+
+        this.tradeInProgress =
+            false;
+
+        this.tickCount = 0;
+
+        this.lastTickAt = 0;
+
+        this.lastTradeAt = 0;
+
+        this.setState('starting');
+
+        try {
+            const strategyLabel =
+                getStrategyLabel(
+                    normalizedConfig.strategy
+                );
+
+            this.setActivity(
+                'checking_market',
+                `Checking ${config.symbol}...`
+            );
+
+            const active =
+                await fancyApiAdapter.getActiveSymbol(
+                    config.symbol
+                );
+
+            if (!active) {
+                throw new Error(
+                    `Symbol ${config.symbol} is not an active Deriv symbol`
+                );
+            }
+
+            if (
+                active.tradingSuspended
+            ) {
+                throw new Error(
+                    `Trading is suspended for ${config.symbol}`
+                );
+            }
+
+            this.setActivity(
+                'loading_history',
+                `Loading recent ticks for ${config.symbol}...`
+            );
+
+            this.history =
+                await automatedTicksService.getHistory(
+                    config.symbol,
+                    Math.max(
+                        100,
+                        config.lookback ??
+                            20
+                    )
+                );
+
+            this.tickCount =
+                this.history.length;
+
+            this.setActivity(
+                'watching_market',
+                `Loaded ${this.history.length} ticks. Waiting for a ${strategyLabel} signal...`
+            );
+
+            this.subscriptionKey =
+                await automatedTicksService.start(
+                    config.symbol,
+                    tick =>
+                        this.onTick(
+                            tick
+                        )
+                );
+
+            this.setState(
+                'running'
+            );
+
+            this.setActivity(
+                'watching_market',
+                `Watching ${config.symbol} for ${strategyLabel} signals...`
+            );
+        } catch (error) {
+            this.setState(
+                'error'
+            );
+
+            const err =
+                error instanceof Error
+                    ? error
+                    : new Error(
+                          String(
+                              error
+                          )
+                      );
+
+            this.setActivity(
+                'error',
+                err.message
+            );
+
+            this.listeners.error?.(
+                err
+            );
+
+            throw err;
+        }
+    }
+
+    async stop() {
+        if (this.subscriptionKey) {
+            automatedTicksService.stop(
+                this.subscriptionKey
+            );
+
+            this.subscriptionKey =
+                null;
+        }
+
+        this.tradeInProgress =
+            false;
+
+        this.setActivity(
+            'stopped',
+            'Automated trading has been stopped.'
+        );
+
+        this.setState(
+            'stopped'
+        );
+    }
+
+    reset() {
+        if (
+            this.state === 'running' ||
+            this.state === 'starting' ||
+            this.state === 'trading'
+        ) {
+            throw new Error(
+                'Stop automated trading before resetting'
+            );
+        }
+
+        this.history = [];
+
+        this.tradeCount = 0;
+
+        this.totalProfit = 0;
+
+        this.lastTradeAt = 0;
+
+        this.lastTickAt = 0;
+
+        this.tickCount = 0;
+
+        this.config = null;
+
+        this.strategy = null;
+
+        this.tradeInProgress =
+            false;
+
+        this.setActivity(
+            'idle',
+            'Automation is ready.'
+        );
+
+        this.setState(
+            'idle'
+        );
+    }
+
+    private onTick(
+        tick: AutomatedTick
+    ) {
+        if (
+            !this.config ||
+            !this.strategy ||
+            this.state ===
+                'stopped' ||
+            this.state === 'error'
+        ) {
+            return;
+        }
+
+        this.lastTickAt =
+            tick.epoch;
+
+        this.tickCount += 1;
+
+        this.history = [
+            ...this.history.slice(
+                -999
+            ),
+            tick,
+        ];
+
+        if (
+            this.tradeInProgress
+        ) {
+            return;
+        }
+
+        if (
+            this.config.maxTrades !=
+                null &&
+            this.tradeCount >=
+                this.config.maxTrades
+        ) {
+            void this.stop();
+
+            return;
+        }
+
+        if (
+            this.config.stopOnProfit !=
+                null &&
+            this.totalProfit >=
+                this.config.stopOnProfit
+        ) {
+            void this.stop();
+
+            return;
+        }
+
+        if (
+            this.config.stopOnLoss !=
+                null &&
+            this.totalProfit <=
+                -Math.abs(
+                    this.config
+                        .stopOnLoss
+                )
+        ) {
+            void this.stop();
+
+            return;
+        }
+
+        if (
+            this.config.cooldownMs &&
+            Date.now() -
+                this.lastTradeAt <
+                this.config.cooldownMs
+        ) {
+            return;
+        }
+
+        this.setActivity(
+            'analysing',
+            `Analysing tick ${this.tickCount}...`
+        );
+
+        const signal =
+            this.strategy.evaluate(
+                this.history
+            );
+
+        if (!signal) {
+            this.setActivity(
+                'watching_market',
+                `Watching ${this.config.symbol} — no qualifying signal yet.`
+            );
+
+            return;
+        }
+
+        this.listeners.signal?.(
+            signal
+        );
+
+        const barrierText =
+            signal.barrier !=
+            null
+                ? ` ${signal.barrier}`
+                : '';
+
+        this.setActivity(
+            'signal_found',
+            `${signal.direction}${barrierText} signal detected — ${(signal.confidence * 100).toFixed(1)}% confidence.`
+        );
+
+        void this.execute(
+            signal
+        );
+    }
+
+    private async execute(
+        signal: AutomatedSignal
+    ) {
+        if (
+            !this.config ||
+            this.tradeInProgress
+        ) {
+            return;
+        }
+
+        this.tradeInProgress =
+            true;
+
+        this.setState(
+            'trading'
+        );
+
+        try {
+            const barrierText =
+                signal.barrier !=
+                null
+                    ? ` ${signal.barrier}`
+                    : '';
+
+            this.setActivity(
+                'requesting_proposal',
+                `Requesting ${signal.direction}${barrierText} proposal...`
+            );
+
+            const proposal =
+                await automatedProposalService.create(
+                    this.config,
+                    signal
+                );
+
+            this.setActivity(
+                'proposal_received',
+                `Proposal received. Stake: ${proposal.askPrice.toFixed(2)} ${this.config.currency}.`
+            );
+
+            this.setActivity(
+                'buying',
+                `Buying ${signal.direction}${barrierText} contract...`
+            );
+
+            const buy =
+                await automatedContractService.buy(
+                    proposal
+                );
+
+            if (
+                !buy?.contract_id
+            ) {
+                throw new Error(
+                    'Deriv returned no contract ID after purchase'
+                );
+            }
+
+            const contractId =
+                String(
+                    buy.contract_id
+                );
+
+            this.setActivity(
+                'monitoring_contract',
+                `Contract ${contractId} purchased. Waiting for result...`
+            );
+
+            const result =
+                await automatedContractService.waitForResult(
+                    contractId
+                );
+
+            const trade: AutomatedTradeResult =
+                {
+                    ...result,
+                    signal,
+                    proposal,
+                };
+
+            this.tradeCount += 1;
+
+            this.totalProfit +=
+                result.profit;
+
+            this.lastTradeAt =
+                Date.now();
+
+            this.listeners.trade?.(
+                trade
+            );
+
+            if (
+                result.profit >= 0
+            ) {
+                this.setActivity(
+                    'trade_won',
+                    `Trade completed with profit of ${result.profit.toFixed(2)} ${this.config.currency}.`
+                );
+            } else {
+                this.setActivity(
+                    'trade_lost',
+                    `Trade completed with loss of ${Math.abs(result.profit).toFixed(2)} ${this.config.currency}.`
+                );
+            }
+
+            if (
+                (this.config
+                    .maxTrades !=
+                    null &&
+                    this.tradeCount >=
+                        this.config
+                            .maxTrades) ||
+                (this.config
+                    .stopOnProfit !=
+                    null &&
+                    this.totalProfit >=
+                        this.config
+                            .stopOnProfit) ||
+                (this.config
+                    .stopOnLoss !=
+                    null &&
+                    this.totalProfit <=
+                        -Math.abs(
+                            this.config
+                                .stopOnLoss
+                        ))
+            ) {
+                await this.stop();
+
+                return;
+            }
+
+            this.setState(
+                'running'
+            );
+
+            this.setActivity(
+                'watching_market',
+                'Trade complete. Watching for the next signal...'
+            );
+        } catch (error) {
+            const err =
+                error instanceof Error
+                    ? error
+                    : new Error(
+                          String(
+                              error
+                          )
+                      );
+
+            this.listeners.error?.(
+                err
+            );
+
+            this.setActivity(
+                'error',
+                err.message
+            );
+
+            this.setState(
+                'running'
+            );
+
+            this.setActivity(
+                'watching_market',
+                `Trade attempt failed: ${err.message}`
+            );
+        } finally {
+            this.tradeInProgress =
+                false;
+        }
+    }
+
+    private setState(
+        state: AutomationState
+    ) {
+        this.state = state;
+
+        this.listeners.state?.(
+            state
+        );
+    }
+
+    private setActivity(
+        activity: AutomationActivity,
+        message: string
+    ) {
+        this.activity =
+            activity;
+
+        this.message =
+            message;
+
+        this.listeners.activity?.(
+            activity,
+            message
+        );
+    }
+}
+
+export const automatedTradingEngine =
+    new AutomatedTradingEngine();
+
+export default automatedTradingEngine;
+===== strategy-factory.ts =====
+import OverUnderStrategy from './over-under.strategy';
+import EvenOddStrategy from './even-odd.strategy';
+import MatchesDiffersStrategy from './matches-differs.strategy';
+
+import type {
+    AutomatedSignal,
+    AutomatedStrategyType,
+    AutomatedTick,
+    AutomatedTradeConfig,
+} from '../types/automated-trading.types';
+
+export interface AutomatedStrategy {
+    evaluate(
+        ticks: AutomatedTick[]
+    ): AutomatedSignal | null;
+}
+
+export const createAutomatedStrategy = (
+    strategy:
+        | AutomatedStrategyType
+        | undefined,
+    config: AutomatedTradeConfig
+): AutomatedStrategy => {
+    switch (
+        strategy ??
+        'OVER_UNDER'
+    ) {
+        case 'EVEN_ODD':
+            return new EvenOddStrategy({
+                lookback:
+                    config.lookback,
+
+                minConfidence:
+                    config.minConfidence,
+
+                direction:
+                    config.direction ===
+                        'EVEN' ||
+                    config.direction ===
+                        'ODD'
+                        ? config.direction
+                        : 'AUTO',
+            });
+
+        case 'MATCHES_DIFFERS':
+            return new MatchesDiffersStrategy({
+                lookback:
+                    config.lookback,
+
+                minConfidence:
+                    config.minConfidence,
+
+                barrier:
+                    config.barrier,
+
+                direction:
+                    config.direction ===
+                        'MATCH' ||
+                    config.direction ===
+                        'DIFFER'
+                        ? config.direction
+                        : 'AUTO',
+            });
+
+        case 'OVER_UNDER':
+        default:
+            return new OverUnderStrategy({
+                lookback:
+                    config.lookback,
+
+                minConfidence:
+                    config.minConfidence,
+
+                barrier:
+                    config.barrier,
+
+                direction:
+                    config.direction ===
+                        'OVER' ||
+                    config.direction ===
+                        'UNDER'
+                        ? config.direction
+                        : 'AUTO',
+            });
+    }
+};
+
+export default createAutomatedStrategy;
+===== over-under.strategy.ts =====
+import { CONTRACT_TYPES } from '@deriv/shared';
+
+import type {
+    AutomatedSignal,
+    AutomatedTick,
+    ContractDirection,
+} from '../types/automated-trading.types';
+
+const getDigit = (
+    tick: AutomatedTick
+): number | null => {
+    const raw =
+        tick.quoteString ??
+        String(tick.quote);
+
+    const pipSize = Number.isFinite(
+        tick.pipSize
+    )
+        ? Number(tick.pipSize)
+        : raw.includes('.')
+        ? raw.split('.')[1].length
+        : 0;
+
+    if (
+        !Number.isFinite(tick.quote) ||
+        pipSize < 0
+    ) {
+        return null;
+    }
+
+    const fixed =
+        tick.quote.toFixed(pipSize);
+
+    const digits =
+        fixed.replace(/\D/g, '');
+
+    const digit = Number(
+        digits.slice(-1)
+    );
+
+    return Number.isInteger(digit)
+        ? digit
+        : null;
+};
+
+export const getLastDigit =
+    getDigit;
+
+export type OverUnderStrategyOptions =
+    {
+        lookback?: number;
+        minConfidence?: number;
+        barrier?: number;
+        direction?:
+            | 'AUTO'
+            | 'OVER'
+            | 'UNDER';
+    };
+
+export class OverUnderStrategy {
+    private readonly lookback: number;
+
+    private readonly minConfidence: number;
+
+    private readonly barrier?: number;
+
+    private readonly direction:
+        | 'AUTO'
+        | 'OVER'
+        | 'UNDER';
+
+    constructor(
+        options: OverUnderStrategyOptions = {}
+    ) {
+        this.lookback = Math.max(
+            5,
+            options.lookback ?? 20
+        );
+
+        this.minConfidence = Math.min(
+            1,
+            Math.max(
+                0.5,
+                options.minConfidence ??
+                    0.6
+            )
+        );
+
+        this.barrier =
+            options.barrier;
+
+        this.direction =
+            options.direction ??
+            'AUTO';
+    }
+
+    evaluate(
+        ticks: AutomatedTick[]
+    ): AutomatedSignal | null {
+        const usable = ticks.slice(
+            -this.lookback
+        );
+
+        if (
+            usable.length <
+            this.lookback
+        ) {
+            return null;
+        }
+
+        const digits = usable
+            .map(getDigit)
+            .filter(
+                (
+                    digit
+                ): digit is number =>
+                    digit !== null
+            );
+
+        if (
+            digits.length <
+            this.lookback
+        ) {
+            return null;
+        }
+
+        const average =
+            digits.reduce(
+                (sum, digit) =>
+                    sum + digit,
+                0
+            ) / digits.length;
+
+        const variance =
+            digits.reduce(
+                (sum, digit) =>
+                    sum +
+                    Math.abs(
+                        digit -
+                            average
+                    ),
+                0
+            ) / digits.length;
+
+        if (variance < 1.2) {
+            return null;
+        }
+
+        let direction:
+            | 'OVER'
+            | 'UNDER';
+
+        if (
+            this.direction ===
+            'AUTO'
+        ) {
+            direction =
+                average >= 4.5
+                    ? 'OVER'
+                    : 'UNDER';
+        } else {
+            direction =
+                this.direction;
+        }
+
+        const barrier =
+            this.barrier ??
+            (direction ===
+            'OVER'
+                ? 4
+                : 5);
+
+        if (
+            barrier < 0 ||
+            barrier > 9 ||
+            !Number.isInteger(
+                barrier
+            )
+        ) {
+            return null;
+        }
+
+        const favourable =
+            direction === 'OVER'
+                ? digits.filter(
+                      digit =>
+                          digit >
+                          barrier
+                  ).length
+                : digits.filter(
+                      digit =>
+                          digit <
+                          barrier
+                  ).length;
+
+        const confidence =
+            favourable /
+            digits.length;
+
+        if (
+            confidence <
+            this.minConfidence
+        ) {
+            return null;
+        }
+
+        const contractType =
+            direction === 'OVER'
+                ? CONTRACT_TYPES
+                      .OVER_UNDER
+                      .OVER
+                : CONTRACT_TYPES
+                      .OVER_UNDER
+                      .UNDER;
+
+        const latest =
+            usable[
+                usable.length - 1
+            ];
+
+        return {
+            strategy:
+                'OVER_UNDER',
+
+            contractType,
+
+            direction:
+                direction as ContractDirection,
+
+            barrier,
+
+            confidence,
+
+            reason: `${direction} ${barrier}: ${favourable}/${digits.length} recent digits satisfy the condition`,
+
+            sourceEpoch:
+                latest.epoch,
+        };
+    }
+}
+
+export default OverUnderStrategy;
+===== even-odd.strategy.ts =====
+import type {
+    AutomatedSignal,
+    AutomatedTick,
+} from '../types/automated-trading.types';
+
+import { getLastDigit } from './over-under.strategy';
+
+export type EvenOddStrategyOptions = {
+    lookback?: number;
+    minConfidence?: number;
+    direction?:
+        | 'AUTO'
+        | 'EVEN'
+        | 'ODD';
+};
+
+export class EvenOddStrategy {
+    private readonly lookback: number;
+
+    private readonly minConfidence: number;
+
+    private readonly direction:
+        | 'AUTO'
+        | 'EVEN'
+        | 'ODD';
+
+    constructor(
+        options: EvenOddStrategyOptions = {}
+    ) {
+        this.lookback = Math.max(
+            5,
+            options.lookback ?? 20
+        );
+
+        this.minConfidence = Math.min(
+            1,
+            Math.max(
+                0.5,
+                options.minConfidence ??
+                    0.6
+            )
+        );
+
+        this.direction =
+            options.direction ??
+            'AUTO';
+    }
+
+    evaluate(
+        ticks: AutomatedTick[]
+    ): AutomatedSignal | null {
+        const usable = ticks.slice(
+            -this.lookback
+        );
+
+        if (
+            usable.length <
+            this.lookback
+        ) {
+            return null;
+        }
+
+        const digits = usable
+            .map(getLastDigit)
+            .filter(
+                (
+                    digit
+                ): digit is number =>
+                    digit !== null
+            );
+
+        if (
+            digits.length <
+            this.lookback
+        ) {
+            return null;
+        }
+
+        const evenCount =
+            digits.filter(
+                digit =>
+                    digit % 2 === 0
+            ).length;
+
+        const oddCount =
+            digits.length -
+            evenCount;
+
+        const evenConfidence =
+            evenCount /
+            digits.length;
+
+        const oddConfidence =
+            oddCount /
+            digits.length;
+
+        let direction:
+            | 'EVEN'
+            | 'ODD';
+
+        if (
+            this.direction ===
+            'AUTO'
+        ) {
+            direction =
+                evenConfidence >=
+                oddConfidence
+                    ? 'EVEN'
+                    : 'ODD';
+        } else {
+            direction =
+                this.direction;
+        }
+
+        const confidence =
+            direction === 'EVEN'
+                ? evenConfidence
+                : oddConfidence;
+
+        if (
+            confidence <
+            this.minConfidence
+        ) {
+            return null;
+        }
+
+        const latest =
+            usable[
+                usable.length - 1
+            ];
+
+        const contractType =
+            direction === 'EVEN'
+                ? 'DIGITEVEN'
+                : 'DIGITODD';
+
+        const favourable =
+            direction === 'EVEN'
+                ? evenCount
+                : oddCount;
+
+        return {
+            strategy:
+                'EVEN_ODD',
+
+            contractType,
+
+            direction,
+
+            confidence,
+
+            reason: `${direction}: ${favourable}/${digits.length} recent digits satisfy the condition`,
+
+            sourceEpoch:
+                latest.epoch,
+        };
+    }
+}
+
+export default EvenOddStrategy;
+===== matches-differs.strategy.ts =====
+import type {
+    AutomatedSignal,
+    AutomatedTick,
+} from '../types/automated-trading.types';
+
+import { getLastDigit } from './over-under.strategy';
+
+export type MatchesDiffersStrategyOptions =
+    {
+        lookback?: number;
+        minConfidence?: number;
+        barrier?: number;
+        direction?:
+            | 'AUTO'
+            | 'MATCH'
+            | 'DIFFER';
+    };
+
+export class MatchesDiffersStrategy {
+    private readonly lookback: number;
+
+    private readonly minConfidence: number;
+
+    private readonly barrier?: number;
+
+    private readonly direction:
+        | 'AUTO'
+        | 'MATCH'
+        | 'DIFFER';
+
+    constructor(
+        options: MatchesDiffersStrategyOptions = {}
+    ) {
+        this.lookback = Math.max(
+            5,
+            options.lookback ?? 20
+        );
+
+        this.minConfidence = Math.min(
+            1,
+            Math.max(
+                0.5,
+                options.minConfidence ??
+                    0.6
+            )
+        );
+
+        this.barrier =
+            options.barrier;
+
+        this.direction =
+            options.direction ??
+            'AUTO';
+    }
+
+    evaluate(
+        ticks: AutomatedTick[]
+    ): AutomatedSignal | null {
+        const usable = ticks.slice(
+            -this.lookback
+        );
+
+        if (
+            usable.length <
+            this.lookback
+        ) {
+            return null;
+        }
+
+        const digits = usable
+            .map(getLastDigit)
+            .filter(
+                (
+                    digit
+                ): digit is number =>
+                    digit !== null
+            );
+
+        if (
+            digits.length <
+            this.lookback
+        ) {
+            return null;
+        }
+
+        const barrier =
+            this.barrier ??
+            digits[
+                digits.length - 1
+            ];
+
+        if (
+            barrier < 0 ||
+            barrier > 9 ||
+            !Number.isInteger(
+                barrier
+            )
+        ) {
+            return null;
+        }
+
+        const matches =
+            digits.filter(
+                digit =>
+                    digit ===
+                    barrier
+            ).length;
+
+        const differs =
+            digits.length -
+            matches;
+
+        const matchConfidence =
+            matches /
+            digits.length;
+
+        const differConfidence =
+            differs /
+            digits.length;
+
+        let direction:
+            | 'MATCH'
+            | 'DIFFER';
+
+        if (
+            this.direction ===
+            'AUTO'
+        ) {
+            direction =
+                matchConfidence >=
+                differConfidence
+                    ? 'MATCH'
+                    : 'DIFFER';
+        } else {
+            direction =
+                this.direction;
+        }
+
+        const confidence =
+            direction === 'MATCH'
+                ? matchConfidence
+                : differConfidence;
+
+        if (
+            confidence <
+            this.minConfidence
+        ) {
+            return null;
+        }
+
+        const latest =
+            usable[
+                usable.length - 1
+            ];
+
+        return {
+            strategy:
+                'MATCHES_DIFFERS',
+
+            contractType:
+                direction === 'MATCH'
+                    ? 'DIGITMATCH'
+                    : 'DIGITDIFF',
+
+            direction,
+
+            barrier,
+
+            confidence,
+
+            reason:
+                direction === 'MATCH'
+                    ? `MATCH ${barrier}: ${matches}/${digits.length} recent digits matched the barrier`
+                    : `DIFFER ${barrier}: ${differs}/${digits.length} recent digits differed from the barrier`,
+
+            sourceEpoch:
+                latest.epoch,
+        };
+    }
+}
+
+export default MatchesDiffersStrategy;
+===== index.ts =====
+export {
+    automatedTradingEngine,
+    AutomatedTradingEngine,
+} from './engine/automated-trading.engine';
+
+export type {
+    AutomationActivity,
+    AutomationState,
+} from './engine/automated-trading.engine';
+
+export {
+    fancyApiAdapter,
+} from './adapter/FancyApiAdapter';
+
+export {
+    fancyTicksService,
+} from './adapter/FancyTicksService';
+
+export {
+    automatedContractService,
+} from './services/automated-contract.service';
+
+export {
+    automatedProposalService,
+} from './services/automated-proposal.service';
+
+export {
+    automatedTicksService,
+} from './services/automated-ticks.service';
+
+export {
+    OverUnderStrategy,
+    getLastDigit,
+} from './strategies/over-under.strategy';
+
+export {
+    EvenOddStrategy,
+} from './strategies/even-odd.strategy';
+
+export {
+    MatchesDiffersStrategy,
+} from './strategies/matches-differs.strategy';
+
+export {
+    createAutomatedStrategy,
+} from './strategies/strategy-factory';
+
+export type {
+    AutomatedContractResult,
+    AutomatedProposal,
+    AutomatedSignal,
+    AutomatedTick,
+    AutomatedTradeConfig,
+    AutomatedTradeResult,
+    AutomatedStrategyType,
+    AutomatedContractType,
+    AutomatedDirection,
+    ContractDirection,
+} from './types/automated-trading.types';

@@ -30,8 +30,7 @@
             "account_manage"
         ],
         "oauth_redirect_uri_production": "https://fancytrading.org",
-        "oauth_redirect_uri_staging": "https://localhost:8443",
-        "client_id": "34gg96QDX933LPyjHTogG"
+        "oauth_redirect_uri_staging": "https://localhost:8443"
     },
     "derivws": {
         "staging": "https://api.derivws.com",

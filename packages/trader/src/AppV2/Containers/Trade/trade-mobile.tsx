@@ -15,6 +15,7 @@ import OnboardingGuide from 'AppV2/Components/OnboardingGuide/GuideForPages';
 import TradeErrorSnackbar from 'AppV2/Components/TradeErrorSnackbar';
 import { TradeParametersContainer } from 'AppV2/Components/TradeParameters';
 import useContractsFor from 'AppV2/Hooks/useContractsFor';
+import AutomatedTradingPanel from 'AppV2/Components/AutomatedTrading';
 import useDefaultSymbol from 'AppV2/Hooks/useDefaultSymbol';
 import { getChartHeight } from 'AppV2/Utils/layout-utils';
 import { getDisplayedContractTypes } from 'AppV2/Utils/trade-types-utils';
@@ -143,7 +144,7 @@ const Trade = observer(() => {
                         </div>
                         {is_accumulator && <AccumulatorStats />}
                     </div>
-                    <TradeParametersContainer is_market_closed={is_market_closed} />
+                    <TradeParametersContainer is_market_closed={is_market_closed} /> <AutomatedTradingPanel />
                     {is_logged_in && <OnboardingGuide type='trade_page' is_dark_mode_on={is_dark_mode_on} />}
                 </React.Fragment>
             ) : (
