@@ -7,6 +7,7 @@ import { useStore } from '@deriv/stores';
 import { useDevice } from '@deriv-com/ui';
 
 import Sidebar from 'AppV2/Components/Layout/Sidebar/sidebar';
+import AutomatedTradingPanel from 'AppV2/Components/AutomatedTrading/automated-trading-panel';
 
 import Router from '../../Routes/router';
 
@@ -30,6 +31,7 @@ const AppShell = observer(() => {
             <div className='app-shell__main-content'>
                 <Router />
             </div>
+            <AutomatedTradingPanel />
         </div>
     );
 });
