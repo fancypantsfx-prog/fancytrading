@@ -1,6 +1,7 @@
 // The Automation API is server-managed. Only read requests may be retried.
 export type ParameterSchema = {
     type?: string;
+    multipleOf?: number;
     title?: string;
     description?: string;
     default?: unknown;
@@ -101,7 +102,36 @@ export const getRunParameterSchema = (strategy: Strategy): ParameterSchema => {
                       description: 'Stop the run after reaching this loss in your account currency.',
                   },
               };
-    return { ...schema, properties: { ...common, ...schema.properties } };
+    return {
+        ...schema,
+        required: schema.required?.filter((key) => key !== 'take_profit' && key !== 'stop_loss'),
+        properties: { ...common, ...schema.properties },
+    };
+};
+export const SHARED_STAKE_PARAMETERS = ['initial_stake', 'starting_stake', 'base_stake', 'initial_amount', 'stake'];
+export const isSharedStakeParameter = (key: string): boolean => SHARED_STAKE_PARAMETERS.includes(key);
+export const validateEnabledLimits = (values: Record<string, string>) => {
+    for (const key of ['take_profit', 'stop_loss'])
+        if (Object.prototype.hasOwnProperty.call(values, key) && !values[key].trim())
+            throw new Error('Enter ' + riskFieldInfo(key).label.toLowerCase() + ' or switch it off.');
+};
+export const numericStep = (name: string, schema: ParameterSchema): number => {
+    if (schema.type === 'integer') return Math.max(1, schema.multipleOf ?? 1);
+    if (schema.multipleOf && schema.multipleOf > 0) return schema.multipleOf;
+    return name === 'multiplier' ? 0.1 : 0.01;
+};
+export const stepNumber = (
+    value: string,
+    direction: number,
+    step: number,
+    minimum?: number,
+    maximum?: number
+): string => {
+    const parsed = value.trim() ? Number(value) : NaN;
+    const starting = Number.isFinite(parsed) ? parsed : (minimum ?? 0);
+    const next = !Number.isFinite(parsed) ? starting : starting + Math.sign(direction) * step;
+    const bounded = Math.max(minimum ?? -Infinity, Math.min(maximum ?? Infinity, next));
+    return String(Number(bounded.toFixed(12)));
 };
 export const getSharedContractType = (available: string[], selected: string): string =>
     available.includes(selected) ? selected : available.length === 1 ? available[0] : '';
@@ -266,10 +296,11 @@ export const validateParameter = (value: unknown, schema: ParameterSchema, path 
             );
     }
 };
-export const parseParameters = (strategy: Strategy, values: Record<string, string>) => {
+export const parseParameters = (strategy: Strategy, values: Record<string, string>, shared?: ContractTemplate) => {
     const schema = getRunParameterSchema(strategy);
     const parameters: Record<string, unknown> = {};
     for (const [key, definition] of Object.entries(schema.properties ?? {})) {
+        if (shared && isSharedStakeParameter(key)) continue;
         const text = values[key];
         if (text === undefined || text.trim() === '') continue;
         try {
@@ -286,6 +317,26 @@ export const parseParameters = (strategy: Strategy, values: Record<string, strin
                       : JSON.parse(text);
         } catch {
             throw new Error(key + ': enter a valid ' + (definition.type ?? 'JSON value'));
+        }
+    }
+    if (shared) {
+        const properties = schema.properties ?? {};
+        const stake_keys = Object.keys(properties).filter(isSharedStakeParameter);
+        const list_keys = ['stake_list', 'stakes'].filter((key) => !!properties[key]);
+        if (stake_keys.length || list_keys.length) {
+            if (
+                shared.basis !== 'stake' ||
+                typeof shared.amount !== 'number' ||
+                !Number.isFinite(shared.amount) ||
+                shared.amount <= 0
+            )
+                throw new Error('Choose a valid stake in the manual trading form.');
+            for (const key of stake_keys) parameters[key] = shared.amount;
+            for (const key of list_keys) {
+                const recovery = parameters[key] ?? [];
+                if (!Array.isArray(recovery)) throw new Error('Enter a valid recovery stake list.');
+                parameters[key] = [shared.amount, ...recovery];
+            }
         }
     }
     validateParameter(parameters, { ...schema, type: 'object' });

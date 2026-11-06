@@ -460,3 +460,63 @@ test('required recovery controls do not disappear behind fixed stake', () => {
     };
     assert.equal(supportsFixedMultiplier(strict), false);
 });
+
+const { validateEnabledLimits, numericStep, stepNumber } =
+    await import('../src/AppV2/Components/AutoTrading/automation.ts');
+test('take profit and stop loss remain optional even when listed among strategy requirements', () => {
+    const limits = {
+        ...strategy,
+        parameters: {
+            type: 'object',
+            required: ['multiplier', 'take_profit', 'stop_loss'],
+            properties: {
+                multiplier: { type: 'number' },
+                take_profit: { type: 'number' },
+                stop_loss: { type: 'number' },
+            },
+        },
+    };
+    assert.deepEqual(parseParameters(limits, { multiplier: '2' }), { multiplier: 2 });
+});
+test('only explicitly enabled blank limits require an amount', () => {
+    assert.doesNotThrow(() => validateEnabledLimits({}));
+    assert.throws(() => validateEnabledLimits({ take_profit: '' }), /switch it off/);
+    assert.throws(() => validateEnabledLimits({ stop_loss: ' ' }), /switch it off/);
+    assert.doesNotThrow(() => validateEnabledLimits({ take_profit: '10' }));
+});
+test('strategy initial stake always inherits Manual and ignores a stale entered amount', () => {
+    const inherited = {
+        ...strategy,
+        parameters: { type: 'object', required: ['initial_stake'], properties: { initial_stake: { type: 'number' } } },
+    };
+    assert.deepEqual(parseParameters(inherited, { initial_stake: '999' }, template), { initial_stake: 10 });
+    assert.deepEqual(parseParameters(inherited, {}, { ...template, amount: 25 }), { initial_stake: 25 });
+});
+test('recovery list prepends the current manual stake without entering it twice', () => {
+    const listed = {
+        ...strategy,
+        strategy_id: 'stake_list',
+        parameters: { stake_list: { type: 'array', items: { type: 'number' } } },
+    };
+    assert.deepEqual(parseParameters(listed, { stake_list: '20,40' }, template), { stake_list: [10, 20, 40] });
+    assert.deepEqual(parseParameters(listed, {}, template), { stake_list: [10] });
+    assert.deepEqual(parseParameters(listed, { stake_list: '20,40' }, { ...template, amount: 15 }), {
+        stake_list: [15, 20, 40],
+    });
+});
+test('shared stake parameters cannot mistake payout amount for initial stake', () => {
+    const inherited = { ...strategy, parameters: { initial_stake: { type: 'number' } } };
+    assert.throws(() => parseParameters(inherited, {}, { ...template, basis: 'payout' }), /manual trading form/);
+});
+test('numeric steps distinguish integer, money and multipliers', () => {
+    assert.equal(numericStep('max_levels', { type: 'integer' }), 1);
+    assert.equal(numericStep('take_profit', { type: 'number' }), 0.01);
+    assert.equal(numericStep('multiplier', { type: 'number' }), 0.1);
+    assert.equal(numericStep('custom', { type: 'number', multipleOf: 0.25 }), 0.25);
+});
+test('numeric adjustment preserves decimals and respects both bounds', () => {
+    assert.equal(stepNumber('0.2', 1, 0.1), '0.3');
+    assert.equal(stepNumber('1', -1, 1, 1, 5), '1');
+    assert.equal(stepNumber('5', 1, 1, 1, 5), '5');
+    assert.equal(stepNumber('', 1, 0.01, 0.01), '0.01');
+});

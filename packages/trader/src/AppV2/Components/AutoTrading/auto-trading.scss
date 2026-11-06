@@ -296,3 +296,69 @@
     max-height: calc(100dvh - 8rem);
     overflow-y: auto;
 }
+
+.auto-trading {
+    &__field-heading {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    &__field-heading label {
+        flex: 1;
+    }
+    &__optional {
+        font-size: 1.1rem;
+    }
+    &--menu button.auto-trading__toggle {
+        padding: 3px 8px;
+        min-height: 30px;
+        min-width: 48px;
+        font-size: 1.1rem;
+        border-radius: 20px;
+        background: var(--general-section-1, #f2f4f7);
+    }
+    &--menu button.auto-trading__toggle--on {
+        background: var(--brand-red-coral, #ff444f);
+        border-color: transparent;
+        color: #fff;
+    }
+    &__number {
+        display: flex;
+        align-items: stretch;
+        border: 1px solid var(--border-normal, #d7dce1);
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    &__number:focus-within {
+        outline: 2px solid var(--brand-red-coral, #ff444f);
+        outline-offset: 2px;
+    }
+    &--menu .auto-trading__number button {
+        width: 42px;
+        min-width: 42px;
+        border: 0;
+        border-radius: 0;
+        font-size: 1.8rem;
+        background: var(--general-section-1, #f5f6f8);
+        padding: 4px;
+    }
+    &--menu .auto-trading__number input {
+        appearance: textfield;
+        border: 0;
+        border-radius: 0;
+        text-align: center;
+        min-width: 0;
+        width: 100%;
+    }
+    &__number input::-webkit-inner-spin-button,
+    &__number input::-webkit-outer-spin-button {
+        appearance: none;
+        margin: 0;
+    }
+    &--menu .auto-trading__number :is(button, input):focus-visible {
+        outline: none;
+    }
+    &__number input:disabled {
+        opacity: 0.55;
+    }
+}

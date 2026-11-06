@@ -25,6 +25,10 @@ import {
     Run,
     Strategy,
     validateRunParameters,
+    validateEnabledLimits,
+    isSharedStakeParameter,
+    numericStep,
+    stepNumber,
 } from './automation';
 import './auto-trading.scss';
 
@@ -135,6 +139,92 @@ const RunDetails = ({
     );
 };
 
+const NumberInput = ({
+    id,
+    name,
+    definition,
+    value,
+    disabled,
+    onChange,
+}: {
+    id: string;
+    name: string;
+    definition: ParameterSchema;
+    value: string;
+    disabled: boolean;
+    onChange: (value: string) => void;
+}) => {
+    const input = React.useRef<HTMLInputElement>(null);
+    const step = numericStep(name, definition);
+    const lower = Math.max(
+        definition.minimum ?? -Infinity,
+        definition.exclusiveMinimum === undefined ? -Infinity : definition.exclusiveMinimum + step,
+        ['take_profit', 'stop_loss', 'max_stake'].includes(name) ? step : name === 'multiplier' ? 1 : -Infinity
+    );
+    const upper = Math.min(
+        definition.maximum ?? Infinity,
+        definition.exclusiveMaximum === undefined ? Infinity : definition.exclusiveMaximum - step
+    );
+    const minimum = Number.isFinite(lower) ? lower : undefined;
+    const maximum = Number.isFinite(upper) ? upper : undefined;
+    const move = React.useCallback(
+        (direction: number) => onChange(stepNumber(value, direction, step, minimum, maximum)),
+        [value, step, minimum, maximum, onChange]
+    );
+    React.useEffect(() => {
+        const element = input.current;
+        if (!element) return;
+        const wheel = (event: WheelEvent) => {
+            if (disabled || document.activeElement !== element || !event.deltaY) return;
+            event.preventDefault();
+            move(event.deltaY < 0 ? 1 : -1);
+        };
+        element.addEventListener('wheel', wheel, { passive: false });
+        return () => element.removeEventListener('wheel', wheel);
+    }, [disabled, move]);
+    const label = definition.title ?? riskFieldInfo(name).label;
+    return (
+        <div className='auto-trading__number'>
+            <button
+                type='button'
+                aria-label={localize('Decrease') + ' ' + localize(label).toLowerCase()}
+                disabled={disabled || (!!value && minimum !== undefined && Number(value) <= minimum)}
+                onClick={() => move(-1)}
+            >
+                −
+            </button>
+            <input
+                ref={input}
+                id={id}
+                type='number'
+                inputMode={definition.type === 'integer' ? 'numeric' : 'decimal'}
+                step={step}
+                min={minimum}
+                max={maximum}
+                value={value}
+                disabled={disabled}
+                aria-describedby={id + '-hint'}
+                placeholder={localize('Enter value')}
+                onChange={(event) => onChange(event.target.value)}
+                onKeyDown={(event) => {
+                    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+                        event.preventDefault();
+                        move(event.key === 'ArrowUp' ? 1 : -1);
+                    }
+                }}
+            />
+            <button
+                type='button'
+                aria-label={localize('Increase') + ' ' + localize(label).toLowerCase()}
+                disabled={disabled || (!!value && maximum !== undefined && Number(value) >= maximum)}
+                onClick={() => move(1)}
+            >
+                +
+            </button>
+        </div>
+    );
+};
+
 const ParameterField = ({
     name,
     definition,
@@ -145,25 +235,58 @@ const ParameterField = ({
 }: {
     name: string;
     definition: ParameterSchema;
-    value: string;
+    value?: string;
     required: boolean;
     disabled: boolean;
-    onChange: (value: string) => void;
+    onChange: (value: string | undefined) => void;
 }) => {
     const id = React.useId();
-    const label = definition.title ?? riskFieldInfo(name).label;
+    const is_limit = name === 'take_profit' || name === 'stop_loss';
     const is_stakes = name === 'stake_list' || name === 'stakes';
+    const is_numeric = ['number', 'integer'].includes(definition.type ?? '');
+    const label = is_stakes ? localize('Recovery stakes') : (definition.title ?? riskFieldInfo(name).label);
+    const enabled = !is_limit || value !== undefined;
+    const field_disabled = disabled || !enabled;
     return (
         <div className='auto-trading__field'>
-            <label htmlFor={id}>
-                {localize(label)}
-                {required ? ' *' : ''}
-            </label>
-            {definition.enum || definition.type === 'boolean' ? (
+            <div className='auto-trading__field-heading'>
+                <label htmlFor={id}>
+                    {localize(label)}
+                    {required && !is_limit && !is_stakes ? ' *' : ''}
+                </label>
+                {is_limit && (
+                    <>
+                        <small className='auto-trading__optional'>{localize('Optional')}</small>
+                        <button
+                            type='button'
+                            role='switch'
+                            aria-checked={enabled}
+                            aria-label={
+                                name === 'take_profit' ? localize('Enable take profit') : localize('Enable stop loss')
+                            }
+                            disabled={disabled}
+                            className={'auto-trading__toggle' + (enabled ? ' auto-trading__toggle--on' : '')}
+                            onClick={() => onChange(enabled ? undefined : '')}
+                        >
+                            <span aria-hidden='true'>{enabled ? localize('On') : localize('Off')}</span>
+                        </button>
+                    </>
+                )}
+            </div>
+            {is_numeric && !definition.enum ? (
+                <NumberInput
+                    id={id}
+                    name={name}
+                    definition={definition}
+                    value={value ?? ''}
+                    disabled={field_disabled}
+                    onChange={onChange}
+                />
+            ) : definition.enum || definition.type === 'boolean' ? (
                 <select
                     id={id}
-                    value={value}
-                    disabled={disabled}
+                    value={value ?? ''}
+                    disabled={field_disabled}
                     aria-describedby={id + '-hint'}
                     onChange={(e) => onChange(e.target.value)}
                 >
@@ -177,34 +300,35 @@ const ParameterField = ({
             ) : is_stakes || definition.type === 'object' || definition.type === 'array' || !definition.type ? (
                 <textarea
                     id={id}
-                    value={value}
-                    disabled={disabled}
+                    value={value ?? ''}
+                    disabled={field_disabled}
                     aria-describedby={id + '-hint'}
-                    placeholder={is_stakes ? localize('Amounts separated by commas') : undefined}
+                    placeholder={is_stakes ? localize('Later stakes, separated by commas') : undefined}
                     onChange={(e) => onChange(e.target.value)}
                 />
             ) : (
                 <input
                     id={id}
-                    type={['number', 'integer'].includes(definition.type) ? 'number' : 'text'}
-                    onWheel={event => event.currentTarget.blur()}
-                    step={definition.type === 'integer' ? 1 : 'any'}
-                    min={definition.minimum}
-                    max={definition.maximum}
-                    value={value}
-                    disabled={disabled}
+                    type='text'
+                    value={value ?? ''}
+                    disabled={field_disabled}
                     aria-describedby={id + '-hint'}
-                    placeholder={!required ? localize('Not set') : undefined}
                     onChange={(e) => onChange(e.target.value)}
                 />
             )}
             <small id={id + '-hint'}>
-                {definition.description ??
-                    (is_stakes
-                        ? localize('The first amount must match your stake in the trading form.')
-                        : !required
-                          ? localize('Optional')
-                          : '')}
+                {is_limit && !enabled
+                    ? localize('Off — no run limit set.')
+                    : is_stakes
+                      ? localize(
+                            'The initial stake comes from Manual automatically. Enter only the later recovery stakes.'
+                        )
+                      : (definition.description ??
+                        (name === 'max_stake'
+                            ? localize('Caps later stakes; the initial stake is taken from Manual.')
+                            : !required
+                              ? localize('Optional')
+                              : ''))}
             </small>
         </div>
     );
@@ -282,6 +406,11 @@ const AutoTrading = observer(
         React.useEffect(() => {
             const defaults: Record<string, string> = {};
             for (const [key, definition] of Object.entries(schema?.properties ?? {})) {
+                if (key === 'take_profit' || key === 'stop_loss' || isSharedStakeParameter(key)) continue;
+                if ((key === 'stake_list' || key === 'stakes') && Array.isArray(definition.default)) {
+                    defaults[key] = JSON.stringify(definition.default.slice(1));
+                    continue;
+                }
                 if (definition.default !== undefined)
                     defaults[key] =
                         definition.type === 'string' && !definition.enum
@@ -325,7 +454,8 @@ const AutoTrading = observer(
         let parameters_error = '';
         if (strategy && template) {
             try {
-                parameters = parseParameters(strategy, getMethodValues(strategy, values, fixed_stake));
+                validateEnabledLimits(values);
+                parameters = parseParameters(strategy, getMethodValues(strategy, values, fixed_stake), template);
                 validateRunParameters(strategy, template, parameters);
             } catch (error) {
                 parameters = undefined;
@@ -362,7 +492,7 @@ const AutoTrading = observer(
                 setFormError(messageOf(error));
             }
         };
-        const fields = Object.entries(schema?.properties ?? {});
+        const fields = Object.entries(schema?.properties ?? {}).filter(([key]) => !isSharedStakeParameter(key));
         const has_recovery = !fixed_stake && fields.some(([key]) => riskFieldInfo(key).group === 'recovery');
         const has_cooldown = fields.some(([key]) => riskFieldInfo(key).group === 'cooldown');
         const renderFields = (group: string) =>
@@ -373,10 +503,17 @@ const AutoTrading = observer(
                         key={strategy?.strategy_id + key}
                         name={key}
                         definition={definition}
-                        value={values[key] ?? ''}
+                        value={values[key]}
                         required={schema?.required?.includes(key) ?? false}
                         disabled={state.busy}
-                        onChange={(value) => setValues((previous) => ({ ...previous, [key]: value }))}
+                        onChange={(value) =>
+                            setValues((previous) => {
+                                const next = { ...previous };
+                                if (value === undefined) delete next[key];
+                                else next[key] = value;
+                                return next;
+                            })
+                        }
                     />
                 ));
         const errors = (
@@ -399,8 +536,8 @@ const AutoTrading = observer(
             <dialog
                 ref={dialog}
                 className='auto-trading-menu'
-                onTouchStart={event => event.stopPropagation()}
-                onTouchEnd={event => event.stopPropagation()}
+                onTouchStart={(event) => event.stopPropagation()}
+                onTouchEnd={(event) => event.stopPropagation()}
                 aria-labelledby={title_id}
                 onClose={() => setMenuOpen(false)}
                 onClick={(event) => {
@@ -518,7 +655,7 @@ const AutoTrading = observer(
                                     <div className='auto-trading__fields'>{renderFields('protection')}</div>
                                     <small>
                                         {localize(
-                                            'Leave optional limits empty to turn them off. A limit can be exceeded by an open trade before it settles.'
+                                            'Switch take profit or stop loss off to leave that limit unset. A limit can be exceeded by an open trade before it settles.'
                                         )}
                                     </small>
                                 </section>
@@ -613,12 +750,7 @@ const AutoTrading = observer(
                     <button
                         type='button'
                         aria-pressed={mode === 'automatic'}
-                        aria-haspopup='dialog'
-                        aria-expanded={menu_open}
-                        onClick={() => {
-                            setMode('automatic');
-                            setMenuOpen(true);
-                        }}
+                        onClick={() => setMode('automatic')}
                     >
                         {localize('Automatic')}
                     </button>
