@@ -81,6 +81,149 @@ export const getParameterSchema = (strategy: Strategy): ParameterSchema => {
         ? schema
         : { type: 'object', properties: strategy.parameters as Record<string, ParameterSchema> };
 };
+// Run limits are documented common strategy parameters. A closed advertised schema wins.
+export const getRunParameterSchema = (strategy: Strategy): ParameterSchema => {
+    const schema = getParameterSchema(strategy);
+    const common: Record<string, ParameterSchema> =
+        schema.additionalProperties === false
+            ? {}
+            : {
+                  take_profit: {
+                      type: 'number',
+                      title: 'Take profit',
+                      exclusiveMinimum: 0,
+                      description: 'Stop the run after reaching this profit in your account currency.',
+                  },
+                  stop_loss: {
+                      type: 'number',
+                      title: 'Stop loss',
+                      exclusiveMinimum: 0,
+                      description: 'Stop the run after reaching this loss in your account currency.',
+                  },
+              };
+    return { ...schema, properties: { ...common, ...schema.properties } };
+};
+export const getSharedContractType = (available: string[], selected: string): string =>
+    available.includes(selected) ? selected : available.length === 1 ? available[0] : '';
+
+export const riskFieldInfo = (
+    key: string
+): { label: string; group: 'protection' | 'recovery' | 'cooldown' | 'advanced' } => {
+    const fields: Record<string, { label: string; group: 'protection' | 'recovery' | 'cooldown' }> = {
+        take_profit: { label: 'Take profit', group: 'protection' },
+        stop_loss: { label: 'Stop loss', group: 'protection' },
+        max_stake: { label: 'Maximum stake', group: 'protection' },
+        max_trades: { label: 'Maximum trades', group: 'protection' },
+        max_rounds: { label: 'Maximum rounds', group: 'protection' },
+        multiplier: { label: 'Martingale multiplier', group: 'recovery' },
+        max_martingale_level: { label: 'Maximum martingale levels', group: 'recovery' },
+        max_martingale_levels: { label: 'Maximum martingale levels', group: 'recovery' },
+        max_levels: { label: 'Maximum recovery levels', group: 'recovery' },
+        max_recovery_levels: { label: 'Maximum recovery levels', group: 'recovery' },
+        stop_after_max_martingale: { label: 'Stop after maximum martingale level', group: 'recovery' },
+        stop_after_max_martingale_level: { label: 'Stop after maximum martingale level', group: 'recovery' },
+        stop_after_max_level: { label: 'Stop after maximum recovery level', group: 'recovery' },
+        stop_after_max_recovery_levels: { label: 'Stop after maximum recovery level', group: 'recovery' },
+        martingale_after: { label: 'Start martingale after this many losses', group: 'recovery' },
+        start_after_losses: { label: 'Start martingale after this many losses', group: 'recovery' },
+        do_martingale_after: { label: 'Start martingale after this many losses', group: 'recovery' },
+        stake_list: { label: 'Stake list', group: 'recovery' },
+        stakes: { label: 'Stake list', group: 'recovery' },
+        stop_after_stake_list: { label: 'Stop at the end of the stake list', group: 'recovery' },
+        stop_after_max_stake_list: { label: 'Stop at the end of the stake list', group: 'recovery' },
+        target_profit: { label: 'Profit per winning trade', group: 'recovery' },
+        profit_per_trade: { label: 'Profit per winning trade', group: 'recovery' },
+        cooldown_trigger: { label: 'Cooldown after a streak', group: 'cooldown' },
+        cooldown_after: { label: 'Streak length', group: 'cooldown' },
+        cooldown_duration: { label: 'Cooldown duration', group: 'cooldown' },
+        cooldown_seconds: { label: 'Cooldown in seconds', group: 'cooldown' },
+        cooldown_after_losses: { label: 'Cooldown after consecutive losses', group: 'cooldown' },
+        cooldown_after_wins: { label: 'Cooldown after consecutive wins', group: 'cooldown' },
+    };
+    return (
+        fields[key] ?? {
+            label: key.replace(/_/g, ' ').replace(/^./, (value) => value.toUpperCase()),
+            group: 'advanced',
+        }
+    );
+};
+export const isFixedStakeStrategy = (strategy: Strategy): boolean =>
+    ['fixed', 'fixedstake', 'flat', 'flatstake', 'constant', 'constantstake'].includes(
+        strategy.strategy_id.toLowerCase().replace(/[^a-z0-9]/g, '')
+    );
+export const supportsFixedMultiplier = (strategy: Strategy): boolean => {
+    if (!/martingale/i.test(strategy.strategy_id)) return false;
+    const schema = getRunParameterSchema(strategy);
+    const multiplier = schema.properties?.multiplier;
+    if (!multiplier || !['number', 'integer'].includes(multiplier.type ?? '')) return false;
+    if ((schema.required ?? []).some((key) => key !== 'multiplier' && riskFieldInfo(key).group === 'recovery'))
+        return false;
+    try {
+        validateParameter(1, multiplier);
+        return true;
+    } catch {
+        return false;
+    }
+};
+export const getFixedStakeStrategy = (strategies: Strategy[]): Strategy | undefined =>
+    strategies.find(isFixedStakeStrategy) ?? strategies.find(supportsFixedMultiplier);
+export const getMethodValues = (
+    strategy: Strategy,
+    values: Record<string, string>,
+    fixed: boolean
+): Record<string, string> => {
+    if (!fixed || isFixedStakeStrategy(strategy)) return values;
+    if (!supportsFixedMultiplier(strategy)) throw new Error('Fixed stake is not available with this strategy.');
+    return {
+        ...Object.fromEntries(Object.entries(values).filter(([key]) => riskFieldInfo(key).group !== 'recovery')),
+        multiplier: '1',
+    };
+};
+export const validateRunParameters = (
+    strategy: Strategy,
+    template: ContractTemplate,
+    parameters: Record<string, unknown>
+) => {
+    validateParameter(parameters, getRunParameterSchema(strategy));
+    for (const key of ['take_profit', 'stop_loss', 'max_stake']) {
+        const value = parameters[key];
+        if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value <= 0))
+            throw new Error(riskFieldInfo(key).label + ' must be greater than zero.');
+    }
+    if (
+        template.basis === 'stake' &&
+        typeof parameters.max_stake === 'number' &&
+        template.amount !== undefined &&
+        parameters.max_stake < template.amount
+    )
+        throw new Error('Maximum stake must cover the initial stake in the trading form.');
+    if (
+        /martingale/i.test(strategy.strategy_id) &&
+        parameters.multiplier !== undefined &&
+        (typeof parameters.multiplier !== 'number' ||
+            parameters.multiplier < 1 ||
+            (parameters.multiplier === 1 && !supportsFixedMultiplier(strategy)))
+    )
+        throw new Error('Use 1 for fixed stake, or a multiplier greater than 1 for martingale.');
+    for (const key of ['stake_list', 'stakes']) {
+        const list = parameters[key];
+        if (list !== undefined) {
+            if (
+                !Array.isArray(list) ||
+                !list.length ||
+                list.some((value) => typeof value !== 'number' || !Number.isFinite(value) || value <= 0)
+            )
+                throw new Error('Enter positive amounts in the stake list.');
+            if (template.basis === 'stake' && list[0] !== template.amount)
+                throw new Error('The first stake in the list must match the stake in the trading form.');
+            if (
+                typeof parameters.max_stake === 'number' &&
+                list.some((value) => value > (parameters.max_stake as number))
+            )
+                throw new Error('The stake list exceeds the maximum stake.');
+        }
+    }
+};
 export const validateParameter = (value: unknown, schema: ParameterSchema, path = 'Parameters'): void => {
     const fail = (reason: string): never => {
         throw new Error(path + ': ' + reason);
@@ -119,18 +262,28 @@ export const validateParameter = (value: unknown, schema: ParameterSchema, path 
         if (!Array.isArray(value)) fail('enter an array');
         if (schema.items)
             (value as unknown[]).forEach((item, index) =>
-                validateParameter(item, schema.items!, path + '[' + index + ']'),
+                validateParameter(item, schema.items!, path + '[' + index + ']')
             );
     }
 };
 export const parseParameters = (strategy: Strategy, values: Record<string, string>) => {
-    const schema = getParameterSchema(strategy);
+    const schema = getRunParameterSchema(strategy);
     const parameters: Record<string, unknown> = {};
     for (const [key, definition] of Object.entries(schema.properties ?? {})) {
         const text = values[key];
         if (text === undefined || text.trim() === '') continue;
         try {
-            parameters[key] = definition.type === 'string' && !definition.enum ? text : JSON.parse(text);
+            parameters[key] =
+                definition.type === 'array' &&
+                (key === 'stake_list' || key === 'stakes') &&
+                !text.trim().startsWith('[')
+                    ? text
+                          .trim()
+                          .split(/[,\s]+/)
+                          .map(Number)
+                    : definition.type === 'string' && !definition.enum
+                      ? text
+                      : JSON.parse(text);
         } catch {
             throw new Error(key + ': enter a valid ' + (definition.type ?? 'JSON value'));
         }
@@ -144,7 +297,7 @@ export const buildTemplate = (proposal: Record<string, unknown>): ContractTempla
     for (const field of ['date_expiry', 'date_start', 'cancellation', 'payout_per_point']) {
         if (proposal[field] !== undefined && proposal[field] !== null && proposal[field] !== '') {
             throw new Error(
-                'Automatic trading does not support ' + field.replace(/_/g, ' ') + '. Change the contract settings.',
+                'Automatic trading does not support ' + field.replace(/_/g, ' ') + '. Change the contract settings.'
             );
         }
     }
@@ -244,9 +397,9 @@ export class AutomationController {
                     timer = setTimeout(
                         () =>
                             reject(
-                                new Error('Request timed out. Refresh runs to check the server before trying again.'),
+                                new Error('Request timed out. Refresh runs to check the server before trying again.')
                             ),
-                        15000,
+                        15000
                     );
                 }),
             ]);
@@ -319,7 +472,7 @@ export class AutomationController {
             throw new Error('Refresh runs and stop any active run before starting another.');
         if (!strategy.supported_contract_types.includes(contract_template.contract_type))
             throw new Error('Strategy does not support this contract.');
-        validateParameter(strategy_parameters, getParameterSchema(strategy));
+        validateRunParameters(strategy, contract_template, strategy_parameters);
         if (!/^\w{1,64}$/.test(strategy.strategy_id)) throw new Error('Invalid strategy identifier.');
         return this.command('auto_start', {
             strategy_id: strategy.strategy_id,

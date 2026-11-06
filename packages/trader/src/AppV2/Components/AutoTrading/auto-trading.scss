@@ -1,7 +1,7 @@
 .auto-trading {
     width: 100%;
     min-width: 0;
-    color: var(--text-general);
+    color: var(--text-general, #222);
     font-size: 1.3rem;
     line-height: 1.5;
 
@@ -16,72 +16,204 @@
     }
     &__modes button[aria-pressed='true'] {
         border-color: var(--brand-red-coral, #ff444f);
-        font-weight: bold;
-    }
-    &__panel {
-        display: grid;
-        gap: 12px;
-        max-height: 60vh;
-        overflow-y: auto;
-        padding: 8px 4px;
-        overscroll-behavior: contain;
-    }
-    p {
-        margin: 0;
-    }
-    label {
-        display: grid;
-        gap: 4px;
+        background: var(--general-section-1, #f5f6f7);
+        font-weight: 700;
     }
     &__modes button,
-    &__panel button,
-    &__panel input,
-    &__panel select,
-    &__panel textarea {
+    &__compact button,
+    &--menu button,
+    &--menu input,
+    &--menu select,
+    &--menu textarea {
+        box-sizing: border-box;
         font: inherit;
         color: inherit;
         background: var(--general-main-1, #fff);
-        border: 1px solid var(--border-normal, #999);
-        border-radius: 6px;
-        padding: 8px;
-        min-height: 40px;
+        border: 1px solid var(--border-normal, #d7dce1);
+        border-radius: 8px;
+        padding: 10px 12px;
+        min-height: 42px;
         min-width: 0;
         max-width: 100%;
     }
     &__modes button,
-    &__panel button {
+    &__compact button,
+    &--menu button {
         cursor: pointer;
     }
     &__modes button:disabled,
-    &__panel button:disabled {
+    &__compact button:disabled,
+    &--menu button:disabled {
         opacity: 0.5;
         cursor: default;
     }
     &__modes button:focus-visible,
-    &__panel button:focus-visible,
-    &__panel input:focus-visible,
-    &__panel select:focus-visible,
-    &__panel textarea:focus-visible,
-    &__panel summary:focus-visible {
+    &__compact button:focus-visible,
+    &--menu :is(button, input, select, textarea, summary):focus-visible {
         outline: 2px solid var(--brand-red-coral, #ff444f);
-        outline-offset: 2px;
+        outline-offset: 3px;
     }
-    &__start {
+    &__compact {
+        display: grid;
+        gap: 8px;
+        padding-top: 4px;
+    }
+    &__compact p,
+    &--menu p {
+        margin: 0;
+    }
+    &__compact small,
+    &--menu small {
+        color: var(--text-less-prominent, #666);
+    }
+    &__settings {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        width: 100%;
+        font-weight: 600 !important;
+    }
+    &__start,
+    &__done {
+        width: 100%;
         background: var(--brand-red-coral, #ff444f) !important;
         color: #fff !important;
+        border-color: transparent !important;
+        font-weight: 600 !important;
     }
     &__stop {
         border-color: var(--brand-red-coral, #ff444f) !important;
     }
     &__error {
-        color: var(--text-loss-danger, #c62828);
+        color: var(--text-loss-danger, #b52432);
         overflow-wrap: anywhere;
+    }
+    &__notice {
+        font-size: 1.2rem;
+        color: var(--text-less-prominent, #666);
+        padding: 8px 0;
+    }
+    &__active {
+        border-top: 1px solid var(--border-normal, #d7dce1);
+        padding-top: 8px;
+    }
+    &__active button {
+        flex: 1;
+    }
+    &--menu {
+        height: 100%;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr) auto;
+    }
+    &__menu-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 22px 24px;
+        border-bottom: 1px solid var(--border-normal, #e4e7eb);
+    }
+    &__menu-header small {
+        letter-spacing: 0.12em;
+        font-size: 1rem;
+        font-weight: 600;
+    }
+    &__menu-header h2 {
+        font-size: 2rem;
+        line-height: 1.25;
+        margin: 4px 0 0;
+        color: var(--text-prominent, #171b24);
+    }
+    &__close {
+        flex-shrink: 0;
+        font-size: 2.2rem !important;
+        padding: 0 !important;
+        width: 42px;
+        height: 42px;
+    }
+    &__menu-body {
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        padding: 20px 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+    }
+    &__menu-footer {
+        display: grid;
+        gap: 8px;
+        text-align: center;
+        padding: 16px 24px max(16px, env(safe-area-inset-bottom));
+        border-top: 1px solid var(--border-normal, #e4e7eb);
+    }
+    &__card {
+        border: 1px solid var(--border-normal, #e4e7eb);
+        border-radius: 12px;
+        padding: 16px;
+        display: grid;
+        gap: 12px;
+    }
+    &__card h3 {
+        font-size: 1.4rem;
+        font-weight: 700;
+        margin: 0;
+    }
+    &__shared {
+        margin: 0;
+        display: grid;
+        gap: 8px;
+        padding-top: 4px;
+    }
+    &__shared > div {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 16px;
+    }
+    &__shared dt {
+        color: var(--text-less-prominent, #666);
+    }
+    &__shared dd {
+        margin: 0;
+        font-weight: 600;
+        text-align: end;
+    }
+    &__fields {
+        display: grid;
+        gap: 16px;
+    }
+    &__field {
+        display: grid;
+        gap: 6px;
+    }
+    &__field label {
+        font-weight: 500;
+    }
+    &__field :is(input, select, textarea) {
+        width: 100%;
+    }
+    &__field textarea {
+        min-height: 80px;
+        resize: vertical;
+    }
+    &__text-button {
+        border: 0 !important;
+        padding: 0 !important;
+        min-height: 32px !important;
+        text-align: start;
+        text-decoration: underline;
+    }
+    &__account {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        font-size: 1.2rem;
     }
     &__run {
         display: grid;
         gap: 8px;
         padding-top: 12px;
-        border-top: 1px solid var(--border-normal, #999);
     }
     &__table {
         overflow-x: auto;
@@ -94,7 +226,7 @@
     th,
     td {
         padding: 6px;
-        border-bottom: 1px solid var(--border-normal, #999);
+        border-bottom: 1px solid var(--border-normal, #e4e7eb);
     }
     pre {
         white-space: pre-wrap;
@@ -103,10 +235,59 @@
     }
     summary {
         cursor: pointer;
+        font-weight: 600;
     }
 }
-
-// The contract parameters and run history must remain reachable on shorter viewports.
+.auto-trading-menu {
+    box-sizing: border-box;
+    position: fixed;
+    inset: 0 0 0 auto;
+    margin: 0;
+    padding: 0;
+    width: 440px;
+    max-width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    border: 0;
+    background: var(--general-main-1, #fff);
+    color: var(--text-general, #222);
+    box-shadow: -12px 0 40px #0002;
+    &::backdrop {
+        background: #07142580;
+    }
+    &[open] {
+        animation: auto-settings-enter 0.18s ease-out;
+    }
+}
+@keyframes auto-settings-enter {
+    from {
+        transform: translateX(24px);
+        opacity: 0.4;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+@media (prefers-reduced-motion: reduce) {
+    .auto-trading-menu[open] {
+        animation: none;
+    }
+}
+@media (max-width: 480px) {
+    .auto-trading-menu {
+        width: 100vw;
+    }
+    .auto-trading__menu-header {
+        padding: 16px;
+    }
+    .auto-trading__menu-body {
+        padding: 16px;
+    }
+    .auto-trading__menu-footer {
+        padding-inline: 16px;
+    }
+}
 .trade__grid > .trade-params:has(.auto-trading) {
     min-height: 0;
     overflow-y: auto;

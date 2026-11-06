@@ -93,7 +93,7 @@ test('accumulator growth and multiplier limits are preserved', () => {
     assert.equal(
         buildTemplate({ ...proposal, contract_type: 'ACCU', growth_rate: 0.03, limit_order: { take_profit: 5 } })
             .growth_rate,
-        0.03,
+        0.03
     );
     assert.deepEqual(
         buildTemplate({
@@ -102,7 +102,7 @@ test('accumulator growth and multiplier limits are preserved', () => {
             multiplier: 100,
             limit_order: { take_profit: 10, stop_loss: 5 },
         }).limit_order,
-        { take_profit: 10, stop_loss: 5 },
+        { take_profit: 10, stop_loss: 5 }
     );
 });
 for (const field of ['date_expiry', 'date_start', 'cancellation', 'payout_per_point'])
@@ -149,7 +149,7 @@ test('nested object, array, strings and enums validate', () => {
                 label: { type: 'string', pattern: '^ok$' },
                 flag: { enum: [true, false] },
             },
-        },
+        }
     );
     assert.throws(() => validateParameter(['x'], { type: 'array', items: { type: 'number' } }));
     assert.throws(() => validateParameter('no', { type: 'string', enum: ['yes'] }));
@@ -188,7 +188,7 @@ test('active runs and unsupported contracts prevent another start', async () => 
     await controller.refresh();
     await assert.rejects(
         controller.start(strategy, { ...template, contract_type: 'DIGITMATCH' }, { multiplier: 2 }),
-        /does not support/,
+        /does not support/
     );
     await controller.start(strategy, template, { multiplier: 2 });
     await assert.rejects(controller.start(strategy, template, { multiplier: 2 }), /active run/);
@@ -226,7 +226,7 @@ test('API error locks start until reconciliation and does not retry command', as
 test('malformed response cannot enable starting or crash refresh', async () => {
     const controller = new AutomationController(
         async () => ({}),
-        () => {},
+        () => {}
     );
     await controller.refresh();
     assert.equal(controller.state.ready, false);
@@ -262,7 +262,7 @@ test('poll requests auto_get and never retries auto_start', async () => {
                           },
                       ],
                   },
-              },
+              }
     );
     await controller.refresh();
     await controller.start(strategy, template, { multiplier: 2 });
@@ -276,7 +276,7 @@ test('poll requests auto_get and never retries auto_start', async () => {
             if (request.auto_list) return { auto_list: { runs: original } };
             return { auto_get: { ...run, total_stake: 10, total_payout: 18 } };
         },
-        () => {},
+        () => {}
     );
     await monitoring.refresh();
     await monitoring.poll();
@@ -295,7 +295,7 @@ test('a stale poll cannot overwrite a newer pause response', async () => {
             if (request.auto_pause) return { auto_pause: { ...run, status: 'paused' } };
             return {};
         },
-        () => {},
+        () => {}
     );
     await controller.refresh();
     delay = true;
@@ -330,14 +330,14 @@ test('reconnect/reload restores a server run without starting another', async ()
                 ? { auto_list: { runs: [{ ...run, status: 'paused' }] } }
                 : { auto_list_strategies: { strategies: [strategy] } };
         },
-        () => {},
+        () => {}
     );
     await controller.refresh();
     assert.equal(controller.state.selected_id, run.run_id);
     assert.equal(controller.state.runs[0].status, 'paused');
     assert.equal(
         requests.some((request) => request.auto_start),
-        false,
+        false
     );
 });
 test('a failed monitoring read disables new starts until refreshed', async () => {
@@ -349,7 +349,7 @@ test('a failed monitoring read disables new starts until refreshed', async () =>
                 ? { auto_list: { runs: [] } }
                 : { auto_list_strategies: { strategies: [strategy] } };
         },
-        () => {},
+        () => {}
     );
     await controller.refresh();
     broken = true;
@@ -359,4 +359,104 @@ test('a failed monitoring read disables new starts until refreshed', async () =>
     broken = false;
     await controller.refresh();
     assert.equal(controller.state.ready, true);
+});
+
+const { getRunParameterSchema, getSharedContractType, validateRunParameters, riskFieldInfo } =
+    await import('../src/AppV2/Components/AutoTrading/automation.ts');
+test('documented run limits augment an open strategy schema', () => {
+    const open = { ...strategy, parameters: { multiplier: { type: 'number' }, max_stake: { type: 'number' } } };
+    assert.deepEqual(parseParameters(open, { multiplier: '2', take_profit: '20', stop_loss: '10' }), {
+        multiplier: 2,
+        take_profit: 20,
+        stop_loss: 10,
+    });
+    validateRunParameters(open, template, { multiplier: 2, take_profit: 20, stop_loss: 10 });
+});
+test('closed advertised schemas do not gain unsupported risk fields', () => {
+    assert.equal(getRunParameterSchema(strategy).properties.take_profit, undefined);
+    assert.throws(
+        () => validateRunParameters(strategy, template, { multiplier: 2, take_profit: 20 }),
+        /unknown parameter/
+    );
+});
+test('zero and negative run protection values are rejected; blanks are off', () => {
+    const open = { ...strategy, parameters: { multiplier: { type: 'number' } } };
+    assert.throws(() => parseParameters(open, { take_profit: '0' }));
+    assert.throws(() => parseParameters(open, { stop_loss: '-1' }));
+    assert.deepEqual(parseParameters(open, { take_profit: '', stop_loss: '' }), {});
+});
+test('maximum stake cannot be smaller than the shared initial stake', () => {
+    assert.throws(() => validateRunParameters(strategy, template, { multiplier: 2, max_stake: 5 }), /initial stake/);
+    assert.doesNotThrow(() => validateRunParameters(strategy, template, { multiplier: 2, max_stake: 10 }));
+});
+test('1x keeps stakes fixed while values below 1 are rejected', () => {
+    assert.doesNotThrow(() => validateRunParameters(strategy, template, { multiplier: 1 }));
+    assert.throws(() => validateRunParameters(strategy, template, { multiplier: 0.5 }));
+});
+test('only the selected shared direction is used; ambiguous directions are not guessed', () => {
+    assert.equal(getSharedContractType(['CALL', 'PUT'], 'PUT'), 'PUT');
+    assert.equal(getSharedContractType(['CALL', 'PUT'], ''), '');
+    assert.equal(getSharedContractType(['ACCU'], ''), 'ACCU');
+    assert.equal(getSharedContractType([], 'CALL'), '');
+});
+test('stake lists accept comma-separated amounts and preserve the manual initial stake', () => {
+    const listStrategy = {
+        ...strategy,
+        strategy_id: 'stake_list',
+        parameters: { stake_list: { type: 'array', items: { type: 'number' } }, max_stake: { type: 'number' } },
+    };
+    const parameters = parseParameters(listStrategy, { stake_list: '10, 20, 40', max_stake: '40' });
+    assert.deepEqual(parameters.stake_list, [10, 20, 40]);
+    assert.doesNotThrow(() => validateRunParameters(listStrategy, template, parameters));
+    assert.throws(() => validateRunParameters(listStrategy, template, { stake_list: [5, 20] }), /first stake/);
+    assert.throws(
+        () => validateRunParameters(listStrategy, template, { stake_list: [10, 50], max_stake: 40 }),
+        /maximum stake/
+    );
+    assert.throws(() => validateRunParameters(listStrategy, template, { stake_list: [10, 0] }), /positive amounts/);
+});
+test('cooldown and recovery settings are grouped without inventing request keys', () => {
+    assert.equal(riskFieldInfo('cooldown_after_losses').group, 'cooldown');
+    assert.equal(riskFieldInfo('stop_after_max_martingale_level').group, 'recovery');
+    assert.equal(riskFieldInfo('unadvertised_custom_parameter').group, 'advanced');
+});
+test('starting sends shared template and run protection together', async () => {
+    const open = { ...strategy, parameters: { multiplier: { type: 'number' } } };
+    const { controller, requests } = setup(() => ({ auto_start: run }));
+    await controller.refresh();
+    await controller.start(open, template, { multiplier: 2, take_profit: 30, stop_loss: 20 });
+    assert.deepEqual(requests.at(-1).contract_template, template);
+    assert.deepEqual(requests.at(-1).strategy_parameters, { multiplier: 2, take_profit: 30, stop_loss: 20 });
+});
+
+const { getFixedStakeStrategy, getMethodValues, supportsFixedMultiplier } =
+    await import('../src/AppV2/Components/AutoTrading/automation.ts');
+test('fixed stake prefers an actual fixed-stake server strategy', () => {
+    const fixed = { ...strategy, strategy_id: 'fixed_stake', parameters: {} };
+    assert.equal(getFixedStakeStrategy([strategy, fixed]).strategy_id, 'fixed_stake');
+});
+test('no martingale uses exactly 1x and removes hidden recovery settings', () => {
+    const open = { ...strategy, parameters: { multiplier: { type: 'number' }, max_levels: { type: 'integer' } } };
+    assert.deepEqual(
+        getMethodValues(open, { multiplier: '2', max_levels: '3', take_profit: '30', stop_loss: '20' }, true),
+        { multiplier: '1', take_profit: '30', stop_loss: '20' }
+    );
+    validateRunParameters(open, template, { multiplier: 1, take_profit: 30, stop_loss: 20 });
+});
+test('a strategy requiring multiplier greater than one cannot pretend to be fixed stake', () => {
+    const strict = { ...strategy, parameters: { multiplier: { type: 'number', minimum: 1.1 } } };
+    assert.equal(supportsFixedMultiplier(strict), false);
+    assert.equal(getFixedStakeStrategy([strict]), undefined);
+    assert.throws(() => getMethodValues(strict, {}, true), /not available/);
+});
+test('required recovery controls do not disappear behind fixed stake', () => {
+    const strict = {
+        ...strategy,
+        parameters: {
+            type: 'object',
+            required: ['max_levels'],
+            properties: { multiplier: { type: 'number' }, max_levels: { type: 'integer' } },
+        },
+    };
+    assert.equal(supportsFixedMultiplier(strict), false);
 });
