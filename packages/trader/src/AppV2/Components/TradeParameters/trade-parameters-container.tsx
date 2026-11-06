@@ -4,7 +4,7 @@ import { observer } from 'mobx-react-lite';
 
 import { LegacyHandleLessIcon } from '@deriv/quill-icons';
 
-import PurchaseButton from 'AppV2/Components/PurchaseButton';
+import AutoTrading from 'AppV2/Components/AutoTrading/auto-trading';
 import { isSameTradeTypeCategory } from 'AppV2/Utils/trade-types-utils';
 import { useTraderStore } from 'Stores/useTraderStores';
 
@@ -94,7 +94,7 @@ const TradeParametersContainer = ({ is_market_closed }: TTradeParametersContaine
                     })}
                 >
                     <TradeParameters is_minimized={!is_sheet_expanded} />
-                    {!is_market_closed && <PurchaseButton onPurchaseSuccess={handlePurchaseSuccess} />}
+                    <AutoTrading is_market_closed={is_market_closed} onPurchaseSuccess={handlePurchaseSuccess} />
                 </section>
             </div>
         </div>

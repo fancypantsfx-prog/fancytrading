@@ -1,4 +1,21 @@
 import type {
+    TAutoListStrategiesRequest,
+    TAutoListStrategiesResponse,
+    TAutoStartRequest,
+    TAutoStartResponse,
+    TAutoGetRequest,
+    TAutoGetResponse,
+    TAutoListRequest,
+    TAutoListResponse,
+    TAutoPauseRequest,
+    TAutoPauseResponse,
+    TAutoResumeRequest,
+    TAutoResumeResponse,
+    TAutoStopRequest,
+    TAutoStopResponse,
+} from './auto-types';
+
+import type {
     ActiveSymbolsRequest as BaseActiveSymbolsRequest,
     ActiveSymbolsResponse as BaseActiveSymbolsResponse,
     AuthorizeRequest as BaseAuthorizeRequest,
@@ -331,6 +348,34 @@ type TransactionsStreamResponse = Omit<BaseTransactionsStreamResponse, 'transact
 };
 
 type TSocketEndpoints = {
+    auto_list_strategies: {
+        request: TAutoListStrategiesRequest;
+        response: TAutoListStrategiesResponse;
+    };
+    auto_start: {
+        request: TAutoStartRequest;
+        response: TAutoStartResponse;
+    };
+    auto_get: {
+        request: TAutoGetRequest;
+        response: TAutoGetResponse;
+    };
+    auto_list: {
+        request: TAutoListRequest;
+        response: TAutoListResponse;
+    };
+    auto_pause: {
+        request: TAutoPauseRequest;
+        response: TAutoPauseResponse;
+    };
+    auto_resume: {
+        request: TAutoResumeRequest;
+        response: TAutoResumeResponse;
+    };
+    auto_stop: {
+        request: TAutoStopRequest;
+        response: TAutoStopResponse;
+    };
     active_symbols: {
         request: ActiveSymbolsRequest;
         response: ActiveSymbolsResponse;

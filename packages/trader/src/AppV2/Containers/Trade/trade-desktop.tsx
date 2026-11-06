@@ -16,7 +16,7 @@ import OnboardingGuide, {
     OnboardingGuideDesktop,
     OnboardingGuideDesktopReturning,
 } from 'AppV2/Components/OnboardingGuide/GuideForPages';
-import PurchaseButton from 'AppV2/Components/PurchaseButton';
+import AutoTrading from 'AppV2/Components/AutoTrading/auto-trading';
 import TradeErrorSnackbar from 'AppV2/Components/TradeErrorSnackbar';
 import { TradeParameters } from 'AppV2/Components/TradeParameters';
 import TradeParamsFooter from 'AppV2/Components/TradeParamsFooter';
@@ -155,7 +155,7 @@ const TradeDesktop = observer(() => {
                             <Guide show_guide_for_selected_contract />
                             <TradeParameters />
                             <ClosedMarketMessage />
-                            {!is_market_closed && <PurchaseButton />}
+                            <AutoTrading is_market_closed={is_market_closed} />
                             <TradeParamsFooter />
                         </div>
                     </div>

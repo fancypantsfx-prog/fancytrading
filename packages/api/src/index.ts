@@ -62,3 +62,32 @@ export type {
     TDerivativesAccount,
     TDerivativesAccountResponse,
 } from '../types';
+
+// Automation API public types.
+export type {
+    TAutoContractType,
+    TAutoDurationUnit,
+    TAutoContractTemplate,
+    TAutoContractStatus,
+    TAutoContract,
+    TAutoRunStatus,
+    TAutoStopReason,
+    TAutoStrategyParameters,
+    TAutoRun,
+    TAutoStrategyParameterSchema,
+    TAutoStrategy,
+    TAutoListStrategiesRequest,
+    TAutoListStrategiesResponse,
+    TAutoStartRequest,
+    TAutoStartResponse,
+    TAutoGetRequest,
+    TAutoGetResponse,
+    TAutoListRequest,
+    TAutoListResponse,
+    TAutoPauseRequest,
+    TAutoPauseResponse,
+    TAutoResumeRequest,
+    TAutoResumeResponse,
+    TAutoStopRequest,
+    TAutoStopResponse,
+} from '../auto-types';
