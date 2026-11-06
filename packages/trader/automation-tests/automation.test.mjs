@@ -520,3 +520,26 @@ test('numeric adjustment preserves decimals and respects both bounds', () => {
     assert.equal(stepNumber('5', 1, 1, 1, 5), '5');
     assert.equal(stepNumber('', 1, 0.01, 0.01), '0.01');
 });
+
+test('live decimal-string initial_stake inherits Manual as text rather than failing validation', () => {
+    const live = { ...strategy, parameters: { type: 'object', required: ['initial_stake'], properties: { initial_stake: { type: 'string', pattern: '^[0-9]+([.][0-9]+)?$' } } } };
+    const manual = { ...template, amount: 5 };
+    assert.deepEqual(parseParameters(live, {}, manual), { initial_stake: '5' });
+    assert.deepEqual(parseParameters(live, {}, { ...manual, amount: 5.25 }), { initial_stake: '5.25' });
+    assert.equal(manual.amount, 5);
+});
+test('shared stake aliases respect their own string, number or integer types', () => {
+    const mixed = { ...strategy, parameters: { initial_stake: { type: 'string' }, base_stake: { type: 'number' }, starting_stake: { type: 'integer' } } };
+    assert.deepEqual(parseParameters(mixed, { initial_stake: '999' }, { ...template, amount: 5 }), { initial_stake: '5', base_stake: 5, starting_stake: 5 });
+    assert.throws(() => parseParameters(mixed, {}, { ...template, amount: 5.25 }), /integer/);
+});
+test('auto_start accepts the live string stake while keeping contract amount numeric', async () => {
+    const live = { ...strategy, parameters: { initial_stake: { type: 'string' }, multiplier: { type: 'number' } } };
+    const manual = { ...template, amount: 5 };
+    const { controller, requests } = setup(() => ({ auto_start: run }));
+    await controller.refresh();
+    const parameters = parseParameters(live, { multiplier: '2' }, manual);
+    await controller.start(live, manual, parameters);
+    assert.deepEqual(requests.at(-1).strategy_parameters, { initial_stake: '5', multiplier: 2 });
+    assert.equal(requests.at(-1).contract_template.amount, 5);
+});

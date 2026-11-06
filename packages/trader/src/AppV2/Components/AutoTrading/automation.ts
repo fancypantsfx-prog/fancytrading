@@ -331,7 +331,11 @@ export const parseParameters = (strategy: Strategy, values: Record<string, strin
                 shared.amount <= 0
             )
                 throw new Error('Choose a valid stake in the manual trading form.');
-            for (const key of stake_keys) parameters[key] = shared.amount;
+            // Money fields may be decimal strings in the live strategy schema.
+            // Preserve the manual amount; only adapt its wire representation.
+            for (const key of stake_keys) {
+                parameters[key] = properties[key].type === 'string' ? String(shared.amount) : shared.amount;
+            }
             for (const key of list_keys) {
                 const recovery = parameters[key] ?? [];
                 if (!Array.isArray(recovery)) throw new Error('Enter a valid recovery stake list.');

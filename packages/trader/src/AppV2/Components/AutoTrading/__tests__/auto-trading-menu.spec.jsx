@@ -323,3 +323,20 @@ it('Automatic only switches mode; settings open from their own button', async ()
     fireEvent.click(screen.getByRole('button', { name: /Automatic settings/ }));
     expect(screen.getByRole('dialog')).toHaveAttribute('open');
 });
+
+it('can start with the live text-typed initial_stake inherited from Manual', async () => {
+    mockTrade.amount = 5;
+    mockStrategy.parameters = { type: 'object', required: ['initial_stake'], properties: { initial_stake: { type: 'string' }, multiplier: { type: 'number', default: 2 } } };
+    const view = render(<AutoTrading />); await waitReady(); const menu = await openMenu();
+    expect(within(menu).queryByLabelText('Initial stake')).not.toBeInTheDocument();
+    expect(within(menu).queryByText(/Parameters.initial_stake/)).not.toBeInTheDocument();
+    mockTrade.amount = 5.25; view.rerender(<AutoTrading />);
+    fireEvent.click(within(menu).getByRole('button', { name: 'Done' }));
+    const start = screen.getByRole('button', { name: 'Start automatic trading' });
+    expect(start).toBeEnabled(); fireEvent.click(start);
+    await waitFor(() => {
+        const request = mockSend.mock.calls.find(([request]) => request.auto_start)?.[0];
+        expect(request.contract_template.amount).toBe(5.25);
+        expect(request.strategy_parameters).toEqual({ initial_stake: '5.25', multiplier: 2 });
+    });
+});
