@@ -107,7 +107,7 @@ export const getRunParameterSchema = (strategy: Strategy): ParameterSchema => {
               };
     return {
         ...schema,
-        required: schema.required?.filter((key) => key !== 'take_profit' && key !== 'stop_loss'),
+        required: schema.required,
         properties: { ...common, ...schema.properties },
     };
 };
@@ -126,8 +126,8 @@ export const SHARED_STAKE_PARAMETERS = ['initial_stake', 'starting_stake', 'base
 export const isSharedStakeParameter = (key: string): boolean => SHARED_STAKE_PARAMETERS.includes(key);
 export const validateEnabledLimits = (values: Record<string, string>) => {
     for (const key of ['take_profit', 'stop_loss'])
-        if (Object.prototype.hasOwnProperty.call(values, key) && !values[key].trim())
-            throw new Error('Enter ' + riskFieldInfo(key).label.toLowerCase() + ' or switch it off.');
+        if (!values[key]?.trim() || !Number.isFinite(Number(values[key])) || Number(values[key]) <= 0)
+            throw new Error('Enter ' + riskFieldInfo(key).label.toLowerCase() + ' greater than 0.');
 };
 export const numericStep = (name: string, schema: ParameterSchema): number => {
     if (schema.type === 'integer') return Math.max(1, schema.multipleOf ?? 1);
@@ -356,6 +356,10 @@ export const parseParameters = (strategy: Strategy, values: Record<string, strin
                 parameters[key] = [shared.amount, ...recovery];
             }
         }
+    }
+    for (const key of ['take_profit', 'stop_loss']) {
+        if (schema.required?.includes(key) && parameters[key] === undefined)
+            throw new Error(riskFieldInfo(key).label + ' is required. Enter an amount greater than 0 in Automatic settings.');
     }
     validateParameter(parameters, { ...schema, type: 'object' });
     return parameters;

@@ -82,13 +82,13 @@ const openMenu = async () => {
     fireEvent.click(screen.getByRole('button', { name: 'Automatic', exact: true }));
     fireEvent.click(screen.getByRole('button', { name: /Automatic settings/ }));
     await waitFor(() => expect(screen.getByRole('dialog')).toHaveAttribute('open'));
-    await screen.findByLabelText('Take profit');
+    await screen.findByLabelText('Take profit *');
+    fireEvent.change(within(screen.getByRole('dialog')).getByLabelText('Take profit *'), {target:{value:'100'}});
+    fireEvent.change(within(screen.getByRole('dialog')).getByLabelText('Stop loss *'), {target:{value:'50'}});
     return screen.getByRole('dialog');
 };
 const setLimit = (menu, label, value) => {
-    const toggle = within(menu).getByRole('switch', { name: 'Enable ' + label.toLowerCase() });
-    if (toggle.getAttribute('aria-checked') !== 'true') fireEvent.click(toggle);
-    fireEvent.change(within(menu).getByLabelText(label), { target: { value } });
+    fireEvent.change(within(menu).getByLabelText(label + ' *'), { target: { value } });
 };
 const startAndConfirm = () => {
     fireEvent.click(screen.getByRole('button', { name: 'Start automatic trading' }));
@@ -173,7 +173,7 @@ it('preserves risk edits through a strategy refresh', async () => {
     setLimit(menu, 'Take profit', '55');
     fireEvent.click(within(menu).getByRole('button', { name: 'Refresh' }));
     await waitFor(() => expect(within(menu).getByRole('button', { name: 'Refresh' })).toBeEnabled());
-    expect(within(menu).getByLabelText('Take profit')).toHaveValue(55);
+    expect(within(menu).getByLabelText('Take profit *')).toHaveValue(55);
 });
 it('shows unavailable cooldown honestly without sending invented options', async () => {
     render(<AutoTrading />);
@@ -217,7 +217,7 @@ it('No martingale preserves run limits and sends a fixed 1x stake multiplier', a
     setLimit(menu, 'Stop loss', '20');
     fireEvent.change(within(menu).getByLabelText('Stake method'), { target: { value: '__fixed_stake__' } });
     await waitFor(() => expect(within(menu).queryByLabelText('Martingale multiplier')).not.toBeInTheDocument());
-    expect(within(menu).getByLabelText('Take profit')).toHaveValue(30);
+    expect(within(menu).getByLabelText('Take profit *')).toHaveValue(30);
     fireEvent.click(within(menu).getByRole('button', { name: 'Done' }));
     startAndConfirm();
     await waitFor(() =>
@@ -243,50 +243,6 @@ it('focused numeric inputs change with the wheel and stay within numeric steps',
     expect(input).toHaveValue(2);
 });
 
-it('profit and loss limits start off and are omitted from auto_start', async () => {
-    render(<AutoTrading />);
-    await waitReady();
-    const menu = await openMenu();
-    expect(within(menu).getByRole('switch', { name: 'Enable take profit' })).toHaveAttribute('aria-checked', 'false');
-    expect(within(menu).getByLabelText('Take profit')).toBeDisabled();
-    expect(within(menu).getByLabelText('Stop loss')).toBeDisabled();
-    fireEvent.click(within(menu).getByRole('button', { name: 'Done' }));
-    startAndConfirm();
-    await waitFor(() =>
-        expect(mockSend.mock.calls.find(([request]) => request.auto_start)?.[0].strategy_parameters).toEqual({
-            multiplier: 2,
-            max_stake: 40,
-        })
-    );
-});
-it('enabled blank limits block Start until filled or switched off', async () => {
-    render(<AutoTrading />);
-    await waitReady();
-    const menu = await openMenu();
-    fireEvent.click(within(menu).getByRole('switch', { name: 'Enable take profit' }));
-    expect(within(menu).getByLabelText('Take profit')).toBeEnabled();
-    expect(within(menu).getByRole('alert')).toHaveTextContent('Enter take profit or switch it off');
-    fireEvent.click(within(menu).getByRole('switch', { name: 'Enable take profit' }));
-    fireEvent.click(within(menu).getByRole('button', { name: 'Done' }));
-    expect(screen.getByRole('button', { name: 'Start automatic trading' })).toBeEnabled();
-});
-it('turning a limit off removes its previous amount from the request', async () => {
-    render(<AutoTrading />);
-    await waitReady();
-    const menu = await openMenu();
-    setLimit(menu, 'Take profit', '30');
-    setLimit(menu, 'Stop loss', '20');
-    fireEvent.click(within(menu).getByRole('switch', { name: 'Enable take profit' }));
-    fireEvent.click(within(menu).getByRole('button', { name: 'Done' }));
-    startAndConfirm();
-    await waitFor(() =>
-        expect(mockSend.mock.calls.find(([request]) => request.auto_start)?.[0].strategy_parameters).toEqual({
-            multiplier: 2,
-            max_stake: 40,
-            stop_loss: 20,
-        })
-    );
-});
 it('plus, minus and keyboard arrows adjust numeric controls without floating point drift', async () => {
     render(<AutoTrading />);
     await waitReady();
@@ -317,7 +273,7 @@ it('initial stake and stake-list first entry come from Manual without a second i
     await waitFor(() => {
         const request = mockSend.mock.calls.find(([request]) => request.auto_start)?.[0];
         expect(request.contract_template.amount).toBe(25);
-        expect(request.strategy_parameters).toEqual({ initial_stake: 25, stake_list: [25, 20, 40] });
+        expect(request.strategy_parameters).toEqual({ initial_stake: 25, stake_list: [25, 20, 40], take_profit: 100, stop_loss: 50 });
     });
 });
 
@@ -352,7 +308,7 @@ it('can start with the live text-typed initial_stake inherited from Manual', asy
     await waitFor(() => {
         const request = mockSend.mock.calls.find(([request]) => request.auto_start)?.[0];
         expect(request.contract_template.amount).toBe(5.25);
-        expect(request.strategy_parameters).toEqual({ initial_stake: '5.25', multiplier: 2 });
+        expect(request.strategy_parameters).toEqual({ initial_stake: '5.25', multiplier: 2, take_profit: 100, stop_loss: 50 });
     });
 });
 
@@ -367,9 +323,10 @@ it('automatic stake is the first input and drives both request stake fields', as
     const stake = within(menu).getByRole('spinbutton', { name: /Automatic stake/ });
     expect(within(menu).getAllByRole('spinbutton')[0]).toBe(stake);
     expect(stake).toHaveValue(10);
+    setLimit(menu, 'Take profit', '100');
+    setLimit(menu, 'Stop loss', '50');
     fireEvent.change(stake, { target: { value: '7.5' } });
     fireEvent.click(within(menu).getByRole('button', { name: 'Start automatic trading' }));
-    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Start without stop loss' }));
     await waitFor(() => {
         const request = mockSend.mock.calls.find(([request]) => request.auto_start)?.[0];
         expect(request.contract_template.amount).toBe(7.5);
@@ -390,25 +347,6 @@ it('blank or zero automatic stake blocks Start before a request', async () => {
     }
     expect(mockSend.mock.calls.some(([request]) => request.auto_start)).toBe(false);
 });
-it('no stop loss requires confirmation and Cancel sends nothing', async () => {
-    render(<AutoTrading />);
-    await waitReady();
-    fireEvent.click(screen.getByRole('button', { name: 'Automatic', exact: true }));
-    fireEvent.click(screen.getByRole('button', { name: 'Start automatic trading' }));
-    const warning = screen.getByRole('alertdialog');
-    expect(warning).toHaveTextContent('Start without a stop loss?');
-    expect(mockSend.mock.calls.some(([request]) => request.auto_start)).toBe(false);
-    fireEvent.click(within(warning).getByRole('button', { name: 'Cancel' }));
-    expect(mockSend.mock.calls.some(([request]) => request.auto_start)).toBe(false);
-});
-it('explicit no-stop-loss confirmation starts exactly one run', async () => {
-    render(<AutoTrading />);
-    await waitReady();
-    fireEvent.click(screen.getByRole('button', { name: 'Automatic', exact: true }));
-    fireEvent.click(screen.getByRole('button', { name: 'Start automatic trading' }));
-    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Start without stop loss' }));
-    await waitFor(() => expect(mockSend.mock.calls.filter(([request]) => request.auto_start)).toHaveLength(1));
-});
 it('a positive run stop loss starts without the heads-up', async () => {
     render(<AutoTrading />);
     await waitReady();
@@ -419,22 +357,12 @@ it('a positive run stop loss starts without the heads-up', async () => {
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
     await waitFor(() => expect(mockSend.mock.calls.filter(([request]) => request.auto_start)).toHaveLength(1));
 });
-it('changed settings invalidate a pending no-stop-loss confirmation', async () => {
-    const view = render(<AutoTrading />);
-    await waitReady();
-    fireEvent.click(screen.getByRole('button', { name: 'Automatic', exact: true }));
-    fireEvent.click(screen.getByRole('button', { name: 'Start automatic trading' }));
-    mockTrade.amount = 15;
-    view.rerender(<AutoTrading />);
-    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Start without stop loss' }));
-    expect(mockSend.mock.calls.some(([request]) => request.auto_start)).toBe(false);
-    expect(screen.getByRole('alert')).toHaveTextContent('Trade settings changed');
-});
 it('optional zero-valued maximum defaults are omitted instead of submitted as positive limits', async () => {
     mockStrategy.parameters.max_rounds = { type: 'integer', default: 0 };
     render(<AutoTrading />);
     await waitReady();
-    fireEvent.click(screen.getByRole('button', { name: 'Automatic', exact: true }));
+    const menu = await openMenu();
+    fireEvent.click(within(menu).getByRole('button', {name:'Done'}));
     startAndConfirm();
     await waitFor(() => {
         const request = mockSend.mock.calls.find(([request]) => request.auto_start)?.[0];
@@ -458,4 +386,24 @@ it('decimal-string stop loss is editable and starts without an unnecessary warni
         expect(request.strategy_parameters.stop_loss).toBe('20.00');
         expect(request.strategy_parameters).not.toHaveProperty('max_stake');
     });
+});
+
+it('requires positive TP and SL with the actual live strategy schema', async () => {
+ mockStrategy.parameters = {"$schema":"http://json-schema.org/draft-07/schema#","type":"object","required":["initial_stake","take_profit","stop_loss"],"additionalProperties":false,"properties":{"initial_stake":{"type":"string","description":"Stake used for the first contract and after a win."},"max_stake":{"type":"string","description":"Upper limit for stake multiplying. Must be >= initial_stake. If omitted, there is no upper limit."},"multiplier":{"type":"number","description":"Factor applied to the stake after each loss. Defaults to 2.","exclusiveMinimum":1,"maximum":10},"take_profit":{"type":"string","description":"Stop when total payout minus total stake reaches or exceeds this value. Must be > 0."},"stop_loss":{"type":"string","description":"Stop when total stake minus total payout reaches or exceeds this value. Must be > 0."},"max_contracts":{"type":"integer","description":"Stop after this many contracts have been purchased. Must be > 0. Zero or omitted means no limit."}}};
+ render(<AutoTrading />); await waitReady();
+ fireEvent.click(screen.getByRole('button', {name:'Automatic', exact:true}));
+ fireEvent.click(screen.getByRole('button', {name:/Automatic settings/}));
+ const menu = screen.getByRole('dialog');
+ const tp = await within(menu).findByLabelText('Take profit *');
+ const sl = within(menu).getByLabelText('Stop loss *');
+ expect(tp).toBeEnabled(); expect(sl).toBeEnabled();
+ expect(within(menu).queryByRole('switch', {name:'Enable stop loss'})).not.toBeInTheDocument();
+ expect(within(menu).getByRole('button', {name:'Start automatic trading'})).toBeDisabled();
+ fireEvent.change(tp,{target:{value:'20'}});
+ fireEvent.change(sl,{target:{value:'0'}});
+ expect(within(menu).getByRole('button', {name:'Start automatic trading'})).toBeDisabled();
+ fireEvent.change(sl,{target:{value:'10'}});
+ fireEvent.click(within(menu).getByRole('button', {name:'Start automatic trading'}));
+ await waitFor(()=>expect(mockSend).toHaveBeenCalledWith(expect.objectContaining({auto_start:1,strategy_parameters:{initial_stake:'10',take_profit:'20',stop_loss:'10'}})));
+ expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
 });

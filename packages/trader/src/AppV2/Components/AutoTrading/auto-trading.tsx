@@ -249,16 +249,16 @@ const ParameterField = ({
         ['number', 'integer'].includes(definition.type ?? '') ||
         (definition.type === 'string' && ['take_profit', 'stop_loss', 'max_stake'].includes(name));
     const label = is_stakes ? localize('Recovery stakes') : (definition.title ?? riskFieldInfo(name).label);
-    const enabled = !is_limit || value !== undefined;
+    const enabled = required || !is_limit || value !== undefined;
     const field_disabled = disabled || !enabled;
     return (
         <div className='auto-trading__field'>
             <div className='auto-trading__field-heading'>
                 <label htmlFor={id}>
                     {localize(label)}
-                    {required && !is_limit && !is_stakes ? ' *' : ''}
+                    {required && !is_stakes ? ' *' : ''}
                 </label>
-                {is_limit && (
+                {is_limit && !required && (
                     <>
                         <small className='auto-trading__optional'>{localize('Optional')}</small>
                         <button
@@ -603,7 +603,7 @@ const AutoTrading = observer(
                         name={key}
                         definition={definition}
                         value={values[key]}
-                        required={schema?.required?.includes(key) ?? false}
+                        required={key === 'take_profit' || key === 'stop_loss' || (schema?.required?.includes(key) ?? false)}
                         disabled={state.busy}
                         onChange={(value) =>
                             setValues((previous) => {
@@ -764,7 +764,7 @@ const AutoTrading = observer(
                                     <div className='auto-trading__fields'>{renderFields('protection')}</div>
                                     <small>
                                         {localize(
-                                            'Switch take profit or stop loss off to leave that limit unset. A limit can be exceeded by an open trade before it settles.'
+                                            'Take profit and stop loss are required and must be greater than 0. A limit can be exceeded by an open trade before it settles.'
                                         )}
                                     </small>
                                 </section>

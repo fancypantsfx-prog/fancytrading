@@ -461,7 +461,7 @@ test('required recovery controls do not disappear behind fixed stake', () => {
 
 const { validateEnabledLimits, numericStep, stepNumber } =
     await import('../src/AppV2/Components/AutoTrading/automation.ts');
-test('take profit and stop loss remain optional even when listed among strategy requirements', () => {
+test('required take profit and stop loss cannot be omitted', () => {
     const limits = {
         ...strategy,
         parameters: {
@@ -474,13 +474,15 @@ test('take profit and stop loss remain optional even when listed among strategy 
             },
         },
     };
-    assert.deepEqual(parseParameters(limits, { multiplier: '2' }), { multiplier: 2 });
+    assert.throws(() => parseParameters(limits, { multiplier: '2' }), /Take profit is required/);
+    assert.deepEqual(parseParameters(limits, { multiplier: '2', take_profit: '20', stop_loss: '10' }), {multiplier: 2, take_profit: 20, stop_loss: 10});
 });
-test('only explicitly enabled blank limits require an amount', () => {
-    assert.doesNotThrow(() => validateEnabledLimits({}));
-    assert.throws(() => validateEnabledLimits({ take_profit: '' }), /switch it off/);
-    assert.throws(() => validateEnabledLimits({ stop_loss: ' ' }), /switch it off/);
-    assert.doesNotThrow(() => validateEnabledLimits({ take_profit: '10' }));
+test('both run limits require an amount', () => {
+    assert.throws(() => validateEnabledLimits({}), /take profit/);
+    assert.doesNotThrow(() => validateEnabledLimits({take_profit:'20', stop_loss:'10'}));
+    assert.throws(() => validateEnabledLimits({ take_profit: '' }), /greater than 0/);
+    assert.throws(() => validateEnabledLimits({ stop_loss: ' ' }), /greater than 0/);
+    assert.throws(() => validateEnabledLimits({ take_profit: '10' }), /stop loss/);
 });
 test('strategy initial stake always inherits Manual and ignores a stale entered amount', () => {
     const inherited = {
