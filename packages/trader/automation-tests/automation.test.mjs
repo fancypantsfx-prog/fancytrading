@@ -212,17 +212,15 @@ test('pause, resume and stop use run id and update status', async () => {
     assert.equal(controller.state.runs[0].status, 'stopped');
     await assert.rejects(controller.control('resume', run.run_id));
 });
-test('API error locks start until reconciliation and does not retry command', async () => {
+test('an explicit API rejection permits a corrected manual retry but is never replayed automatically', async () => {
     const { controller, requests } = setup(() => ({ error: { message: 'Unsupported endpoint' } }));
-    await controller.refresh();
+    await controller.refresh(); await controller.start(strategy, template, { multiplier: 2 });
+    assert.equal(controller.state.uncertain, false); assert.match(controller.state.error, /Unsupported endpoint/);
+    assert.equal(requests.filter(request => request.auto_start).length, 1);
     await controller.start(strategy, template, { multiplier: 2 });
-    assert.equal(controller.state.uncertain, true);
-    assert.match(controller.state.error, /Unsupported endpoint/);
-    await assert.rejects(controller.start(strategy, template, { multiplier: 2 }));
-    assert.equal(requests.filter((request) => request.auto_start).length, 1);
-    await controller.refresh();
-    assert.equal(controller.state.uncertain, false);
+    assert.equal(requests.filter(request => request.auto_start).length, 2);
 });
+
 test('malformed response cannot enable starting or crash refresh', async () => {
     const controller = new AutomationController(
         async () => ({}),
@@ -522,15 +520,33 @@ test('numeric adjustment preserves decimals and respects both bounds', () => {
 });
 
 test('live decimal-string initial_stake inherits Manual as text rather than failing validation', () => {
-    const live = { ...strategy, parameters: { type: 'object', required: ['initial_stake'], properties: { initial_stake: { type: 'string', pattern: '^[0-9]+([.][0-9]+)?$' } } } };
+    const live = {
+        ...strategy,
+        parameters: {
+            type: 'object',
+            required: ['initial_stake'],
+            properties: { initial_stake: { type: 'string', pattern: '^[0-9]+([.][0-9]+)?$' } },
+        },
+    };
     const manual = { ...template, amount: 5 };
     assert.deepEqual(parseParameters(live, {}, manual), { initial_stake: '5' });
     assert.deepEqual(parseParameters(live, {}, { ...manual, amount: 5.25 }), { initial_stake: '5.25' });
     assert.equal(manual.amount, 5);
 });
 test('shared stake aliases respect their own string, number or integer types', () => {
-    const mixed = { ...strategy, parameters: { initial_stake: { type: 'string' }, base_stake: { type: 'number' }, starting_stake: { type: 'integer' } } };
-    assert.deepEqual(parseParameters(mixed, { initial_stake: '999' }, { ...template, amount: 5 }), { initial_stake: '5', base_stake: 5, starting_stake: 5 });
+    const mixed = {
+        ...strategy,
+        parameters: {
+            initial_stake: { type: 'string' },
+            base_stake: { type: 'number' },
+            starting_stake: { type: 'integer' },
+        },
+    };
+    assert.deepEqual(parseParameters(mixed, { initial_stake: '999' }, { ...template, amount: 5 }), {
+        initial_stake: '5',
+        base_stake: 5,
+        starting_stake: 5,
+    });
     assert.throws(() => parseParameters(mixed, {}, { ...template, amount: 5.25 }), /integer/);
 });
 test('auto_start accepts the live string stake while keeping contract amount numeric', async () => {
@@ -542,4 +558,35 @@ test('auto_start accepts the live string stake while keeping contract amount num
     await controller.start(live, manual, parameters);
     assert.deepEqual(requests.at(-1).strategy_parameters, { initial_stake: '5', multiplier: 2 });
     assert.equal(requests.at(-1).contract_template.amount, 5);
+});
+
+const { validateAutomaticStake, hasRunStopLoss } = await import('../src/AppV2/Components/AutoTrading/automation.ts');
+test('automatic stake rejects the zero, blank and nonfinite inputs that cannot be traded', () => {
+    for (const value of ['', ' ', '0', '-1', 'Infinity', 'NaN', '5abc'])
+        assert.throws(() => validateAutomaticStake(value), /greater than 0/);
+    assert.equal(validateAutomaticStake('5.25'), 5.25);
+});
+test('only a positive run stop loss avoids the confirmation', () => {
+    for (const stop_loss of [undefined, null, '', '0', 0, -1, NaN, Infinity, true])
+        assert.equal(hasRunStopLoss({ stop_loss }), false);
+    assert.equal(hasRunStopLoss({ stop_loss: 20 }), true);
+    assert.equal(hasRunStopLoss({ stop_loss: '20.5' }), true);
+});
+test('server validation failures retain the rejected field instead of a bare message', async () => {
+    const { controller } = setup(() => ({
+        error: { message: 'must be > 0', details: { field: 'strategy_parameters.initial_stake' } },
+    }));
+    await controller.refresh();
+    await controller.start(strategy, template, { multiplier: 2 });
+    assert.match(controller.state.error, /strategy_parameters.initial_stake: must be > 0/);
+});
+
+test('decimal-string monetary limits retain API types while enforcing positive amounts', () => {
+    const money = { ...strategy, parameters: { initial_stake: { type: 'string' }, max_stake: { type: 'string' }, stop_loss: { type: 'string' }, take_profit: { type: 'string' } } };
+    const parameters = parseParameters(money, { max_stake: '40.00', stop_loss: '20.00', take_profit: '30.00' }, template);
+    assert.deepEqual(parameters, { initial_stake: '10', max_stake: '40.00', stop_loss: '20.00', take_profit: '30.00' });
+    assert.doesNotThrow(() => validateRunParameters(money, template, parameters));
+    assert.equal(hasRunStopLoss(parameters), true);
+    assert.throws(() => validateRunParameters(money, template, { ...parameters, stop_loss: '0.00' }), /greater than zero/);
+    assert.throws(() => validateRunParameters(money, template, { ...parameters, max_stake: '5.00' }), /initial stake/);
 });

@@ -1,7 +1,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { observer } from 'mobx-react-lite';
-import { useWS } from '@deriv/shared';
+import { getDecimalPlaces, useWS } from '@deriv/shared';
 import { useStore } from '@deriv/stores';
 import { localize } from '@deriv-com/translations';
 import PurchaseButton from 'AppV2/Components/PurchaseButton';
@@ -25,6 +25,8 @@ import {
     Run,
     Strategy,
     validateRunParameters,
+    validateAutomaticStake,
+    hasRunStopLoss,
     validateEnabledLimits,
     isSharedStakeParameter,
     numericStep,
@@ -243,7 +245,9 @@ const ParameterField = ({
     const id = React.useId();
     const is_limit = name === 'take_profit' || name === 'stop_loss';
     const is_stakes = name === 'stake_list' || name === 'stakes';
-    const is_numeric = ['number', 'integer'].includes(definition.type ?? '');
+    const is_numeric =
+        ['number', 'integer'].includes(definition.type ?? '') ||
+        (definition.type === 'string' && ['take_profit', 'stop_loss', 'max_stake'].includes(name));
     const label = is_stakes ? localize('Recovery stakes') : (definition.title ?? riskFieldInfo(name).label);
     const enabled = !is_limit || value !== undefined;
     const field_disabled = disabled || !enabled;
@@ -320,18 +324,23 @@ const ParameterField = ({
                 {is_limit && !enabled
                     ? localize('Off — no run limit set.')
                     : is_stakes
-                      ? localize(
-                            'The initial stake comes from Manual automatically. Enter only the later recovery stakes.'
-                        )
+                      ? localize('The first stake is your Automatic stake. Enter only the later recovery stakes.')
                       : (definition.description ??
                         (name === 'max_stake'
-                            ? localize('Caps later stakes; the initial stake is taken from Manual.')
+                            ? localize('Caps later stakes; it must cover your Automatic stake.')
                             : !required
                               ? localize('Optional')
                               : ''))}
             </small>
         </div>
     );
+};
+
+type PendingStart = {
+    signature: string;
+    strategy: Strategy;
+    template: ContractTemplate;
+    parameters: Record<string, unknown>;
 };
 
 const AutoTrading = observer(
@@ -345,6 +354,11 @@ const AutoTrading = observer(
         const [strategy_id, setStrategyId] = React.useState('');
         const [values, setValues] = React.useState<Record<string, string>>({});
         const [form_error, setFormError] = React.useState('');
+        const [automatic_stake, setAutomaticStake] = React.useState<string>();
+        const [pending_start, setPendingStart] = React.useState<PendingStart>();
+        const starting = React.useRef(false);
+        const warning_dialog = React.useRef<HTMLDialogElement>(null);
+        const warning_title = React.useId();
         const controller = React.useRef<AutomationController>();
         const owner = React.useRef('');
         const risk_account = React.useRef('');
@@ -391,6 +405,23 @@ const AutoTrading = observer(
             };
         }, [menu_open]);
 
+        React.useEffect(() => {
+            setAutomaticStake(undefined);
+            setPendingStart(undefined);
+        }, [account_id]);
+        React.useEffect(() => {
+            if (!eligible) setPendingStart(undefined);
+        }, [eligible]);
+        React.useEffect(() => {
+            const element = warning_dialog.current;
+            if (!element) return;
+            if (pending_start && !element.open) element.showModal();
+            if (!pending_start && element.open) element.close();
+            return () => {
+                if (element.open) element.close();
+            };
+        }, [pending_start]);
+        const automatic_stake_text = automatic_stake ?? (store.basis === 'payout' ? '' : String(store.amount ?? ''));
         const contract_types = getDisplayedContractTypes(store.trade_types, store.contract_type, store.trade_type_tab);
         const contract = getSharedContractType(contract_types, store.trade_type_tab);
         const strategies = state.strategies.filter((item) => item.supported_contract_types.includes(contract));
@@ -407,6 +438,14 @@ const AutoTrading = observer(
             const defaults: Record<string, string> = {};
             for (const [key, definition] of Object.entries(schema?.properties ?? {})) {
                 if (key === 'take_profit' || key === 'stop_loss' || isSharedStakeParameter(key)) continue;
+                if (
+                    key.startsWith('max_') &&
+                    !schema?.required?.includes(key) &&
+                    (typeof definition.default === 'number' || typeof definition.default === 'string') &&
+                    String(definition.default).trim() !== '' &&
+                    Number(definition.default) === 0
+                )
+                    continue;
                 if ((key === 'stake_list' || key === 'stakes') && Array.isArray(definition.default)) {
                     defaults[key] = JSON.stringify(definition.default.slice(1));
                     continue;
@@ -438,10 +477,11 @@ const AutoTrading = observer(
         if (contract) {
             try {
                 template = buildTemplate(
-                    getProposalRequestObject({ new_values: {}, trade_store: store, trade_type: contract }) as Record<
-                        string,
-                        unknown
-                    >
+                    getProposalRequestObject({
+                        new_values: { amount: validateAutomaticStake(automatic_stake_text), basis: 'stake' },
+                        trade_store: store,
+                        trade_type: contract,
+                    }) as Record<string, unknown>
                 );
             } catch (error) {
                 template_error = messageOf(error);
@@ -474,14 +514,52 @@ const AutoTrading = observer(
             !!parameters &&
             !proposal_error &&
             store.is_trade_enabled_v2;
-        const start = async () => {
-            if (!can_start || !strategy || !template || !parameters || !controller.current) return;
+        const start_signature = JSON.stringify({
+            account_id,
+            strategy_id: strategy?.strategy_id,
+            template,
+            parameters,
+        });
+        const executeStart = async (snapshot: PendingStart) => {
+            if (starting.current) return;
+            setPendingStart(undefined);
+            if (!can_start || snapshot.signature !== start_signature || !controller.current) {
+                setFormError(localize('Trade settings changed. Review them and press Start again.'));
+                return;
+            }
+            starting.current = true;
             setFormError('');
             try {
-                await controller.current.start(strategy, template, parameters);
+                await controller.current.start(snapshot.strategy, snapshot.template, snapshot.parameters);
             } catch (error) {
                 setFormError(messageOf(error));
+            } finally {
+                starting.current = false;
             }
+        };
+        const start = async () => {
+            if (
+                !can_start ||
+                !strategy ||
+                !template ||
+                !parameters ||
+                !controller.current ||
+                starting.current ||
+                pending_start
+            )
+                return;
+            setFormError('');
+            const snapshot: PendingStart = {
+                signature: start_signature,
+                strategy: JSON.parse(JSON.stringify(strategy)),
+                template: JSON.parse(JSON.stringify(template)),
+                parameters: JSON.parse(JSON.stringify(parameters)),
+            };
+            if (!hasRunStopLoss(parameters)) {
+                setPendingStart(snapshot);
+                return;
+            }
+            await executeStart(snapshot);
         };
         const control = async (action: 'pause' | 'resume' | 'stop', target = run) => {
             if (!eligible || owner.current !== account_id || !target || !controller.current) return;
@@ -492,6 +570,27 @@ const AutoTrading = observer(
                 setFormError(messageOf(error));
             }
         };
+        const stake_input = (
+            <ParameterField
+                name='automatic_stake'
+                definition={{
+                    type: 'number',
+                    title: localize('Automatic stake') + ' (' + store.currency + ')',
+                    exclusiveMinimum: 0,
+                    multipleOf: 10 ** -getDecimalPlaces(store.currency),
+                    description: localize(
+                        'Initial stake for Automatic. Prefilled from Manual; edit it here for this run.'
+                    ),
+                }}
+                value={automatic_stake_text}
+                required
+                disabled={state.busy || !!active_run}
+                onChange={(value) => {
+                    setAutomaticStake(value ?? '');
+                    setFormError('');
+                }}
+            />
+        );
         const fields = Object.entries(schema?.properties ?? {}).filter(([key]) => !isSharedStakeParameter(key));
         const has_recovery = !fixed_stake && fields.some(([key]) => riskFieldInfo(key).group === 'recovery');
         const has_cooldown = fields.some(([key]) => riskFieldInfo(key).group === 'cooldown');
@@ -572,6 +671,16 @@ const AutoTrading = observer(
                         onTouchStart={(e) => e.stopPropagation()}
                         onTouchEnd={(e) => e.stopPropagation()}
                     >
+                        {menu_open && (
+                            <section className='auto-trading__card'>
+                                {stake_input}
+                                {template_error && (
+                                    <p role='alert' className='auto-trading__error'>
+                                        {template_error}
+                                    </p>
+                                )}
+                            </section>
+                        )}
                         <div className='auto-trading__account'>
                             <span>
                                 {localize('Account')}: {account_id || '—'}
@@ -665,7 +774,7 @@ const AutoTrading = observer(
                                         <div className='auto-trading__fields'>{renderFields('recovery')}</div>
                                         <small>
                                             {localize(
-                                                'The first trade uses the stake from your trading form. Recovery can increase later stakes after losses.'
+                                                'The first trade uses your Automatic stake. Recovery can increase later stakes after losses.'
                                             )}
                                         </small>
                                     </section>
@@ -726,11 +835,79 @@ const AutoTrading = observer(
                         </p>
                     </div>
                     <footer className='auto-trading__menu-footer'>
-                        <button type='button' className='auto-trading__done' onClick={() => setMenuOpen(false)}>
-                            {localize('Done')}
-                        </button>
+                        <div className='auto-trading__footer-actions'>
+                            <button type='button' onClick={() => setMenuOpen(false)}>
+                                {localize('Done')}
+                            </button>
+                            {active_run ? (
+                                <button
+                                    type='button'
+                                    className='auto-trading__stop'
+                                    disabled={state.busy || !eligible}
+                                    onClick={() => {
+                                        void control('stop', active_run);
+                                    }}
+                                >
+                                    {localize('Stop')}
+                                </button>
+                            ) : (
+                                <button
+                                    type='button'
+                                    className='auto-trading__start'
+                                    disabled={!can_start || !!pending_start}
+                                    onClick={() => {
+                                        setMenuOpen(false);
+                                        void start();
+                                    }}
+                                >
+                                    {state.busy ? localize('Please wait…') : localize('Start automatic trading')}
+                                </button>
+                            )}
+                        </div>
                         <small>{localize('Closing settings does not place a trade.')}</small>
                     </footer>
+                </div>
+            </dialog>
+        );
+        const warning = (
+            <dialog
+                ref={warning_dialog}
+                role='alertdialog'
+                className='auto-trading-confirm'
+                aria-labelledby={warning_title}
+                aria-describedby={warning_title + '-description'}
+                onClose={() => setPendingStart(undefined)}
+            >
+                <div className='auto-trading auto-trading--confirmation'>
+                    <h2 id={warning_title}>{localize('Start without a stop loss?')}</h2>
+                    <p id={warning_title + '-description'}>
+                        {localize(
+                            'No stop loss is set for this automatic run. Trading can continue until you stop it or another run limit is reached.'
+                        )}
+                    </p>
+                    {pending_start && (
+                        <p>
+                            <strong>
+                                {localize('Initial stake')}: {pending_start.template.amount}{' '}
+                                {pending_start.template.currency}
+                            </strong>
+                        </p>
+                    )}
+                    <div className='auto-trading__actions'>
+                        <button type='button' autoFocus onClick={() => setPendingStart(undefined)}>
+                            {localize('Cancel')}
+                        </button>
+                        <button
+                            type='button'
+                            className='auto-trading__start'
+                            disabled={!can_start}
+                            onClick={() => {
+                                if (pending_start) void executeStart(pending_start);
+                            }}
+                        >
+                            {localize('Start without stop loss')}
+                        </button>
+                    </div>
                 </div>
             </dialog>
         );
@@ -747,11 +924,7 @@ const AutoTrading = observer(
                     >
                         {localize('Manual')}
                     </button>
-                    <button
-                        type='button'
-                        aria-pressed={mode === 'automatic'}
-                        onClick={() => setMode('automatic')}
-                    >
+                    <button type='button' aria-pressed={mode === 'automatic'} onClick={() => setMode('automatic')}>
                         {localize('Automatic')}
                     </button>
                 </div>
@@ -776,7 +949,7 @@ const AutoTrading = observer(
                             <span>⚙ {localize('Automatic settings')}</span>
                             <span aria-hidden='true'>›</span>
                         </button>
-                        <small>{localize('Using your current trade settings')}</small>
+                        <small>{localize('Using your selected market and contract settings')}</small>
                         {strategy && (
                             <p>
                                 <strong>{fixed_stake ? localize('No martingale') : strategy.display_name}</strong>
@@ -788,7 +961,11 @@ const AutoTrading = observer(
                                 {template_error}
                             </p>
                         )}
-                        {parameters_error && <p role='status'>{localize('Complete your risk settings to start.')}</p>}
+                        {parameters_error && (
+                            <p role='alert' className='auto-trading__error'>
+                                {parameters_error}
+                            </p>
+                        )}
                         {!eligible && (
                             <p role='status'>{localize('Connect your account to start automatic trading.')}</p>
                         )}
@@ -797,51 +974,60 @@ const AutoTrading = observer(
                             <p role='alert'>{localize('Correct the trade settings before starting.')}</p>
                         )}
                         {errors}
-                        {active_run ? (
-                            <div className='auto-trading__active'>
-                                <p role='status'>
-                                    {localize('Run status')}: {active_run.status}
-                                </p>
-                                <div className='auto-trading__actions'>
-                                    <button
-                                        type='button'
-                                        disabled={state.busy || !eligible}
-                                        onClick={() => {
-                                            void control(
-                                                active_run.status === 'paused' ? 'resume' : 'pause',
-                                                active_run
-                                            );
-                                        }}
-                                    >
-                                        {active_run.status === 'paused' ? localize('Resume') : localize('Pause')}
-                                    </button>
-                                    <button
-                                        type='button'
-                                        className='auto-trading__stop'
-                                        disabled={state.busy || !eligible}
-                                        onClick={() => {
-                                            void control('stop', active_run);
-                                        }}
-                                    >
-                                        {localize('Stop')}
-                                    </button>
+                        <div className='auto-trading__execution'>
+                            {active_run ? (
+                                <div className='auto-trading__active'>
+                                    <p role='status'>
+                                        {localize('Run status')}: {active_run.status}
+                                    </p>
+                                    <div className='auto-trading__actions'>
+                                        <button
+                                            type='button'
+                                            disabled={state.busy || !eligible}
+                                            onClick={() => {
+                                                void control(
+                                                    active_run.status === 'paused' ? 'resume' : 'pause',
+                                                    active_run
+                                                );
+                                            }}
+                                        >
+                                            {active_run.status === 'paused' ? localize('Resume') : localize('Pause')}
+                                        </button>
+                                        <button
+                                            type='button'
+                                            className='auto-trading__stop'
+                                            disabled={state.busy || !eligible}
+                                            onClick={() => {
+                                                void control('stop', active_run);
+                                            }}
+                                        >
+                                            {localize('Stop')}
+                                        </button>
+                                    </div>
                                 </div>
-                            </div>
-                        ) : (
-                            <button
-                                type='button'
-                                className='auto-trading__start'
-                                disabled={!can_start}
-                                onClick={() => {
-                                    void start();
-                                }}
-                            >
-                                {state.busy ? localize('Please wait…') : localize('Start automatic trading')}
-                            </button>
-                        )}
+                            ) : (
+                                <button
+                                    type='button'
+                                    className='auto-trading__start'
+                                    disabled={!can_start || !!pending_start}
+                                    onClick={() => {
+                                        void start();
+                                    }}
+                                >
+                                    {state.busy ? localize('Please wait…') : localize('Start automatic trading')}
+                                </button>
+                            )}
+                        </div>
                     </div>
                 )}
-                {typeof document !== 'undefined' && createPortal(menu, document.body)}
+                {typeof document !== 'undefined' &&
+                    createPortal(
+                        <>
+                            {menu}
+                            {warning}
+                        </>,
+                        document.body
+                    )}
             </section>
         );
     }

@@ -71,7 +71,10 @@ export type AutomationState = {
     uncertain: boolean;
     updated_at?: number;
 };
-type Response = Record<string, unknown> & { error?: { message?: string; code?: string } };
+type Response = Record<string, unknown> & {
+    error?: { message?: string; code?: string; field?: string; details?: { field?: string } };
+};
+class AutomationRejection extends Error {}
 export type Send = (request: Record<string, unknown>) => Promise<Response>;
 export const messageOf = (error: unknown) =>
     error && typeof error === 'object' && 'message' in error ? String(error.message) : String(error);
@@ -107,6 +110,17 @@ export const getRunParameterSchema = (strategy: Strategy): ParameterSchema => {
         required: schema.required?.filter((key) => key !== 'take_profit' && key !== 'stop_loss'),
         properties: { ...common, ...schema.properties },
     };
+};
+export const validateAutomaticStake = (text: string): number => {
+    const stake = text.trim() ? Number(text) : NaN;
+    if (!Number.isFinite(stake) || stake <= 0) throw new Error('Automatic stake must be greater than 0.');
+    return stake;
+};
+export const hasRunStopLoss = (parameters: Record<string, unknown>): boolean => {
+    const value = parameters.stop_loss;
+    if (typeof value !== 'number' && typeof value !== 'string') return false;
+    const number = Number(value);
+    return Number.isFinite(number) && number > 0;
 };
 export const SHARED_STAKE_PARAMETERS = ['initial_stake', 'starting_stake', 'base_stake', 'initial_amount', 'stake'];
 export const isSharedStakeParameter = (key: string): boolean => SHARED_STAKE_PARAMETERS.includes(key);
@@ -217,16 +231,19 @@ export const validateRunParameters = (
     validateParameter(parameters, getRunParameterSchema(strategy));
     for (const key of ['take_profit', 'stop_loss', 'max_stake']) {
         const value = parameters[key];
-        if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value <= 0))
+        const number =
+            typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value) : NaN;
+        if (value !== undefined && (!Number.isFinite(number) || number <= 0))
             throw new Error(riskFieldInfo(key).label + ' must be greater than zero.');
     }
+    const maximum_stake = parameters.max_stake === undefined ? undefined : Number(parameters.max_stake);
     if (
         template.basis === 'stake' &&
-        typeof parameters.max_stake === 'number' &&
+        maximum_stake !== undefined &&
         template.amount !== undefined &&
-        parameters.max_stake < template.amount
+        maximum_stake < template.amount
     )
-        throw new Error('Maximum stake must cover the initial stake in the trading form.');
+        throw new Error('Maximum stake must cover the initial stake configured for Automatic.');
     if (
         /martingale/i.test(strategy.strategy_id) &&
         parameters.multiplier !== undefined &&
@@ -246,10 +263,7 @@ export const validateRunParameters = (
                 throw new Error('Enter positive amounts in the stake list.');
             if (template.basis === 'stake' && list[0] !== template.amount)
                 throw new Error('The first stake in the list must match the stake in the trading form.');
-            if (
-                typeof parameters.max_stake === 'number' &&
-                list.some((value) => value > (parameters.max_stake as number))
-            )
+            if (maximum_stake !== undefined && list.some((value) => value > maximum_stake))
                 throw new Error('The stake list exceeds the maximum stake.');
         }
     }
@@ -458,8 +472,11 @@ export class AutomationController {
                     );
                 }),
             ]);
-            if (response?.error)
-                throw new Error(response.error.message ?? response.error.code ?? 'Automation request failed.');
+            if (response?.error) {
+                const field = response.error.details?.field ?? response.error.field;
+                const message = response.error.message ?? response.error.code ?? 'Automation request failed.';
+                throw new AutomationRejection(field ? field + ': ' + message : message);
+            }
             if (!response || !response[endpoint])
                 throw new Error('Missing ' + endpoint + ' response. Refresh runs to check the server.');
             return response[endpoint];
@@ -561,8 +578,9 @@ export class AutomationController {
                 updated_at: Date.now(),
             });
         } catch (error) {
-            // A lost response may still mean the server executed the command. Never replay it.
-            this.update({ error: messageOf(error), uncertain: true });
+            // An explicit API rejection is safe to correct and retry manually.
+            // A lost or malformed response may still mean the server executed the command. Never replay it.
+            this.update({ error: messageOf(error), uncertain: !(error instanceof AutomationRejection) });
         } finally {
             this.update({ busy: false });
         }
