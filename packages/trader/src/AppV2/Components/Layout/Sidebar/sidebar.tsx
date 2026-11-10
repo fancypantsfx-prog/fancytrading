@@ -7,6 +7,7 @@ import { Button, Flyout, Text } from '@deriv/components';
 import {
     LabelPairedLifeRingSmRegularIcon,
     LegacyHomeNewIcon,
+    StandaloneChartAreaRegularIcon,
     StandaloneCircleUserFillIcon,
     StandaloneCircleUserRegularIcon,
     StandaloneClockThreeFillIcon,
@@ -31,6 +32,8 @@ import {
 import { observer, useStore } from '@deriv/stores';
 import { Localize, localize, useTranslations } from '@deriv-com/translations';
 
+import { FancyTradingDialogContext } from 'AppV2/Components/AutoTrading/fancy-trading-dialog-context';
+
 import { PositionsDrawerContent, PositionsDrawerFooter } from './PositionsDrawer';
 
 import AccountSelector from './account-selector';
@@ -43,11 +46,13 @@ type TSidebarItem = {
     onClick: () => void;
     isActive: boolean;
     badge?: number;
+    dialogOpen?: boolean;
     dataTestId?: string;
 };
 
 const Sidebar = observer(() => {
     const { ui, client, portfolio } = useStore();
+    const fancy_trading = React.useContext(FancyTradingDialogContext);
     const { currentLang } = useTranslations();
     const { is_dark_mode_on, active_sidebar_flyout, setSidebarFlyout, closeSidebarFlyout } = ui;
     const { is_logged_in } = client;
@@ -139,6 +144,18 @@ const Sidebar = observer(() => {
             onClick: handleReportsClick,
             isActive: isReportsActive,
             dataTestId: 'dt_sidebar_reports',
+        },
+        {
+            id: 'fancy_trading',
+            icon: <StandaloneChartAreaRegularIcon fill='var(--color-text-primary)' iconSize='sm' />,
+            label: 'FancyTrading',
+            onClick: () => {
+                closeSidebarFlyout();
+                fancy_trading?.setOpen(true);
+            },
+            isActive: !!fancy_trading?.open,
+            dialogOpen: !!fancy_trading?.open,
+            dataTestId: 'dt_sidebar_fancy_trading',
         },
     ];
 
@@ -254,7 +271,7 @@ const Sidebar = observer(() => {
                 <nav className='sidebar__nav'>
                     <div className='sidebar__nav-main'>
                         {navigationItems.map(item => {
-                            const shouldShow = item.id === 'home' || is_logged_in;
+                            const shouldShow = item.id === 'home' || item.id === 'fancy_trading' || is_logged_in;
 
                             if (!shouldShow) return null;
 
@@ -263,10 +280,13 @@ const Sidebar = observer(() => {
                                     key={item.id}
                                     className={classNames('sidebar__item', {
                                         'sidebar__item--active': item.isActive,
+                                        'sidebar__item--fancy-trading': item.id === 'fancy_trading',
                                     })}
                                     onClick={item.onClick}
                                     data-testid={item.dataTestId}
                                     aria-label={item.label}
+                                    aria-haspopup={item.dialogOpen !== undefined ? 'dialog' : undefined}
+                                    aria-expanded={item.dialogOpen}
                                     type='button'
                                 >
                                     <Text className='sidebar__item-icon'>{item.icon}</Text>

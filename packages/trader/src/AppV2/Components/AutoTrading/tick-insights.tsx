@@ -1,8 +1,10 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { fetchPremiumAccess } from '@deriv/api';
 import type { TPremiumAccess } from '@deriv/api';
 import { getDecimalPlaces, getPlatformLogo, useWS } from '@deriv/shared';
 import { localize } from '@deriv-com/translations';
+import { FancyTradingDialogContext } from './fancy-trading-dialog-context';
 import { compareRecentTicks, getInsightContract } from './tick-insights-data';
 import type { TFamily, TInsightRun, TTickInsights } from './tick-insights-data';
 import './tick-insights.scss';
@@ -536,49 +538,44 @@ const InsightsPanel = ({
 const TickInsights = (props: TProps) => {
     const dialog = React.useRef<HTMLDialogElement>(null);
     const title = React.useId();
-    const [open, setOpen] = React.useState(false);
+    const fancy_trading = React.useContext(FancyTradingDialogContext);
+    const open = !!props.symbol && !!fancy_trading?.open;
 
-    return (
-        <div className='tick-insights'>
-            <button
-                type='button'
-                className='tick-insights__trigger'
-                aria-haspopup='dialog'
-                disabled={!props.symbol}
-                onClick={() => {
-                    dialog.current?.showModal();
-                    setOpen(true);
-                }}
-            >
-                FancyTrading
-            </button>
-            <dialog
-                ref={dialog}
-                className='tick-insights__dialog'
-                aria-labelledby={title}
-                onClose={() => setOpen(false)}
-                onTouchStart={event => event.stopPropagation()}
-                onTouchEnd={event => event.stopPropagation()}
-            >
-                <header>
-                    <div className='tick-insights__brand'>
-                        <img src={'/' + getPlatformLogo()} alt='' width={40} height={40} />
-                        <div>
-                            <h2 id={title}>FancyTrading</h2>
-                            <p>{localize('Insights by FancyPants')}</p>
-                        </div>
+    React.useEffect(() => {
+        const element = dialog.current;
+        if (open && element && !element.open) element.showModal();
+    }, [open]);
+
+    if (!open) return null;
+
+    return createPortal(
+        <dialog
+            ref={dialog}
+            className='tick-insights tick-insights__dialog'
+            aria-labelledby={title}
+            onClose={() => fancy_trading?.setOpen(false)}
+            onTouchStart={event => event.stopPropagation()}
+            onTouchEnd={event => event.stopPropagation()}
+        >
+            <header>
+                <div className='tick-insights__brand'>
+                    <img src={'/' + getPlatformLogo()} alt='' width={40} height={40} />
+                    <div>
+                        <h2 id={title}>FancyTrading</h2>
+                        <p>{localize('Insights by FancyPants')}</p>
                     </div>
-                    <button
-                        type='button'
-                        onClick={() => dialog.current?.close()}
-                        aria-label={localize('Close FancyTrading')}
-                    >
-                        ×
-                    </button>
-                </header>
-                {open && <InsightsPanel {...props} />}
-            </dialog>
-        </div>
+                </div>
+                <button
+                    type='button'
+                    onClick={() => dialog.current?.close()}
+                    aria-label={localize('Close FancyTrading')}
+                >
+                    ×
+                </button>
+            </header>
+            <InsightsPanel {...props} />
+        </dialog>,
+        document.body
     );
 };
 

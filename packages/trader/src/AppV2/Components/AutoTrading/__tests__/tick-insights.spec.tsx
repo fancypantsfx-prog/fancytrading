@@ -1,6 +1,7 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { fetchPremiumAccess, fetchTickInsights } from '@deriv/api';
+import { FancyTradingDialogContext } from '../fancy-trading-dialog-context';
 import TickInsights from '../tick-insights';
 
 const mockSend = jest.fn(async (request: Record<string, unknown>) => {
@@ -69,8 +70,11 @@ it('compares the selected market and filters quoted payouts without executing tr
             },
         ],
     });
-    render(<TickInsights {...props} />);
-    fireEvent.click(screen.getByRole('button', { name: 'FancyTrading' }));
+    render(
+        <FancyTradingDialogContext.Provider value={{ open: true, setOpen: jest.fn() }}>
+            <TickInsights {...props} />
+        </FancyTradingDialogContext.Provider>
+    );
     fireEvent.click(await screen.findByRole('button', { name: 'Compare trades' }));
 
     expect(await screen.findByRole('rowheader', { name: 'Rise' })).toBeInTheDocument();
@@ -102,8 +106,11 @@ it('compares the selected market and filters quoted payouts without executing tr
 
 it('keeps market requests behind the access check', async () => {
     (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'locked' });
-    render(<TickInsights {...props} />);
-    fireEvent.click(screen.getByRole('button', { name: 'FancyTrading' }));
+    render(
+        <FancyTradingDialogContext.Provider value={{ open: true, setOpen: jest.fn() }}>
+            <TickInsights {...props} />
+        </FancyTradingDialogContext.Provider>
+    );
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('FancyTrading insights are locked'));
     expect(mockSend).not.toHaveBeenCalled();
     expect(fetchTickInsights).not.toHaveBeenCalled();

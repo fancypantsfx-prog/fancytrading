@@ -43,7 +43,7 @@ DELETE FROM premium_previews WHERE feature = 'example-feature';
 
 ## FancyTrading
 
-Open **FancyTrading** from the trading panel beside the Manual and Automatic modes. It launches free. To require paid access, set the Pages environment variable `TICK_INSIGHTS_ACCESS` to `paid` and redeploy with the `PREMIUM_DB` binding. Use `tick-insights` as the feature key for grants and preview windows. The analysis endpoint checks access on every comparison.
+On desktop, open **FancyTrading** directly below **Reports** in the left sidebar. On mobile, open it next to the market selector above the chart. It launches free. To require paid access, set the Pages environment variable `TICK_INSIGHTS_ACCESS` to `paid` and redeploy with the `PREMIUM_DB` binding. Use `tick-insights` as the feature key for grants and preview windows. The analysis endpoint checks access on every comparison.
 
 The comparison uses the active market's 400 latest ticks and requests fresh Deriv payout quotes at the entered stake. Rise, Fall, Even and Odd results use the selected tick duration. Accumulator results replay the currently quoted range, compare available growth rates at the selected target, and show an estimated compounded payout. Quotes that Deriv rejects, or accumulator targets beyond quoted limits, are omitted. The two 200-tick halves are scored separately using trials that share no price moves within each half. The figures describe the sample and the quotes at comparison time.
 

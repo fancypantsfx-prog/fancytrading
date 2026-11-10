@@ -1,6 +1,4 @@
 .tick-insights {
-    margin-block: 8px;
-
     button,
     select,
     input {
@@ -21,11 +19,6 @@
     :is(button, input, select, [tabindex]):focus-visible {
         outline: 2px solid var(--brand-red-coral, #0054a6);
         outline-offset: 2px;
-    }
-
-    &__trigger {
-        width: 100%;
-        font-weight: 600 !important;
     }
 
     &__dialog {

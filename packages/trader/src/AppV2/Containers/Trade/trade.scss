@@ -145,7 +145,13 @@
     }
     &__market-selector-guide {
         display: flex;
+        flex-wrap: wrap;
         justify-content: space-between;
+    }
+    &__market-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
     }
     &__guide {
         height: 3.2rem;

@@ -2,6 +2,7 @@ import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { fetchPremiumAccess, fetchTickInsights } from '@deriv/api';
 import AutoTrading from '../auto-trading';
+import { FancyTradingDialogContext } from '../fancy-trading-dialog-context';
 
 const mockStrategy = {
     strategy_id: 'martingale',
@@ -444,9 +445,12 @@ const reviewFancyTrade = async (candidate = 'CALL') => {
             },
         ],
     });
-    render(<AutoTrading />);
+    render(
+        <FancyTradingDialogContext.Provider value={{ open: true, setOpen: jest.fn() }}>
+            <AutoTrading />
+        </FancyTradingDialogContext.Provider>
+    );
     await waitReady();
-    fireEvent.click(screen.getByRole('button', { name: 'FancyTrading' }));
     if (candidate !== 'CALL')
         fireEvent.change(await screen.findByLabelText('Compare'), { target: { value: 'accumulator' } });
     fireEvent.change(await screen.findByLabelText(/Run stop loss/), { target: { value: '25' } });

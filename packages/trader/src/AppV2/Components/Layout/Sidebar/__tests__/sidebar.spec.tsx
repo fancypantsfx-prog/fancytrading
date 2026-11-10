@@ -4,10 +4,42 @@ import { createMemoryHistory } from 'history';
 import { mockStore, StoreProvider } from '@deriv/stores';
 import { fireEvent, render, screen } from '@testing-library/react';
 
+import { FancyTradingDialogProvider } from 'AppV2/Components/AutoTrading/fancy-trading-dialog-context';
+import TickInsights from 'AppV2/Components/AutoTrading/tick-insights';
+
 import Sidebar from '../sidebar';
 
+jest.mock('@deriv/components', () => ({
+    Button: (props: React.ComponentProps<'button'>) => <button {...props} />,
+    Text: (props: React.ComponentProps<'span'>) => <span {...props} />,
+    Flyout: ({
+        is_open,
+        onClose,
+        children,
+        footer_content,
+    }: {
+        is_open: boolean;
+        onClose: () => void;
+        children: React.ReactNode;
+        footer_content: React.ReactNode;
+    }) =>
+        is_open ? (
+            <div>
+                <button type='button' onClick={onClose}>
+                    Close flyout
+                </button>
+                {children}
+                {footer_content}
+            </div>
+        ) : null,
+}));
+
 jest.mock('@deriv/shared', () => ({
-    ...jest.requireActual('@deriv/shared'),
+    getBrandLogo: () => 'brand/platform-logo.svg',
+    getBrandLogoDark: () => 'brand/platform-logo.svg',
+    getBrandName: () => 'Fancy Trading',
+    getPlatformLogo: () => 'brand/platform-logo.svg',
+    routes: { index: '/', reports: '/reports' },
     useWS: () => ({
         send: jest.fn(),
     }),
@@ -17,7 +49,7 @@ jest.mock('@deriv/shared', () => ({
 }));
 
 jest.mock('@deriv/api', () => ({
-    ...jest.requireActual('@deriv/api'),
+    fetchPremiumAccess: jest.fn().mockResolvedValue({ access: 'locked' }),
     useMobileBridge: jest.fn(() => ({
         sendBridgeEvent: jest.fn((_event, dataOrFallback, callback) => {
             // Handle overloaded signature - detect if second param is function or data
@@ -37,7 +69,7 @@ jest.mock('@deriv-com/translations', () => ({
 }));
 
 jest.mock('@deriv/quill-icons', () => ({
-    ...jest.requireActual('@deriv/quill-icons'),
+    StandaloneChartAreaRegularIcon: () => 'StandaloneChartAreaRegularIcon',
     LabelPairedLifeRingSmRegularIcon: () => 'LabelPairedLifeRingSmRegularIcon',
     LegacyHomeNewIcon: () => 'LegacyHomeNewIcon',
     LegacyMinimize2pxIcon: () => 'LegacyMinimize2pxIcon',
@@ -82,12 +114,27 @@ describe('<Sidebar />', () => {
     };
     const defaultStore = mockStore(defaultStoreConfig);
 
-    const renderSidebar = (store = defaultStore, route = '/') => {
+    const renderSidebar = (store = defaultStore, route = '/', withInsights = false) => {
         history.push(route);
         return render(
             <Router history={history}>
                 <StoreProvider store={store}>
-                    <Sidebar />
+                    <FancyTradingDialogProvider>
+                        <Sidebar />
+                        {withInsights && (
+                            <TickInsights
+                                symbol='1HZ100V'
+                                currency='USD'
+                                initial_stake={10}
+                                initial_ticks={5}
+                                is_accumulator
+                                account_label=''
+                                execution_block=''
+                                supportsContract={() => false}
+                                onStart={jest.fn()}
+                            />
+                        )}
+                    </FancyTradingDialogProvider>
                 </StoreProvider>
             </Router>
         );
@@ -143,6 +190,32 @@ describe('<Sidebar />', () => {
         expect(screen.getByTestId('dt_sidebar_help')).toBeInTheDocument();
     });
 
+    it('opens FancyTrading from directly after Reports and clears the active state when closed', async () => {
+        HTMLDialogElement.prototype.showModal = function () {
+            this.setAttribute('open', '');
+        };
+        HTMLDialogElement.prototype.close = function () {
+            this.removeAttribute('open');
+            this.dispatchEvent(new Event('close'));
+        };
+        const { container } = renderSidebar(defaultStore, '/', true);
+        const reports = screen.getByRole('button', { name: 'Reports' });
+        const fancyTrading = screen.getByRole('button', { name: 'FancyTrading' });
+        expect(reports.nextElementSibling).toBe(fancyTrading);
+        expect(fancyTrading).toHaveAttribute('aria-expanded', 'false');
+        expect(screen.getAllByRole('button', { name: 'FancyTrading' })).toHaveLength(1);
+
+        fireEvent.click(fancyTrading);
+        const dialog = screen.getByRole('dialog', { name: 'FancyTrading' });
+        expect(fancyTrading).toHaveAttribute('aria-expanded', 'true');
+        expect(container).not.toContainElement(dialog);
+        await screen.findByText(/FancyTrading insights are locked/);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Close FancyTrading' }));
+        expect(fancyTrading).toHaveAttribute('aria-expanded', 'false');
+        expect(dialog).not.toBeInTheDocument();
+    });
+
     it('should not render Positions and Reports when user is not logged in', () => {
         const store = mockStore({
             ...defaultStoreConfig,
@@ -153,6 +226,7 @@ describe('<Sidebar />', () => {
         renderSidebar(store);
         expect(screen.queryByTestId('dt_sidebar_positions')).not.toBeInTheDocument();
         expect(screen.queryByTestId('dt_sidebar_reports')).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'FancyTrading' })).toBeInTheDocument();
     });
 
     it('should render Help button for all users', () => {

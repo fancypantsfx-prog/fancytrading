@@ -3,11 +3,12 @@ import clsx from 'clsx';
 import { observer } from 'mobx-react-lite';
 
 import { useLocalStorageData } from '@deriv/api';
-import { Loading } from '@deriv/components';
+import { Button, Loading } from '@deriv/components';
 import { getSymbolDisplayName } from '@deriv/shared';
 import { useStore } from '@deriv/stores';
 
 import AccumulatorStats from 'AppV2/Components/AccumulatorStats';
+import { FancyTradingDialogContext } from 'AppV2/Components/AutoTrading/fancy-trading-dialog-context';
 import CurrentSpot from 'AppV2/Components/CurrentSpot';
 import Guide from 'AppV2/Components/Guide';
 import MarketSelector from 'AppV2/Components/MarketSelector';
@@ -27,6 +28,7 @@ import TradeTypes from './trade-types';
 
 const Trade = observer(() => {
     const chart_ref = React.useRef<HTMLDivElement>(null);
+    const fancy_trading = React.useContext(FancyTradingDialogContext);
     const {
         client,
         common: { current_language, network_status },
@@ -122,7 +124,20 @@ const Trade = observer(() => {
                         />
                         <div className='trade__market-selector-guide'>
                             <MarketSelector />
-                            <Guide show_guide_for_selected_contract />
+                            <div className='trade__market-actions'>
+                                <Button
+                                    type='button'
+                                    secondary
+                                    small
+                                    aria-haspopup='dialog'
+                                    aria-expanded={!!fancy_trading?.open}
+                                    disabled={!symbol}
+                                    onClick={() => fancy_trading?.setOpen(true)}
+                                >
+                                    FancyTrading
+                                </Button>
+                                <Guide show_guide_for_selected_contract />
+                            </div>
                         </div>
                         {isDigitTradeType(contract_type) && <CurrentSpot />}
                         <div className='trade__chart-tooltip'>
