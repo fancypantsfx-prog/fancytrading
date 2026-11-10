@@ -15,10 +15,24 @@ const mockSend = jest.fn(async (request: Record<string, unknown>) => {
     }
     return { proposal: { ask_price: 10, payout: 18 } };
 });
-jest.mock('@deriv/shared', () => ({ useWS: () => ({ send: mockSend }) }));
+jest.mock('@deriv/shared', () => ({
+    useWS: () => ({ send: mockSend }),
+    getPlatformLogo: () => 'brand/platform-logo.svg',
+    getDecimalPlaces: () => 2,
+}));
 jest.mock('@deriv/api', () => ({ fetchPremiumAccess: jest.fn(), fetchTickInsights: jest.fn() }));
 
-const props = { symbol: '1HZ100V', currency: 'USD', initial_stake: 10, initial_ticks: 5, is_accumulator: false };
+const props = {
+    symbol: '1HZ100V',
+    currency: 'USD',
+    initial_stake: 10,
+    initial_ticks: 5,
+    is_accumulator: false,
+    account_label: 'Demo · VRTC123',
+    execution_block: '',
+    supportsContract: () => true,
+    onStart: jest.fn(),
+};
 
 beforeEach(() => {
     jest.clearAllMocks();
@@ -56,13 +70,28 @@ it('compares the selected market and filters quoted payouts without executing tr
         ],
     });
     render(<TickInsights {...props} />);
-    fireEvent.click(screen.getByRole('button', { name: '400-Tick Trade Insights' }));
+    fireEvent.click(screen.getByRole('button', { name: 'FancyTrading' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Compare trades' }));
 
     expect(await screen.findByRole('rowheader', { name: 'Rise' })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(/Minimum total payout/), { target: { value: '19' } });
     expect(screen.queryByRole('rowheader', { name: 'Rise' })).toBeNull();
     expect(screen.getByRole('rowheader', { name: 'Fall' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Review Fall' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a run stop loss');
+    expect(props.onStart).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText(/Run stop loss/), { target: { value: '25' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Review Fall' }));
+    expect(screen.getByRole('region', { name: 'Review automatic run' })).toHaveTextContent('Demo · VRTC123');
+    expect(props.onStart).not.toHaveBeenCalled();
+    props.onStart.mockResolvedValue('run-demo');
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm and start run' }));
+    await screen.findByText(/Automatic run run-demo started/);
+    expect(props.onStart).toHaveBeenCalledTimes(1);
+    expect(props.onStart).toHaveBeenCalledWith(
+        expect.objectContaining({ candidate: 'PUT', ticks: 5, stake: 10, stopLoss: 25, payout: 20 }),
+        expect.any(AbortSignal)
+    );
     expect(mockSend).toHaveBeenCalledWith({ ticks_history: '1HZ100V', end: 'latest', count: 400, style: 'ticks' });
     expect(mockSend.mock.calls.every(([request]) => request.proposal || request.ticks_history)).toBe(true);
     expect(fetchTickInsights).toHaveBeenCalledWith(
@@ -74,8 +103,8 @@ it('compares the selected market and filters quoted payouts without executing tr
 it('keeps market requests behind the access check', async () => {
     (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'locked' });
     render(<TickInsights {...props} />);
-    fireEvent.click(screen.getByRole('button', { name: '400-Tick Trade Insights' }));
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Trade Insights is locked'));
+    fireEvent.click(screen.getByRole('button', { name: 'FancyTrading' }));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('FancyTrading insights are locked'));
     expect(mockSend).not.toHaveBeenCalled();
     expect(fetchTickInsights).not.toHaveBeenCalled();
 });

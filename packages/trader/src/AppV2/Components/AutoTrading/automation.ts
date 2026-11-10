@@ -310,6 +310,30 @@ export const validateParameter = (value: unknown, schema: ParameterSchema, path 
             );
     }
 };
+export const getStrategyDefaults = (schema?: ParameterSchema) => {
+    const defaults: Record<string, string> = {};
+    for (const [key, definition] of Object.entries(schema?.properties ?? {})) {
+        if (key === 'take_profit' || key === 'stop_loss' || isSharedStakeParameter(key)) continue;
+        if (
+            key.startsWith('max_') &&
+            !schema?.required?.includes(key) &&
+            (typeof definition.default === 'number' || typeof definition.default === 'string') &&
+            String(definition.default).trim() !== '' &&
+            Number(definition.default) === 0
+        )
+            continue;
+        if ((key === 'stake_list' || key === 'stakes') && Array.isArray(definition.default)) {
+            defaults[key] = JSON.stringify(definition.default.slice(1));
+        } else if (definition.default !== undefined) {
+            defaults[key] =
+                definition.type === 'string' && !definition.enum
+                    ? String(definition.default)
+                    : JSON.stringify(definition.default);
+        }
+    }
+    return defaults;
+};
+
 export const parseParameters = (strategy: Strategy, values: Record<string, string>, shared?: ContractTemplate) => {
     const schema = getRunParameterSchema(strategy);
     const parameters: Record<string, unknown> = {};
@@ -543,6 +567,9 @@ export class AutomationController {
             this.polling = false;
         }
     }
+    async quote(template: ContractTemplate) {
+        return (await this.request('proposal', template)) as { ask_price?: string | number; payout?: string | number };
+    }
     async start(strategy: Strategy, contract_template: ContractTemplate, strategy_parameters: Record<string, unknown>) {
         if (!this.state.ready || this.state.uncertain || this.state.runs.some((run) => run.status !== 'stopped'))
             throw new Error('Refresh runs and stop any active run before starting another.');
@@ -581,6 +608,7 @@ export class AutomationController {
                 selected_id: run.run_id,
                 updated_at: Date.now(),
             });
+            return run;
         } catch (error) {
             // An explicit API rejection is safe to correct and retry manually.
             // A lost or malformed response may still mean the server executed the command. Never replay it.

@@ -41,11 +41,13 @@ Close or cancel a preview early.
 DELETE FROM premium_previews WHERE feature = 'example-feature';
 ```
 
-## 400-Tick Trade Insights
+## FancyTrading
 
-Open **400-Tick Trade Insights** from the trading panel beside the Manual and Automatic modes. It launches free. To require paid access, set the Pages environment variable `TICK_INSIGHTS_ACCESS` to `paid` and redeploy with the `PREMIUM_DB` binding. Use `tick-insights` as the feature key for grants and preview windows. The analysis endpoint checks access on every comparison.
+Open **FancyTrading** from the trading panel beside the Manual and Automatic modes. It launches free. To require paid access, set the Pages environment variable `TICK_INSIGHTS_ACCESS` to `paid` and redeploy with the `PREMIUM_DB` binding. Use `tick-insights` as the feature key for grants and preview windows. The analysis endpoint checks access on every comparison.
 
-The comparison uses the active market's 400 latest ticks and requests fresh Deriv payout quotes at the entered stake. Rise, Fall, Even and Odd results use the selected tick duration. Accumulator results replay the currently quoted range, compare available growth rates at the selected target, and show an estimated compounded payout. Quotes that Deriv rejects, or accumulator targets beyond quoted limits, are omitted. The two 200-tick halves are scored separately using trials that share no price moves within each half. The figures describe the sample and current quotes. They do not estimate a future trade's odds or modify an automatic run.
+The comparison uses the active market's 400 latest ticks and requests fresh Deriv payout quotes at the entered stake. Rise, Fall, Even and Odd results use the selected tick duration. Accumulator results replay the currently quoted range, compare available growth rates at the selected target, and show an estimated compounded payout. Quotes that Deriv rejects, or accumulator targets beyond quoted limits, are omitted. The two 200-tick halves are scored separately using trials that share no price moves within each half. The figures describe the sample and the quotes at comparison time.
+
+A connected user can enter a stake and run stop loss, choose a row, and confirm a fixed-stake automatic run on the account shown in the review. Some Deriv strategies also require a run take profit. The stop loss must cover at least one stake. For Accumulators, the estimated profit at the chosen tick target becomes the take-profit amount on each contract. A fresh access check and proposal precede execution. Manage or stop a run in **Automatic settings**. Already open contracts can still settle after the run stops.
 
 See [Deriv's tick history API](https://developers.deriv.com/docs/data/ticks-history/), [price proposal API](https://developers.deriv.com/docs/trading/proposal/), and [trading terms](https://deriv.com/terms-and-conditions/trading-terms).
 

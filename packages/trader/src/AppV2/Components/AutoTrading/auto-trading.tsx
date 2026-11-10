@@ -1,6 +1,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { observer } from 'mobx-react-lite';
+import { fetchPremiumAccess } from '@deriv/api';
 import { getDecimalPlaces, useWS } from '@deriv/shared';
 import { useStore } from '@deriv/stores';
 import { localize } from '@deriv-com/translations';
@@ -15,6 +16,7 @@ import {
     ContractTemplate,
     getRunParameterSchema,
     getFixedStakeStrategy,
+    getStrategyDefaults,
     getMethodValues,
     isFixedStakeStrategy,
     getSharedContractType,
@@ -33,6 +35,8 @@ import {
     stepNumber,
 } from './automation';
 import TickInsights from './tick-insights';
+import { getInsightContract } from './tick-insights-data';
+import type { TInsightRun } from './tick-insights-data';
 import './auto-trading.scss';
 
 const EMPTY: AutomationState = {
@@ -436,27 +440,7 @@ const AutoTrading = observer(
         // Reset only when the strategy changes, not when run refreshes replace objects.
         const defaults_key = strategy ? strategy.strategy_id + String(fixed_stake) + JSON.stringify(schema) : '';
         React.useEffect(() => {
-            const defaults: Record<string, string> = {};
-            for (const [key, definition] of Object.entries(schema?.properties ?? {})) {
-                if (key === 'take_profit' || key === 'stop_loss' || isSharedStakeParameter(key)) continue;
-                if (
-                    key.startsWith('max_') &&
-                    !schema?.required?.includes(key) &&
-                    (typeof definition.default === 'number' || typeof definition.default === 'string') &&
-                    String(definition.default).trim() !== '' &&
-                    Number(definition.default) === 0
-                )
-                    continue;
-                if ((key === 'stake_list' || key === 'stakes') && Array.isArray(definition.default)) {
-                    defaults[key] = JSON.stringify(definition.default.slice(1));
-                    continue;
-                }
-                if (definition.default !== undefined)
-                    defaults[key] =
-                        definition.type === 'string' && !definition.enum
-                            ? String(definition.default)
-                            : JSON.stringify(definition.default);
-            }
+            const defaults = getStrategyDefaults(schema);
             const same_account = risk_account.current === account_id;
             risk_account.current = account_id ?? '';
             setValues((previous) => ({
@@ -562,6 +546,134 @@ const AutoTrading = observer(
             }
             await executeStart(snapshot);
         };
+        const getInsightStrategy = (type: string, strategies: Strategy[]) =>
+            getFixedStakeStrategy(
+                strategies.filter(
+                    item =>
+                        item.supported_contract_types.includes(type) &&
+                        !!getRunParameterSchema(item).properties?.stop_loss
+                )
+            );
+
+        const startFromInsights = async (draft: TInsightRun, signal: AbortSignal) => {
+            const current = controller.current;
+            if (!current || starting.current)
+                throw new Error(localize('Automatic trading is busy. Try again shortly.'));
+
+            const ensureAvailable = () => {
+                if (signal.aborted) throw new Error(localize('The trade review was closed.'));
+                if (
+                    controller.current !== current ||
+                    owner.current !== account_id ||
+                    client.loginid !== account_id ||
+                    !client.is_logged_in ||
+                    !client.is_authorize ||
+                    ui.is_switching_account ||
+                    !common.is_socket_opened ||
+                    store.symbol !== draft.symbol ||
+                    store.currency !== draft.currency ||
+                    store.is_market_closed ||
+                    is_market_closed ||
+                    !store.is_trade_enabled_v2
+                )
+                    throw new Error(
+                        localize('The account or market changed. Reopen FancyTrading and review the trade again.')
+                    );
+                if (
+                    !current.state.ready ||
+                    current.state.uncertain ||
+                    current.state.busy ||
+                    current.state.runs.some(item => item.status !== 'stopped')
+                )
+                    throw new Error(
+                        localize('Check Automatic settings for an active or unconfirmed run before starting.')
+                    );
+            };
+            ensureAvailable();
+
+            const settings = getInsightContract(draft.family, draft.candidate, draft.ticks);
+            const strategy = getInsightStrategy(settings.contract_type, current.state.strategies);
+            if (!strategy) throw new Error(localize('Fixed-stake automatic trading is unavailable for this contract.'));
+            const schema = getRunParameterSchema(strategy);
+            if (schema.required?.includes('take_profit') && draft.takeProfit === undefined) {
+                throw new Error(localize('Enter a run take profit for this strategy and review the trade again.'));
+            }
+            const template = buildTemplate({
+                ...settings,
+                currency: draft.currency,
+                underlying_symbol: draft.symbol,
+                amount: draft.stake,
+                basis: 'stake',
+                ...(draft.contractTakeProfit !== undefined && {
+                    limit_order: { take_profit: draft.contractTakeProfit },
+                }),
+            });
+            const required_defaults = Object.fromEntries(
+                Object.entries(getStrategyDefaults(schema)).filter(([key]) => schema.required?.includes(key))
+            );
+            const parameters = parseParameters(
+                strategy,
+                getMethodValues(
+                    strategy,
+                    {
+                        ...required_defaults,
+                        stop_loss: String(draft.stopLoss),
+                        take_profit: draft.takeProfit === undefined ? '' : String(draft.takeProfit),
+                    },
+                    true
+                ),
+                template
+            );
+            validateRunParameters(strategy, template, parameters);
+            if (!hasRunStopLoss(parameters) || Number(parameters.stop_loss) < draft.stake) {
+                throw new Error(localize('Enter a supported run stop loss at least as large as the stake.'));
+            }
+
+            starting.current = true;
+            try {
+                const access = await fetchPremiumAccess('tick-insights', signal);
+                if (access.access === 'locked')
+                    throw new Error(localize('FancyTrading access ended. Check access and try again.'));
+                ensureAvailable();
+                const quote = await current.quote(template);
+                ensureAvailable();
+                if ('expiresAt' in access && access.expiresAt * 1000 <= Date.now()) {
+                    throw new Error(localize('FancyTrading access ended. Check access and try again.'));
+                }
+                if (
+                    Number(quote.ask_price) !== draft.stake ||
+                    (draft.family === 'digital' && Number(quote.payout) !== draft.payout)
+                ) {
+                    throw new Error(localize('The quote changed. Compare trades again to review the latest payout.'));
+                }
+                if (
+                    JSON.stringify(getInsightStrategy(settings.contract_type, current.state.strategies)) !==
+                    JSON.stringify(strategy)
+                ) {
+                    throw new Error(localize('Automatic strategy settings changed. Review the trade again.'));
+                }
+                const started = await current.start(strategy, template, parameters);
+                if (controller.current === current && (started || current.state.uncertain)) setMode('automatic');
+                if (!started)
+                    throw new Error(
+                        current.state.error || localize('Could not confirm the run. Check Automatic settings.')
+                    );
+                return started.run_id;
+            } finally {
+                starting.current = false;
+            }
+        };
+        const insight_block =
+            !eligible || !account_id
+                ? localize('Sign in and connect your Deriv account to start a run.')
+                : is_market_closed || !store.is_trade_enabled_v2
+                  ? localize('Trading is unavailable on this market.')
+                  : active_run || state.uncertain
+                    ? localize('Check Automatic settings for an active or unconfirmed run.')
+                    : !state.ready || state.busy
+                      ? localize('Waiting for Automatic Trading to be ready.')
+                      : '';
+
         const control = async (action: 'pause' | 'resume' | 'stop', target = run) => {
             if (!eligible || owner.current !== account_id || !target || !controller.current) return;
             setFormError('');
@@ -934,8 +1046,16 @@ const AutoTrading = observer(
                     symbol={store.symbol}
                     currency={/^[A-Z]{3}$/.test(store.currency) ? store.currency : 'USD'}
                     initial_stake={Number(automatic_stake_text) > 0 ? Number(automatic_stake_text) : 10}
-                    initial_ticks={store.duration_unit === 't' && store.duration >= 1 && store.duration <= 20 ? store.duration : 5}
+                    initial_ticks={
+                        store.duration_unit === 't' && store.duration >= 1 && store.duration <= 20 ? store.duration : 5
+                    }
                     is_accumulator={contract === 'ACCU'}
+                    account_label={
+                        account_id ? (client.is_virtual ? localize('Demo') : localize('Real')) + ' · ' + account_id : ''
+                    }
+                    execution_block={insight_block}
+                    supportsContract={type => !!getInsightStrategy(type, state.strategies)}
+                    onStart={startFromInsights}
                 />
                 {mode === 'manual' ? (
                     <>

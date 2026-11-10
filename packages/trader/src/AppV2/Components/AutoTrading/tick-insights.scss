@@ -63,6 +63,48 @@
         }
     }
 
+    &__brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+
+        img {
+            border-radius: 8px;
+        }
+
+        p {
+            color: var(--text-less-prominent, #666);
+        }
+    }
+
+    &__review {
+        display: grid;
+        gap: 12px;
+        margin-top: 16px;
+
+        dl {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+            gap: 8px 16px;
+            padding: 12px;
+            border-radius: 8px;
+            background: var(--general-section-1, #f1f4f8);
+        }
+
+        dd {
+            margin: 0;
+            font-weight: 600;
+            overflow-wrap: anywhere;
+        }
+    }
+
+    &__actions {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 8px;
+    }
+
     &__badge {
         display: inline-block;
         padding: 4px 8px;

@@ -1,5 +1,6 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { fetchPremiumAccess, fetchTickInsights } from '@deriv/api';
 import AutoTrading from '../auto-trading';
 
 const mockStrategy = {
@@ -22,7 +23,15 @@ const mockTrade = {
     is_trade_enabled_v2: true,
 };
 let mockRuns = [];
+let mockQuotePayout = 18;
 const mockSend = jest.fn(async (request) => {
+    if (request.ticks_history) {
+        return { pip_size: 2, history: {
+            prices: Array.from({ length: 400 }, (_, index) => 100 + index),
+            times: Array.from({ length: 400 }, (_, index) => 1800000000 + index),
+        } };
+    }
+    if (request.proposal) return { proposal: { ask_price: request.amount, payout: mockQuotePayout } };
     if (request.auto_list_strategies)
         return { auto_list_strategies: { strategies: JSON.parse(JSON.stringify([mockStrategy])) } };
     if (request.auto_list) return { auto_list: { runs: mockRuns } };
@@ -47,7 +56,9 @@ const mockHost = {
     ui: { is_switching_account: false },
 };
 jest.mock('mobx-react-lite', () => ({ observer: (component) => component }));
+jest.mock('@deriv/api', () => ({ fetchPremiumAccess: jest.fn(), fetchTickInsights: jest.fn() }));
 jest.mock('@deriv/shared', () => ({
+    getPlatformLogo: () => 'brand/platform-logo.svg',
     useWS: () => mockWS,
     getDecimalPlaces: () => 2,
     getSymbolDisplayName: (symbol) => symbol,
@@ -106,6 +117,11 @@ beforeAll(() => {
 });
 beforeEach(() => {
     mockSend.mockClear();
+    fetchPremiumAccess.mockReset().mockResolvedValue({ access: 'free' });
+    fetchTickInsights.mockReset();
+    mockQuotePayout = 18;
+    mockHost.client.loginid = 'VRTC123';
+    mockStrategy.supported_contract_types = ['CALL', 'PUT'];
     mockStrategy.strategy_id = 'martingale';
     mockStrategy.parameters = {
         multiplier: { type: 'number', default: 2 },
@@ -406,4 +422,101 @@ it('requires positive TP and SL with the actual live strategy schema', async () 
  fireEvent.click(within(menu).getByRole('button', {name:'Start automatic trading'}));
  await waitFor(()=>expect(mockSend).toHaveBeenCalledWith(expect.objectContaining({auto_start:1,strategy_parameters:{initial_stake:'10',take_profit:'20',stop_loss:'10'}})));
  expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+});
+
+const reviewFancyTrade = async (candidate = 'CALL') => {
+    const sample = { hits: 30, count: 39 };
+    fetchTickInsights.mockResolvedValue({
+        access: { access: 'free' },
+        currency: 'USD',
+        ticks: 5,
+        firstTick: 1800000000,
+        lastTick: 1800000399,
+        rows: [
+            {
+                candidate,
+                stake: 10,
+                payout: candidate === 'CALL' ? 18 : 11.592740743,
+                estimated: candidate !== 'CALL',
+                older: sample,
+                recent: sample,
+                historical: { hits: 60, count: 78 },
+            },
+        ],
+    });
+    render(<AutoTrading />);
+    await waitReady();
+    fireEvent.click(screen.getByRole('button', { name: 'FancyTrading' }));
+    if (candidate !== 'CALL')
+        fireEvent.change(await screen.findByLabelText('Compare'), { target: { value: 'accumulator' } });
+    fireEvent.change(await screen.findByLabelText(/Run stop loss/), { target: { value: '25' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Compare trades' }));
+    const review = await screen.findByRole('button', {
+        name: candidate === 'CALL' ? 'Review Rise' : 'Review 3% growth',
+    });
+    await waitFor(() => expect(review).toBeEnabled());
+    fireEvent.click(review);
+    expect(mockSend.mock.calls.some(([request]) => request.auto_start)).toBe(false);
+};
+
+it('starts the reviewed accumulator on confirmation with a fixed stake and separate contract and run limits', async () => {
+    mockStrategy.supported_contract_types.push('ACCU');
+    await reviewFancyTrade('3');
+    const confirm = screen.getByRole('button', { name: 'Confirm and start run' });
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+    await screen.findByText(/Automatic run new-run started/);
+
+    expect(mockSend.mock.calls.filter(([request]) => request.auto_start)).toEqual([
+        [
+            {
+                auto_start: 1,
+                strategy_id: 'martingale',
+                contract_template: {
+                    contract_type: 'ACCU',
+                    currency: 'USD',
+                    underlying_symbol: 'R_100',
+                    amount: 10,
+                    basis: 'stake',
+                    growth_rate: 0.03,
+                    limit_order: { take_profit: 1.59 },
+                },
+                strategy_parameters: { multiplier: 1, stop_loss: 25 },
+            },
+        ],
+    ]);
+});
+
+it.each([
+    [
+        'an updated payout',
+        () => {
+            mockQuotePayout = 17;
+        },
+        'The quote changed',
+    ],
+    [
+        'expired access',
+        () => {
+            fetchPremiumAccess.mockResolvedValueOnce({ access: 'locked' });
+        },
+        'FancyTrading access ended',
+    ],
+    [
+        'an account change',
+        () => {
+            fetchPremiumAccess.mockImplementationOnce(async () => {
+                mockHost.client.loginid = 'VRTC456';
+                return { access: 'free' };
+            });
+        },
+        'The account or market changed',
+    ],
+])('blocks a FancyTrading start with %s', async (_condition, change, message) => {
+    await reviewFancyTrade();
+    change();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm and start run' }));
+    const dialog = screen.getByRole('dialog', { name: 'FancyTrading' });
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(message);
+    expect(mockSend.mock.calls.some(([request]) => request.auto_start)).toBe(false);
 });

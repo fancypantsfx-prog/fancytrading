@@ -21,6 +21,32 @@ export type TTickInsights = {
     }[];
 };
 
+export type TInsightRun = {
+    candidate: string;
+    family: TFamily;
+    ticks: number;
+    symbol: string;
+    currency: string;
+    stake: number;
+    payout: number;
+    stopLoss: number;
+    takeProfit?: number;
+    contractTakeProfit?: number;
+};
+
+const DIGITAL_CONTRACTS = ['CALL', 'PUT', 'DIGITEVEN', 'DIGITODD'];
+const ACCUMULATOR_RATES = ['1', '2', '3', '4', '5'];
+
+export const getInsightContract = (family: TFamily, candidate: string, ticks: number) => {
+    if (family === 'accumulator' && ACCUMULATOR_RATES.includes(candidate)) {
+        return { contract_type: 'ACCU', growth_rate: Number(candidate) / 100 };
+    }
+    if (family === 'digital' && DIGITAL_CONTRACTS.includes(candidate)) {
+        return { contract_type: candidate, duration: ticks, duration_unit: 't' };
+    }
+    throw new Error('Choose a supported contract from the comparison.');
+};
+
 type TMarketData = {
     history?: { prices: (number | string)[]; times: number[] };
     pip_size?: number;
@@ -46,15 +72,12 @@ export const compareRecentTicks = async (
     signal: AbortSignal
 ) => {
     const { symbol, currency, stake, ticks, family } = options;
-    const candidates = family === 'accumulator' ? ['1', '2', '3', '4', '5'] : ['CALL', 'PUT', 'DIGITEVEN', 'DIGITODD'];
+    const candidates = family === 'accumulator' ? ACCUMULATOR_RATES : DIGITAL_CONTRACTS;
 
     const historyRequest = send({ ticks_history: symbol, end: 'latest', count: 400, style: 'ticks' });
     const quotesRequest = Promise.allSettled(
         candidates.map(async candidate => {
-            const settings =
-                family === 'accumulator'
-                    ? { contract_type: 'ACCU', growth_rate: Number(candidate) / 100 }
-                    : { contract_type: candidate, duration: ticks, duration_unit: 't' };
+            const settings = getInsightContract(family, candidate, ticks);
             const response = await send({
                 proposal: 1,
                 amount: stake,
