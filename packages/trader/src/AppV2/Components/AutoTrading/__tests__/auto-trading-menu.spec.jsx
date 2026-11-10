@@ -1,6 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { fetchPremiumAccess, fetchTickInsights } from '@deriv/api';
+import { processPurchase } from 'Stores/Modules/Trading/Actions/purchase';
 import AutoTrading from '../auto-trading';
 import { FancyTradingDialogContext } from '../fancy-trading-dialog-context';
 
@@ -50,7 +51,15 @@ const mockSend = jest.fn(async (request) => {
     if (request.auto_stop) return { auto_stop: { ...mockRuns[0], status: 'stopped' } };
     return {};
 });
-const mockWS = { send: mockSend };
+const mockUnsubscribe = jest.fn();
+const mockWS = {
+    send: mockSend,
+    subscribeProposal: jest.fn((request, respond) => {
+        respond({ proposal: { id: 'streaming-proposal', ask_price: request.amount, payout: mockQuotePayout } });
+        return { unsubscribe: mockUnsubscribe };
+    }),
+};
+jest.mock('Stores/Modules/Trading/Actions/purchase', () => ({ processPurchase: jest.fn() }));
 const mockHost = {
     client: { loginid: 'VRTC123', is_logged_in: true, is_authorize: true },
     common: { is_socket_opened: true },
@@ -118,6 +127,10 @@ beforeAll(() => {
 });
 beforeEach(() => {
     mockSend.mockClear();
+    mockWS.subscribeProposal.mockClear();
+    mockUnsubscribe.mockClear();
+    processPurchase.mockReset().mockResolvedValue({ buy: { contract_id: 12345 } });
+    localStorage.clear();
     fetchPremiumAccess.mockReset().mockResolvedValue({ access: 'free' });
     fetchTickInsights.mockReset();
     mockQuotePayout = 18;
@@ -425,7 +438,7 @@ it('requires positive TP and SL with the actual live strategy schema', async () 
  expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
 });
 
-const reviewFancyTrade = async (candidate = 'CALL') => {
+const reviewFancyTrade = async (candidate = 'CALL', automatic = true) => {
     const sample = { hits: 30, count: 39 };
     fetchTickInsights.mockResolvedValue({
         access: { access: 'free' },
@@ -453,10 +466,10 @@ const reviewFancyTrade = async (candidate = 'CALL') => {
     await waitReady();
     if (candidate !== 'CALL')
         fireEvent.change(await screen.findByLabelText('Compare'), { target: { value: 'accumulator' } });
-    fireEvent.change(await screen.findByLabelText(/Run stop loss/), { target: { value: '25' } });
+    if (automatic) fireEvent.change(await screen.findByLabelText(/Run stop loss/), { target: { value: '25' } });
     fireEvent.click(screen.getByRole('button', { name: 'Compare trades' }));
     const review = await screen.findByRole('button', {
-        name: candidate === 'CALL' ? 'Review Rise' : 'Review 3% growth',
+        name: automatic ? (candidate === 'CALL' ? 'Review Rise' : 'Review 3% growth') : 'Buy Rise once',
     });
     await waitFor(() => expect(review).toBeEnabled());
     fireEvent.click(review);
@@ -523,4 +536,55 @@ it.each([
     const dialog = screen.getByRole('dialog', { name: 'FancyTrading' });
     expect(await within(dialog).findByRole('alert')).toHaveTextContent(message);
     expect(mockSend.mock.calls.some(([request]) => request.auto_start)).toBe(false);
+});
+
+it('buys exactly one contract from a fresh streaming proposal with the reviewed stake', async () => {
+    mockStrategy.supported_contract_types = [];
+    await reviewFancyTrade('CALL', false);
+    expect(screen.getByRole('region', { name: 'Review one contract' })).toHaveTextContent('The full stake is at risk.');
+    expect(processPurchase).not.toHaveBeenCalled();
+
+    const confirm = screen.getByRole('button', { name: 'Confirm and buy once' });
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+    await screen.findByText(/Contract 12345 purchased/);
+    expect(mockWS.subscribeProposal).toHaveBeenCalledWith(
+        {
+            contract_type: 'CALL',
+            currency: 'USD',
+            underlying_symbol: 'R_100',
+            amount: 10,
+            basis: 'stake',
+            duration: 5,
+            duration_unit: 't',
+            subscribe: 1,
+        },
+        expect.any(Function)
+    );
+    expect(processPurchase).toHaveBeenCalledTimes(1);
+    expect(processPurchase).toHaveBeenCalledWith('streaming-proposal', 10);
+    expect(mockUnsubscribe).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls.some(([request]) => request.auto_start)).toBe(false);
+});
+
+it('blocks a one-off purchase when the streaming payout changes', async () => {
+    await reviewFancyTrade('CALL', false);
+    mockQuotePayout = 17;
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm and buy once' }));
+    expect(await within(screen.getByRole('dialog', { name: 'FancyTrading' })).findByRole('alert')).toHaveTextContent(
+        'The quote changed'
+    );
+    expect(processPurchase).not.toHaveBeenCalled();
+    expect(mockUnsubscribe).toHaveBeenCalledTimes(1);
+});
+
+it('blocks a second one-off purchase after an unconfirmed broker response', async () => {
+    await reviewFancyTrade('CALL', false);
+    processPurchase.mockRejectedValueOnce(new Error('Connection closed'));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm and buy once' }));
+    expect(await within(screen.getByRole('dialog', { name: 'FancyTrading' })).findByRole('alert')).toHaveTextContent(
+        'Purchase status is unknown'
+    );
+    expect(screen.getByRole('button', { name: 'Confirm and buy once' })).toBeDisabled();
+    expect(processPurchase).toHaveBeenCalledTimes(1);
 });

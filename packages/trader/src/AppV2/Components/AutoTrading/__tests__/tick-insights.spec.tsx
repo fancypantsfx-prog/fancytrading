@@ -31,12 +31,16 @@ const props = {
     is_accumulator: false,
     account_label: 'Demo · VRTC123',
     execution_block: '',
+    purchase_block: '',
+    preset_key: 'test-fancy-preset:VRTC123:USD',
+    onBuy: jest.fn(),
     supportsContract: () => true,
     onStart: jest.fn(),
 };
 
 beforeEach(() => {
     jest.clearAllMocks();
+    localStorage.clear();
     HTMLDialogElement.prototype.showModal = function () {
         this.setAttribute('open', '');
     };
@@ -78,6 +82,10 @@ it('compares the selected market and filters quoted payouts without executing tr
     fireEvent.click(await screen.findByRole('button', { name: 'Compare trades' }));
 
     expect(await screen.findByRole('rowheader', { name: 'Rise' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh comparison' }));
+    await waitFor(() => expect(fetchTickInsights).toHaveBeenCalledTimes(2));
+    expect(props.onBuy).not.toHaveBeenCalled();
+    expect(props.onStart).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText(/Minimum total payout/), { target: { value: '19' } });
     expect(screen.queryByRole('rowheader', { name: 'Rise' })).toBeNull();
     expect(screen.getByRole('rowheader', { name: 'Fall' })).toBeInTheDocument();
@@ -85,6 +93,8 @@ it('compares the selected market and filters quoted payouts without executing tr
     expect(screen.getByRole('alert')).toHaveTextContent('Enter a run stop loss');
     expect(props.onStart).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText(/Run stop loss/), { target: { value: '25' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save automatic preset' }));
+    expect(JSON.parse(localStorage.getItem(props.preset_key) ?? 'null')).toEqual({ stake: 10, ticks: 5, stopLoss: 25 });
     fireEvent.click(screen.getByRole('button', { name: 'Review Fall' }));
     expect(screen.getByRole('region', { name: 'Review automatic run' })).toHaveTextContent('Demo · VRTC123');
     expect(props.onStart).not.toHaveBeenCalled();
@@ -102,6 +112,20 @@ it('compares the selected market and filters quoted payouts without executing tr
         expect.objectContaining({ prices: expect.any(Array), ticks: 5, precision: 2 }),
         expect.any(AbortSignal)
     );
+});
+
+it('loads the saved automatic settings for the matching account and currency', async () => {
+    (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
+    localStorage.setItem(props.preset_key, JSON.stringify({ stake: 12, ticks: 7, stopLoss: 24, takeProfit: 16 }));
+    render(
+        <FancyTradingDialogContext.Provider value={{ open: true, setOpen: jest.fn() }}>
+            <TickInsights {...props} />
+        </FancyTradingDialogContext.Provider>
+    );
+    expect(await screen.findByLabelText(/Stake per contract/)).toHaveValue(12);
+    expect(screen.getByLabelText(/Tick target/)).toHaveValue(7);
+    expect(screen.getByLabelText(/Run stop loss/)).toHaveValue(24);
+    expect(screen.getByLabelText(/Run take profit/)).toHaveValue(16);
 });
 
 it('keeps market requests behind the access check', async () => {

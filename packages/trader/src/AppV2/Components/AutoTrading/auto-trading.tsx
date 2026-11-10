@@ -8,6 +8,7 @@ import { localize } from '@deriv-com/translations';
 import PurchaseButton from 'AppV2/Components/PurchaseButton';
 import { getProposalRequestObject } from 'AppV2/Utils/trade-params-utils';
 import { getDisplayedContractTypes } from 'AppV2/Utils/trade-types-utils';
+import { processPurchase } from 'Stores/Modules/Trading/Actions/purchase';
 import { useTraderStore } from 'Stores/useTraderStores';
 import {
     AutomationController,
@@ -35,8 +36,8 @@ import {
     stepNumber,
 } from './automation';
 import TickInsights from './tick-insights';
-import { getInsightContract } from './tick-insights-data';
-import type { TInsightRun } from './tick-insights-data';
+import { getInsightContract, waitForInsightRequest } from './tick-insights-data';
+import type { TInsightRun, TInsightTrade } from './tick-insights-data';
 import './auto-trading.scss';
 
 const EMPTY: AutomationState = {
@@ -351,7 +352,7 @@ type PendingStart = {
 const AutoTrading = observer(
     ({ is_market_closed, onPurchaseSuccess }: { is_market_closed?: boolean; onPurchaseSuccess?: () => void }) => {
         const store = useTraderStore();
-        const { client, common, ui } = useStore();
+        const { client, common, ui, portfolio } = useStore();
         const ws = useWS();
         const [mode, setMode] = React.useState<'manual' | 'automatic'>('manual');
         const [menu_open, setMenuOpen] = React.useState(false);
@@ -361,6 +362,7 @@ const AutoTrading = observer(
         const [form_error, setFormError] = React.useState('');
         const [automatic_stake, setAutomaticStake] = React.useState<string>();
         const [pending_start, setPendingStart] = React.useState<PendingStart>();
+        const [unconfirmed_purchases, setUnconfirmedPurchases] = React.useState<string[]>([]);
         const starting = React.useRef(false);
         const warning_dialog = React.useRef<HTMLDialogElement>(null);
         const warning_title = React.useId();
@@ -555,27 +557,66 @@ const AutoTrading = observer(
                 )
             );
 
+        const buildInsightTemplate = (draft: TInsightTrade) =>
+            buildTemplate({
+                ...getInsightContract(draft.family, draft.candidate, draft.ticks),
+                currency: draft.currency,
+                underlying_symbol: draft.symbol,
+                amount: draft.stake,
+                basis: 'stake',
+                ...(draft.contractTakeProfit !== undefined && {
+                    limit_order: { take_profit: draft.contractTakeProfit },
+                }),
+            });
+
+        const ensureInsightTrade = (draft: TInsightTrade, signal: AbortSignal) => {
+            if (signal.aborted) throw new Error(localize('The trade review was closed.'));
+            if (
+                !account_id ||
+                client.loginid !== account_id ||
+                !client.is_logged_in ||
+                !client.is_authorize ||
+                ui.is_switching_account ||
+                !common.is_socket_opened ||
+                store.symbol !== draft.symbol ||
+                store.currency !== draft.currency ||
+                store.is_market_closed ||
+                is_market_closed ||
+                !store.is_trade_enabled_v2
+            ) {
+                throw new Error(
+                    localize('The account or market changed. Reopen FancyTrading and review the trade again.')
+                );
+            }
+            return account_id;
+        };
+
+        const ensureInsightAccess = (access: Awaited<ReturnType<typeof fetchPremiumAccess>>) => {
+            if (access.access === 'locked' || ('expiresAt' in access && access.expiresAt * 1000 <= Date.now())) {
+                throw new Error(localize('FancyTrading access ended. Check access and try again.'));
+            }
+        };
+
+        const ensureInsightQuote = (
+            draft: TInsightTrade,
+            quote: { ask_price?: string | number; payout?: string | number }
+        ) => {
+            if (
+                Number(quote.ask_price) !== draft.stake ||
+                (draft.family === 'digital' && Number(quote.payout) !== draft.payout)
+            ) {
+                throw new Error(localize('The quote changed. Refresh the comparison to review the latest payout.'));
+            }
+        };
+
         const startFromInsights = async (draft: TInsightRun, signal: AbortSignal) => {
             const current = controller.current;
             if (!current || starting.current)
                 throw new Error(localize('Automatic trading is busy. Try again shortly.'));
 
             const ensureAvailable = () => {
-                if (signal.aborted) throw new Error(localize('The trade review was closed.'));
-                if (
-                    controller.current !== current ||
-                    owner.current !== account_id ||
-                    client.loginid !== account_id ||
-                    !client.is_logged_in ||
-                    !client.is_authorize ||
-                    ui.is_switching_account ||
-                    !common.is_socket_opened ||
-                    store.symbol !== draft.symbol ||
-                    store.currency !== draft.currency ||
-                    store.is_market_closed ||
-                    is_market_closed ||
-                    !store.is_trade_enabled_v2
-                )
+                ensureInsightTrade(draft, signal);
+                if (controller.current !== current || owner.current !== account_id)
                     throw new Error(
                         localize('The account or market changed. Reopen FancyTrading and review the trade again.')
                     );
@@ -598,16 +639,7 @@ const AutoTrading = observer(
             if (schema.required?.includes('take_profit') && draft.takeProfit === undefined) {
                 throw new Error(localize('Enter a run take profit for this strategy and review the trade again.'));
             }
-            const template = buildTemplate({
-                ...settings,
-                currency: draft.currency,
-                underlying_symbol: draft.symbol,
-                amount: draft.stake,
-                basis: 'stake',
-                ...(draft.contractTakeProfit !== undefined && {
-                    limit_order: { take_profit: draft.contractTakeProfit },
-                }),
-            });
+            const template = buildInsightTemplate(draft);
             const required_defaults = Object.fromEntries(
                 Object.entries(getStrategyDefaults(schema)).filter(([key]) => schema.required?.includes(key))
             );
@@ -632,20 +664,12 @@ const AutoTrading = observer(
             starting.current = true;
             try {
                 const access = await fetchPremiumAccess('tick-insights', signal);
-                if (access.access === 'locked')
-                    throw new Error(localize('FancyTrading access ended. Check access and try again.'));
+                ensureInsightAccess(access);
                 ensureAvailable();
                 const quote = await current.quote(template);
                 ensureAvailable();
-                if ('expiresAt' in access && access.expiresAt * 1000 <= Date.now()) {
-                    throw new Error(localize('FancyTrading access ended. Check access and try again.'));
-                }
-                if (
-                    Number(quote.ask_price) !== draft.stake ||
-                    (draft.family === 'digital' && Number(quote.payout) !== draft.payout)
-                ) {
-                    throw new Error(localize('The quote changed. Compare trades again to review the latest payout.'));
-                }
+                ensureInsightAccess(access);
+                ensureInsightQuote(draft, quote);
                 if (
                     JSON.stringify(getInsightStrategy(settings.contract_type, current.state.strategies)) !==
                     JSON.stringify(strategy)
@@ -663,16 +687,89 @@ const AutoTrading = observer(
                 starting.current = false;
             }
         };
-        const insight_block =
+        const unconfirmed_buy = !!account_id && unconfirmed_purchases.includes(account_id);
+        const unconfirmed_message = localize(
+            'Purchase status is unknown. Check Positions or Reports, then reload before buying again.'
+        );
+
+        const buyFromInsights = async (draft: TInsightTrade, signal: AbortSignal) => {
+            if (starting.current) throw new Error(localize('A trade request is already in progress.'));
+            if (unconfirmed_buy) throw new Error(unconfirmed_message);
+            const purchase_account_id = ensureInsightTrade(draft, signal);
+            const template = buildInsightTemplate(draft);
+            const connection = ws.getWSUrl?.();
+            let subscription: { unsubscribe: () => void } | undefined;
+            starting.current = true;
+            try {
+                const access = await fetchPremiumAccess('tick-insights', signal);
+                ensureInsightAccess(access);
+                ensureInsightTrade(draft, signal);
+                // Only streaming proposal IDs can be bought with the current Deriv API.
+                const { proposal, error } = await waitForInsightRequest(
+                    new Promise<{
+                        proposal?: { id?: string; ask_price?: number | string; payout?: number | string };
+                        error?: { message?: string };
+                    }>(resolve => {
+                        subscription = ws.subscribeProposal({ ...template, subscribe: 1 }, resolve);
+                    }),
+                    localize('The quote request timed out. Refresh the comparison and try again.')
+                );
+                if (!proposal?.id || error)
+                    throw new Error(error?.message || localize('No purchasable quote is available.'));
+                ensureInsightTrade(draft, signal);
+                ensureInsightAccess(access);
+                if (ws.getWSUrl?.() !== connection)
+                    throw new Error(localize('The market connection changed. Review the trade again.'));
+                ensureInsightQuote(draft, proposal);
+
+                const markUnconfirmed = () => {
+                    setUnconfirmedPurchases(previous => [...previous, purchase_account_id]);
+                    return new Error(unconfirmed_message);
+                };
+                const response = await waitForInsightRequest(
+                    processPurchase(proposal.id, draft.stake),
+                    unconfirmed_message
+                ).catch((failure: unknown) => {
+                    const rejection = (failure as { error?: { message?: string } } | null)?.error;
+                    throw rejection?.message ? new Error(rejection.message) : markUnconfirmed();
+                });
+                if (response?.error) throw new Error(response.error.message);
+                const purchase = response?.buy;
+                if (!purchase?.contract_id) throw markUnconfirmed();
+                if (client.loginid === purchase_account_id && !ui.is_switching_account) {
+                    try {
+                        portfolio?.onBuyResponse({
+                            contract_id: purchase.contract_id,
+                            longcode: purchase.longcode,
+                            contract_type: template.contract_type,
+                        });
+                    } catch {
+                        // A local positions update cannot change a confirmed broker purchase.
+                    }
+                }
+                return String(purchase.contract_id);
+            } finally {
+                starting.current = false;
+                try {
+                    subscription?.unsubscribe();
+                } catch {
+                    // A lost quote connection cannot change the purchase outcome.
+                }
+            }
+        };
+        const trade_block =
             !eligible || !account_id
-                ? localize('Sign in and connect your Deriv account to start a run.')
+                ? localize('Sign in and connect your Deriv account to trade.')
                 : is_market_closed || !store.is_trade_enabled_v2
                   ? localize('Trading is unavailable on this market.')
-                  : active_run || state.uncertain
-                    ? localize('Check Automatic settings for an active or unconfirmed run.')
-                    : !state.ready || state.busy
-                      ? localize('Waiting for Automatic Trading to be ready.')
-                      : '';
+                  : '';
+        const insight_block =
+            trade_block ||
+            (active_run || state.uncertain
+                ? localize('Check Automatic settings for an active or unconfirmed run.')
+                : !state.ready || state.busy
+                  ? localize('Waiting for Automatic Trading to be ready.')
+                  : '');
 
         const control = async (action: 'pause' | 'resume' | 'stop', target = run) => {
             if (!eligible || owner.current !== account_id || !target || !controller.current) return;
@@ -1042,7 +1139,12 @@ const AutoTrading = observer(
                     </button>
                 </div>
                 <TickInsights
-                    key={String(account_id) + ':' + store.symbol}
+                    key={String(account_id) + ':' + store.currency + ':' + store.symbol}
+                    preset_key={
+                        client.is_logged_in && account_id
+                            ? 'fancy-trading-preset:' + account_id + ':' + store.currency
+                            : undefined
+                    }
                     symbol={store.symbol}
                     currency={/^[A-Z]{3}$/.test(store.currency) ? store.currency : 'USD'}
                     initial_stake={Number(automatic_stake_text) > 0 ? Number(automatic_stake_text) : 10}
@@ -1054,6 +1156,8 @@ const AutoTrading = observer(
                         account_id ? (client.is_virtual ? localize('Demo') : localize('Real')) + ' · ' + account_id : ''
                     }
                     execution_block={insight_block}
+                    purchase_block={trade_block || (unconfirmed_buy ? unconfirmed_message : '')}
+                    onBuy={buyFromInsights}
                     supportsContract={type => !!getInsightStrategy(type, state.strategies)}
                     onStart={startFromInsights}
                 />

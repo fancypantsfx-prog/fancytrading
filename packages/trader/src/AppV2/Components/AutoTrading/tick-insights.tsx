@@ -5,8 +5,8 @@ import type { TPremiumAccess } from '@deriv/api';
 import { getDecimalPlaces, getPlatformLogo, useWS } from '@deriv/shared';
 import { localize } from '@deriv-com/translations';
 import { FancyTradingDialogContext } from './fancy-trading-dialog-context';
-import { compareRecentTicks, getInsightContract } from './tick-insights-data';
-import type { TFamily, TInsightRun, TTickInsights } from './tick-insights-data';
+import { compareRecentTicks, getInsightContract, getInsightPreset, isInsightPresetValid } from './tick-insights-data';
+import type { TFamily, TInsightRun, TInsightTrade, TTickInsights } from './tick-insights-data';
 import './tick-insights.scss';
 
 const percent = (value: number) => value.toLocaleString(undefined, { style: 'percent', maximumFractionDigits: 1 });
@@ -28,10 +28,12 @@ const InsightsResults = ({
     report,
     onReview,
     canReview,
+    canBuy,
 }: {
     report: TTickInsights;
-    onReview: (row: TInsightRow) => void;
+    onReview: (row: TInsightRow, automatic: boolean) => void;
     canReview: (row: TInsightRow) => boolean;
+    canBuy: boolean;
 }) => {
     const [minimum_payout, setMinimumPayout] = React.useState('');
     const [sort_by_payout, setSortByPayout] = React.useState(false);
@@ -95,7 +97,7 @@ const InsightsResults = ({
                                 <th scope='col'>{localize('Total payout')}</th>
                                 <th scope='col'>{localize('Stake / profit if successful')}</th>
                                 <th scope='col'>{localize('Break-even hit rate')}</th>
-                                <th scope='col'>{localize('Automatic')}</th>
+                                <th scope='col'>{localize('Trade actions')}</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -126,9 +128,19 @@ const InsightsResults = ({
                                             aria-label={localize('Review {{trade}}', {
                                                 trade: candidateLabel(row.candidate),
                                             })}
-                                            onClick={() => onReview(row)}
+                                            onClick={() => onReview(row, true)}
                                         >
-                                            {localize('Review trade')}
+                                            {localize('Review automatic')}
+                                        </button>
+                                        <button
+                                            type='button'
+                                            disabled={!canBuy}
+                                            aria-label={localize('Buy {{trade}} once', {
+                                                trade: candidateLabel(row.candidate),
+                                            })}
+                                            onClick={() => onReview(row, false)}
+                                        >
+                                            {localize('Buy once')}
                                         </button>
                                     </td>
                                 </tr>
@@ -161,6 +173,9 @@ type TProps = {
     is_accumulator: boolean;
     account_label: string;
     execution_block: string;
+    purchase_block: string;
+    preset_key?: string;
+    onBuy: (trade: TInsightTrade, signal: AbortSignal) => Promise<string>;
     supportsContract: (contract_type: string) => boolean;
     onStart: (draft: TInsightRun, signal: AbortSignal) => Promise<string>;
 };
@@ -173,18 +188,28 @@ const InsightsPanel = ({
     is_accumulator,
     account_label,
     execution_block,
+    purchase_block,
+    preset_key,
+    onBuy,
     supportsContract,
     onStart,
 }: TProps) => {
     const ws = useWS();
     const [family, setFamily] = React.useState<TFamily>(is_accumulator ? 'accumulator' : 'digital');
-    const [stake, setStake] = React.useState(String(initial_stake));
-    const [stop_loss, setStopLoss] = React.useState('');
-    const [take_profit, setTakeProfit] = React.useState('');
-    const [draft, setDraft] = React.useState<TInsightRun>();
-    const [run_id, setRunId] = React.useState('');
+    const [preset] = React.useState(() => getInsightPreset(preset_key));
+    const [stake, setStake] = React.useState(String(preset?.stake ?? initial_stake));
+    const [stop_loss, setStopLoss] = React.useState(preset ? String(preset.stopLoss) : '');
+    const [take_profit, setTakeProfit] = React.useState(
+        preset?.takeProfit === undefined ? '' : String(preset.takeProfit)
+    );
+    const [preset_saved, setPresetSaved] = React.useState(false);
+    const [draft, setDraft] = React.useState<{
+        trade: TInsightTrade;
+        run?: Pick<TInsightRun, 'stopLoss' | 'takeProfit'>;
+    }>();
+    const [result, setResult] = React.useState<{ id: string; automatic: boolean }>();
     const review_ref = React.useRef<HTMLElement>(null);
-    const [ticks, setTicks] = React.useState(String(initial_ticks));
+    const [ticks, setTicks] = React.useState(String(preset?.ticks ?? initial_ticks));
     const [access, setAccess] = React.useState<TPremiumAccess | 'checking' | 'error'>('checking');
     const [check, setCheck] = React.useState(0);
     const [report, setReport] = React.useState<TTickInsights>();
@@ -230,11 +255,12 @@ const InsightsPanel = ({
         request.current = controller;
         setBusy(true);
         setError('');
-        setReport(undefined);
+        setResult(undefined);
         const timeout = window.setTimeout(() => {
             if (!controller.signal.aborted) {
                 controller.abort();
                 setBusy(false);
+                setReport(undefined);
                 setError(localize('The comparison timed out. Try again.'));
             }
         }, 15000);
@@ -249,6 +275,7 @@ const InsightsPanel = ({
             setReport(result ?? undefined);
         } catch {
             if (!controller.signal.aborted) {
+                setReport(undefined);
                 setError(
                     localize('Could not load the 400-tick comparison. Check your market connection and try again.')
                 );
@@ -263,14 +290,43 @@ const InsightsPanel = ({
         if (draft) review_ref.current?.focus();
     }, [draft]);
 
-    const review = (row: TInsightRow) => {
+    const savePreset = () => {
+        if (!preset_key) return;
+        const settings = {
+            stake: Number(stake),
+            ticks: Number(ticks),
+            stopLoss: Number(stop_loss),
+            takeProfit: take_profit === '' ? undefined : Number(take_profit),
+        };
+        setError('');
+        if (!isInsightPresetValid(settings)) {
+            setError(
+                localize(
+                    'Enter a valid stake and tick target, a run stop loss at least as large as the stake, and a positive take profit if used.'
+                )
+            );
+            return;
+        }
+        try {
+            localStorage.setItem(preset_key, JSON.stringify(settings));
+            setPresetSaved(true);
+        } catch {
+            setError(localize('This browser could not save the automatic preset.'));
+        }
+    };
+
+    const review = (row: TInsightRow, automatic: boolean) => {
+        if (row.stake !== Number(stake)) {
+            setError(localize('The quoted stake differs from the entered stake. Adjust the stake and compare again.'));
+            return;
+        }
         const stopLoss = Number(stop_loss);
         const takeProfit = take_profit === '' ? undefined : Number(take_profit);
-        if (!Number.isFinite(stopLoss) || stopLoss < row.stake) {
+        if (automatic && (!Number.isFinite(stopLoss) || stopLoss < row.stake)) {
             setError(localize('Enter a run stop loss at least as large as the quoted stake.'));
             return;
         }
-        if (takeProfit !== undefined && (!Number.isFinite(takeProfit) || takeProfit <= 0)) {
+        if (automatic && takeProfit !== undefined && (!Number.isFinite(takeProfit) || takeProfit <= 0)) {
             setError(localize('Enter a run take profit greater than zero.'));
             return;
         }
@@ -282,46 +338,44 @@ const InsightsPanel = ({
         }
         setError('');
         setDraft({
-            candidate: row.candidate,
-            family,
-            ticks: Number(ticks),
-            symbol,
-            currency,
-            stake: row.stake,
-            payout: row.payout,
-            stopLoss,
-            takeProfit,
-            contractTakeProfit,
+            trade: {
+                candidate: row.candidate,
+                family,
+                ticks: Number(ticks),
+                symbol,
+                currency,
+                stake: row.stake,
+                payout: row.payout,
+                contractTakeProfit,
+            },
+            run: automatic ? { stopLoss, takeProfit } : undefined,
         });
     };
 
     const confirm = async () => {
-        if (!draft || busy || execution_block) return;
+        if (!draft || busy || (draft.run ? execution_block : purchase_block)) return;
         const controller = new AbortController();
         request.current = controller;
         setBusy(true);
         setError('');
         try {
-            const id = await onStart(draft, controller.signal);
-            if (!controller.signal.aborted) setRunId(id);
+            const id = draft.run
+                ? await onStart({ ...draft.trade, ...draft.run }, controller.signal)
+                : await onBuy(draft.trade, controller.signal);
+            if (!controller.signal.aborted) {
+                setResult({ id, automatic: !!draft.run });
+                setDraft(undefined);
+                setReport(undefined);
+            }
         } catch (error) {
             if (!controller.signal.aborted) {
-                setError(error instanceof Error ? error.message : localize('Could not confirm the automatic run.'));
+                setError(error instanceof Error ? error.message : localize('Could not confirm the trade.'));
             }
         } finally {
             if (!controller.signal.aborted) setBusy(false);
         }
     };
 
-    if (run_id) {
-        return (
-            <p role='status'>
-                {localize('Automatic run {{id}} started. Open Automatic settings to monitor or stop it.', {
-                    id: run_id,
-                })}
-            </p>
-        );
-    }
     if (access === 'checking') return <p role='status'>{localize('Checking access…')}</p>;
     if (access === 'error' || access.access === 'locked') {
         return (
@@ -347,64 +401,68 @@ const InsightsPanel = ({
     }
 
     if (draft) {
-        const money = (value: number) => formatMoney(value, draft.currency);
+        const { trade, run } = draft;
+        const title = run ? localize('Review automatic run') : localize('Review one contract');
+        const block = run ? execution_block : purchase_block;
+        const money = (value: number) => formatMoney(value, trade.currency);
         return (
-            <section
-                ref={review_ref}
-                tabIndex={-1}
-                className='tick-insights__review'
-                aria-label={localize('Review automatic run')}
-            >
-                <h3>{localize('Review automatic run')}</h3>
+            <section ref={review_ref} tabIndex={-1} className='tick-insights__review' aria-label={title}>
+                <h3>{title}</h3>
                 <dl>
                     <dt>{localize('Account')}</dt>
                     <dd>{account_label}</dd>
                     <dt>{localize('Market and contract')}</dt>
                     <dd>
-                        {symbol} · {candidateLabel(draft.candidate)}
+                        {symbol} · {candidateLabel(trade.candidate)}
                     </dd>
                     <dt>{localize('Stake per contract')}</dt>
-                    <dd>{money(draft.stake)}</dd>
-                    <dt>{localize('Run stop loss')}</dt>
-                    <dd>{money(draft.stopLoss)}</dd>
-                    {draft.takeProfit !== undefined && (
+                    <dd>{money(trade.stake)}</dd>
+                    {run && (
                         <>
-                            <dt>{localize('Run take profit')}</dt>
-                            <dd>{money(draft.takeProfit)}</dd>
+                            <dt>{localize('Run stop loss')}</dt>
+                            <dd>{money(run.stopLoss)}</dd>
                         </>
                     )}
-                    {draft.contractTakeProfit === undefined ? (
+                    {run?.takeProfit !== undefined && (
+                        <>
+                            <dt>{localize('Run take profit')}</dt>
+                            <dd>{money(run.takeProfit)}</dd>
+                        </>
+                    )}
+                    {trade.contractTakeProfit === undefined ? (
                         <>
                             <dt>{localize('Duration')}</dt>
-                            <dd>{localize('{{ticks}} ticks', { ticks: String(draft.ticks) })}</dd>
+                            <dd>{localize('{{ticks}} ticks', { ticks: String(trade.ticks) })}</dd>
                         </>
                     ) : (
                         <>
                             <dt>{localize('Take profit per contract')}</dt>
-                            <dd>{money(draft.contractTakeProfit)}</dd>
+                            <dd>{money(trade.contractTakeProfit)}</dd>
                         </>
                     )}
                     <dt>
-                        {draft.contractTakeProfit === undefined
+                        {trade.contractTakeProfit === undefined
                             ? localize('Quoted payout')
                             : localize('Estimated payout')}
                     </dt>
                     <dd>
                         {money(
-                            draft.contractTakeProfit === undefined
-                                ? draft.payout
-                                : draft.stake + draft.contractTakeProfit
+                            trade.contractTakeProfit === undefined
+                                ? trade.payout
+                                : trade.stake + trade.contractTakeProfit
                         )}
                     </dd>
                 </dl>
                 <p>
-                    {localize(
-                        'The run uses a fixed stake. The stop loss stops new purchases when the run reaches the loss threshold. Open contracts can still settle and increase the loss.'
-                    )}
+                    {run
+                        ? localize(
+                              'The run uses a fixed stake. The stop loss stops new purchases at the loss threshold. Open contracts can still settle and increase the loss.'
+                          )
+                        : localize('This buys one contract. The full stake is at risk.')}
                 </p>
                 <p>{localize('Pricing can change between review and execution.')}</p>
                 {error && <p role='alert'>{error}</p>}
-                {!busy && execution_block && <p role='status'>{execution_block}</p>}
+                {!busy && block && <p role='status'>{block}</p>}
                 <div className='tick-insights__actions'>
                     <button
                         type='button'
@@ -416,8 +474,12 @@ const InsightsPanel = ({
                     >
                         {localize('Back to comparison')}
                     </button>
-                    <button type='button' disabled={busy || !!execution_block} onClick={() => void confirm()}>
-                        {busy ? localize('Starting…') : localize('Confirm and start run')}
+                    <button type='button' disabled={busy || !!block} onClick={() => void confirm()}>
+                        {busy
+                            ? localize('Submitting…')
+                            : run
+                              ? localize('Confirm and start run')
+                              : localize('Confirm and buy once')}
                     </button>
                 </div>
             </section>
@@ -426,6 +488,15 @@ const InsightsPanel = ({
 
     return (
         <>
+            {result && (
+                <p role='status'>
+                    {result.automatic
+                        ? localize('Automatic run {{id}} started. Open Automatic settings to monitor or stop it.', {
+                              id: result.id,
+                          })
+                        : localize('Contract {{id}} purchased. View it in Positions or Reports.', { id: result.id })}
+                </p>
+            )}
             <p className='tick-insights__badge'>
                 {access.access === 'paid'
                     ? localize('Premium access')
@@ -435,7 +506,7 @@ const InsightsPanel = ({
             </p>
             <p>
                 {localize(
-                    'Compare historical outcomes and current payout quotes for {{symbol}} before setting up an automatic run.',
+                    'Compare historical outcomes and current payout quotes for {{symbol}}, then review a one-off trade or an automatic run.',
                     { symbol }
                 )}
             </p>
@@ -466,30 +537,9 @@ const InsightsPanel = ({
                         disabled={busy}
                         onChange={e => {
                             setStake(e.target.value);
+                            setPresetSaved(false);
                             setReport(undefined);
                         }}
-                    />
-                </label>
-                <label>
-                    {localize('Run stop loss')} ({currency})
-                    <input
-                        type='number'
-                        min='0.01'
-                        step='any'
-                        value={stop_loss}
-                        disabled={busy}
-                        onChange={e => setStopLoss(e.target.value)}
-                    />
-                </label>
-                <label>
-                    {localize('Run take profit (if required)')} ({currency})
-                    <input
-                        type='number'
-                        min='0.01'
-                        step='any'
-                        value={take_profit}
-                        disabled={busy}
-                        onChange={e => setTakeProfit(e.target.value)}
                     />
                 </label>
                 <label>
@@ -504,22 +554,67 @@ const InsightsPanel = ({
                         disabled={busy}
                         onChange={e => {
                             setTicks(e.target.value);
+                            setPresetSaved(false);
                             setReport(undefined);
                         }}
                     />
                 </label>
                 <button type='submit' disabled={busy}>
-                    {busy ? localize('Comparing…') : localize('Compare trades')}
+                    {busy
+                        ? localize('Comparing…')
+                        : report
+                          ? localize('Refresh comparison')
+                          : localize('Compare trades')}
                 </button>
             </form>
+            <fieldset className='tick-insights__fields tick-insights__preset'>
+                <legend>{localize('Automatic settings')}</legend>
+                <label>
+                    {localize('Run stop loss (automatic only)')} ({currency})
+                    <input
+                        type='number'
+                        min='0.01'
+                        step='any'
+                        value={stop_loss}
+                        disabled={busy}
+                        onChange={e => {
+                            setStopLoss(e.target.value);
+                            setPresetSaved(false);
+                        }}
+                    />
+                </label>
+                <label>
+                    {localize('Run take profit (if required)')} ({currency})
+                    <input
+                        type='number'
+                        min='0.01'
+                        step='any'
+                        value={take_profit}
+                        disabled={busy}
+                        onChange={e => {
+                            setTakeProfit(e.target.value);
+                            setPresetSaved(false);
+                        }}
+                    />
+                </label>
+                {preset_key && (
+                    <button type='button' disabled={busy} onClick={savePreset}>
+                        {localize('Save automatic preset')}
+                    </button>
+                )}
+            </fieldset>
+            {preset_saved && <p role='status'>{localize('Automatic preset saved for this account.')}</p>}
             {error && <p role='alert'>{error}</p>}
             {report && (
                 <>
-                    {execution_block && <p role='status'>{execution_block}</p>}
+                    {purchase_block && <p role='status'>{purchase_block}</p>}
+                    {execution_block && execution_block !== purchase_block && <p role='status'>{execution_block}</p>}
                     <InsightsResults
                         report={report}
                         onReview={review}
+                        canBuy={!busy && !purchase_block}
                         canReview={row =>
+                            !busy &&
                             !execution_block &&
                             supportsContract(getInsightContract(family, row.candidate, report.ticks).contract_type)
                         }
@@ -528,7 +623,7 @@ const InsightsPanel = ({
             )}
             <p className='tick-insights__note'>
                 {localize(
-                    'Historical hit rates describe past ticks. Review the account, contract and run limits before confirming an automatic run.'
+                    'Historical hit rates describe past ticks. Review the account, stake and payout before confirming a trade.'
                 )}
             </p>
         </>

@@ -21,7 +21,7 @@ export type TTickInsights = {
     }[];
 };
 
-export type TInsightRun = {
+export type TInsightTrade = {
     candidate: string;
     family: TFamily;
     ticks: number;
@@ -29,9 +29,47 @@ export type TInsightRun = {
     currency: string;
     stake: number;
     payout: number;
-    stopLoss: number;
-    takeProfit?: number;
     contractTakeProfit?: number;
+};
+
+export type TInsightRun = TInsightTrade & { stopLoss: number; takeProfit?: number };
+
+export type TInsightPreset = { stake: number; ticks: number; stopLoss: number; takeProfit?: number };
+
+export const getInsightPreset = (key?: string): TInsightPreset | undefined => {
+    if (!key) return undefined;
+    try {
+        const preset = JSON.parse(localStorage.getItem(key) ?? 'null') as TInsightPreset | null;
+        if (!preset || !isInsightPresetValid(preset)) return undefined;
+        return preset;
+    } catch {
+        return undefined;
+    }
+};
+
+export const isInsightPresetValid = ({ stake, ticks, stopLoss, takeProfit }: TInsightPreset) =>
+    Number.isFinite(stake) &&
+    stake >= 0.01 &&
+    stake <= 1000000 &&
+    Number.isInteger(ticks) &&
+    ticks >= 1 &&
+    ticks <= 20 &&
+    Number.isFinite(stopLoss) &&
+    stopLoss >= stake &&
+    (takeProfit === undefined || (Number.isFinite(takeProfit) && takeProfit > 0));
+
+export const waitForInsightRequest = async <T>(request: Promise<T>, timeoutMessage: string): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        return await Promise.race([
+            request,
+            new Promise<never>((_, reject) => {
+                timer = setTimeout(() => reject(new Error(timeoutMessage)), 15000);
+            }),
+        ]);
+    } finally {
+        clearTimeout(timer);
+    }
 };
 
 const DIGITAL_CONTRACTS = ['CALL', 'PUT', 'DIGITEVEN', 'DIGITODD'];

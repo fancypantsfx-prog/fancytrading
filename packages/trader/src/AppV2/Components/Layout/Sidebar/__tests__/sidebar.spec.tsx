@@ -130,6 +130,8 @@ describe('<Sidebar />', () => {
                                 is_accumulator
                                 account_label=''
                                 execution_block=''
+                                purchase_block=''
+                                onBuy={jest.fn()}
                                 supportsContract={() => false}
                                 onStart={jest.fn()}
                             />

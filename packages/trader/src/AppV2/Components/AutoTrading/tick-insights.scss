@@ -126,6 +126,18 @@
         }
     }
 
+    &__preset {
+        min-inline-size: 0;
+        padding: 8px 12px 12px;
+        border: 1px solid var(--border-normal, #c6ccd4);
+        border-radius: 8px;
+
+        legend {
+            padding-inline: 4px;
+            font-weight: 600;
+        }
+    }
+
     &__results {
         margin-block: 16px;
         padding-block-start: 12px;
