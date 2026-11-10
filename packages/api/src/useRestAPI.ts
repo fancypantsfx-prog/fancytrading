@@ -6,7 +6,7 @@ import { APIContext } from './APIProvider';
 
 const AUTH_INFO_KEY = 'auth_info';
 
-const getStoredToken = (): string | null => {
+export const getStoredToken = (): string | null => {
     try {
         const info = JSON.parse(sessionStorage.getItem(AUTH_INFO_KEY) ?? 'null');
         if (!info) return null;

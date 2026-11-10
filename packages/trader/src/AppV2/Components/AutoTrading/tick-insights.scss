@@ -1,0 +1,131 @@
+.tick-insights {
+    margin-block: 8px;
+
+    button,
+    select,
+    input {
+        min-height: 40px;
+        min-width: 0;
+        padding: 8px 12px;
+        border: 1px solid var(--border-normal, #c6ccd4);
+        border-radius: 8px;
+        background: var(--general-main-1, #fff);
+        color: var(--text-general, #222);
+        font: inherit;
+    }
+
+    button:not(:disabled) {
+        cursor: pointer;
+    }
+
+    :is(button, input, select, [tabindex]):focus-visible {
+        outline: 2px solid var(--brand-red-coral, #0054a6);
+        outline-offset: 2px;
+    }
+
+    &__trigger {
+        width: 100%;
+        font-weight: 600 !important;
+    }
+
+    &__dialog {
+        position: fixed;
+        inset: 0;
+        width: min(900px, calc(100% - 24px));
+        max-width: none;
+        max-height: 90dvh;
+        margin: auto;
+        padding: clamp(16px, 3vw, 28px);
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        border: 1px solid var(--border-normal, #c6ccd4);
+        border-radius: 16px;
+        background: var(--general-main-1, #fff);
+        color: var(--text-general, #222);
+
+        &::backdrop {
+            background: rgb(0 0 0 / 55%);
+        }
+
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        header button {
+            font-size: 2rem;
+        }
+
+        > p {
+            margin-block: 12px;
+        }
+    }
+
+    &__badge {
+        display: inline-block;
+        padding: 4px 8px;
+        border-radius: 6px;
+        background: var(--general-section-1, #f1f4f8);
+        font-weight: 600;
+    }
+
+    &__fields {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        gap: 12px;
+        margin-block: 12px;
+
+        label {
+            display: grid;
+            flex: 1 1 120px;
+            gap: 4px;
+        }
+
+        button[type='submit'] {
+            background: var(--brand-red-coral, #0054a6);
+            color: #fff;
+            font-weight: 600;
+        }
+    }
+
+    &__results {
+        margin-block: 16px;
+        padding-block-start: 12px;
+        border-top: 1px solid var(--border-normal, #c6ccd4);
+    }
+
+    &__table {
+        overflow-x: auto;
+        border: 1px solid var(--border-normal, #c6ccd4);
+        border-radius: 8px;
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: start;
+        }
+
+        th,
+        td {
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--border-normal, #c6ccd4);
+            text-align: start;
+        }
+
+        thead {
+            background: var(--general-section-1, #f1f4f8);
+        }
+
+        small {
+            display: block;
+        }
+    }
+
+    &__note {
+        margin-block: 10px;
+        color: var(--text-less-prominent, #666);
+    }
+}

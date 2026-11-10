@@ -7,6 +7,8 @@ export { default as useInvalidateQuery } from './useInvalidateQuery';
 export { default as usePaginatedFetch } from './usePaginatedFetch';
 export { default as useSubscription } from './useSubscription';
 export { useRestAPI } from './useRestAPI';
+export { fetchPremiumAccess, fetchTickInsights } from './premium-access';
+export type { TPremiumAccess } from './premium-access';
 export * from './hooks';
 
 export { useInfiniteQuery, useMutation, useQuery };

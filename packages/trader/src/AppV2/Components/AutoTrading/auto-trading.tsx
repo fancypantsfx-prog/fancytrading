@@ -32,6 +32,7 @@ import {
     numericStep,
     stepNumber,
 } from './automation';
+import TickInsights from './tick-insights';
 import './auto-trading.scss';
 
 const EMPTY: AutomationState = {
@@ -928,6 +929,14 @@ const AutoTrading = observer(
                         {localize('Automatic')}
                     </button>
                 </div>
+                <TickInsights
+                    key={String(account_id) + ':' + store.symbol}
+                    symbol={store.symbol}
+                    currency={/^[A-Z]{3}$/.test(store.currency) ? store.currency : 'USD'}
+                    initial_stake={Number(automatic_stake_text) > 0 ? Number(automatic_stake_text) : 10}
+                    initial_ticks={store.duration_unit === 't' && store.duration >= 1 && store.duration <= 20 ? store.duration : 5}
+                    is_accumulator={contract === 'ACCU'}
+                />
                 {mode === 'manual' ? (
                     <>
                         {active_run && (
