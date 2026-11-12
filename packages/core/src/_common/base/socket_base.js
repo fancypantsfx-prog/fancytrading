@@ -217,10 +217,11 @@ const BinarySocketBase = (() => {
 
     const subscribeProposal = (req, cb) => subscribe({ proposal: 1, ...req }, cb);
 
-    const subscribeProposalOpenContract = (contract_id = null, cb) =>
-        subscribe({ proposal_open_contract: 1, ...(contract_id && { contract_id }) }, cb);
+    const subscribeProposalOpenContract = (contract_id = null, cb, passthrough) =>
+        subscribe({ proposal_open_contract: 1, ...(contract_id && { contract_id }), ...(passthrough && { passthrough }) }, cb);
 
-    const subscribeTicks = (symbol, cb) => subscribe({ ticks: symbol }, cb);
+    const subscribeTicks = (symbol, cb, passthrough) =>
+        subscribe({ ticks: symbol, ...(passthrough && { passthrough }) }, cb);
 
     const subscribeTicksHistory = (request_object, cb) => subscribe(request_object, cb);
 

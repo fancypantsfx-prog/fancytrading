@@ -1,6 +1,14 @@
 import React from 'react';
 import { localize } from '@deriv-com/translations';
-import { compareRecentTicks, getInsightContract, waitForInsightRequest } from './tick-insights-data';
+import {
+    compareRecentTicks,
+    getInsightContract,
+    InsightRateLimitError,
+    isInsightRateLimit,
+    noteInsightRateLimit,
+    waitForInsightRequest,
+    waitForInsightRequestSlot,
+} from './tick-insights-data';
 import type { TFamily, TTickInsights } from './tick-insights-data';
 
 export type TCompareSetup = { symbol: string; candidate: string };
@@ -83,6 +91,7 @@ const InsightsCompare = ({
     const [windowSize, setWindowSize] = React.useState(100);
     const [duration, setDuration] = React.useState('5');
     const [live, setLive] = React.useState(false);
+    const [rateLimited, setRateLimited] = React.useState(false);
     const [refresh, setRefresh] = React.useState(0);
     const [showWins, setShowWins] = React.useState(true);
     const [showLosses, setShowLosses] = React.useState(true);
@@ -99,14 +108,22 @@ const InsightsCompare = ({
     const subscribeRef = React.useRef(subscribeTicks);
     subscribeRef.current = subscribeTicks;
     React.useEffect(() => {
-        if (!Number.isFinite(Number(stake)) || Number(stake) < 0.01 || Number(stake) > 1000000) return;
+        if (rateLimited || !Number.isFinite(Number(stake)) || Number(stake) < 0.01 || Number(stake) > 1000000) return;
         let timer: ReturnType<typeof setTimeout> | undefined;
         let request: AbortController;
         let cancelled = false;
         let running = false;
         let pendingTick = false;
         let lastStart = 0;
+        const streamController = new AbortController();
         const subscriptions: { unsubscribe: () => void }[] = [];
+        const pauseForRateLimit = () => {
+            if (cancelled) return;
+            cancelled = true;
+            request?.abort();
+            setRateLimited(true);
+            setLive(false);
+        };
         const schedule = () => {
             if (cancelled || running || timer) return;
             timer = setTimeout(
@@ -146,7 +163,8 @@ const InsightsCompare = ({
                             );
                             const row = report?.rows[0];
                             return { setup, ticks, result: report && row ? { setup, report, row } : undefined };
-                        } catch {
+                        } catch (error) {
+                            if (error instanceof InsightRateLimitError) pauseForRateLimit();
                             return { setup, ticks };
                         }
                     })
@@ -159,30 +177,40 @@ const InsightsCompare = ({
             if (live && (pendingTick || !subscriptions.length)) schedule();
         };
         if (live || !current) void update();
-        if (live && subscribeRef.current) {
+        const subscribe = subscribeRef.current;
+        if (live && subscribe) {
             for (const symbol of new Set(setups.map(setup => setup.symbol))) {
-                try {
-                    subscriptions.push(
-                        subscribeRef.current(symbol, response => {
-                            if (!response.tick) return;
-                            pendingTick = true;
-                            schedule();
-                        })
-                    );
-                } catch {
-                    // A temporarily unavailable stream can still be refreshed manually.
-                }
+                void waitForInsightRequestSlot(streamController.signal)
+                    .then(() => {
+                        if (cancelled) return;
+                        subscriptions.push(
+                            subscribe(symbol, response => {
+                                if (isInsightRateLimit(response)) {
+                                    noteInsightRateLimit();
+                                    pauseForRateLimit();
+                                    return;
+                                }
+                                if (!response.tick) return;
+                                pendingTick = true;
+                                schedule();
+                            })
+                        );
+                    })
+                    .catch(error => {
+                        if (error instanceof InsightRateLimitError) pauseForRateLimit();
+                    });
             }
         }
         return () => {
             cancelled = true;
             request?.abort();
+            streamController.abort();
             clearTimeout(timer);
             for (const subscription of subscriptions) subscription.unsubscribe();
         };
         // The key tracks all comparison inputs. Keep the last snapshot when pausing.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [key, live, refresh]);
+    }, [key, live, refresh, rateLimited]);
 
     const changeSetup = (index: number, setup: TCompareSetup) =>
         onSetups(setups.map((item, position) => (position === index ? setup : item)));
@@ -213,12 +241,20 @@ const InsightsCompare = ({
                         onChange={e => onStake(e.target.value)}
                     />
                 </label>
-                <button type='button' aria-pressed={live} onClick={() => setLive(!live)}>
+                <button
+                    type='button'
+                    aria-pressed={live}
+                    onClick={() => {
+                        setRateLimited(false);
+                        setLive(!live);
+                    }}
+                >
                     {live ? localize('Pause') : localize('Go live')}
                 </button>
                 <button
                     type='button'
                     onClick={() => {
+                        setRateLimited(false);
                         setSnapshot(undefined);
                         setRefresh(refresh + 1);
                     }}
@@ -348,7 +384,12 @@ const InsightsCompare = ({
                     {localize('Win/loss timeline')}
                 </label>
             </details>
-            {!current && (
+            {rateLimited && (
+                <p role='status'>
+                    {localize('Deriv is limiting requests. Wait a minute before refreshing or going live again.')}
+                </p>
+            )}
+            {!current && !rateLimited && (
                 <p role='status'>
                     {Number(stake) >= 0.01 && Number(stake) <= 1000000
                         ? localize('Loading comparison…')

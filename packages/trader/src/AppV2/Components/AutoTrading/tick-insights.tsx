@@ -10,12 +10,14 @@ import {
     getInsightContract,
     getInsightMarkets,
     getInsightPreset,
+    InsightRateLimitError,
     isInsightPresetValid,
     waitForInsightRequest,
 } from './tick-insights-data';
 import type { TFamily, TInsightRun, TInsightStrategyOption, TInsightTrade, TTickInsights } from './tick-insights-data';
 import InsightsCompare, { candidateLabel } from './insights-compare';
 import type { TCompareSetup } from './insights-compare';
+import SignalStrategy from './signal-strategy';
 import './tick-insights.scss';
 
 const percent = (value: number) => value.toLocaleString(undefined, { style: 'percent', maximumFractionDigits: 1 });
@@ -235,6 +237,8 @@ type TProps = {
     purchase_block: string;
     preset_key?: string;
     onBuy: (trade: TInsightTrade, signal: AbortSignal) => Promise<string>;
+    onRuleBuy?: (trade: TInsightTrade, signal: AbortSignal, beforePurchase: () => void) => Promise<string>;
+    ruleAccount?: { id: string; demo: boolean };
     getStrategies: (contract_type: string) => TInsightStrategyOption[];
     onRefreshAutomation?: () => void;
     onStart: (draft: TInsightRun, signal: AbortSignal) => Promise<string>;
@@ -259,6 +263,8 @@ const InsightsPanel = ({
     purchase_block,
     preset_key,
     onBuy,
+    onRuleBuy,
+    ruleAccount,
     getStrategies,
     onRefreshAutomation,
     onStart,
@@ -290,7 +296,7 @@ const InsightsPanel = ({
     const [report, setReport] = React.useState<TTickInsights>();
     const [error, setError] = React.useState('');
     const [busy, setBusy] = React.useState(false);
-    const [view, setView] = React.useState<'finder' | 'compare'>('finder');
+    const [view, setView] = React.useState<'finder' | 'compare' | 'signal'>('finder');
     const [manualSetup, setManualSetup] = React.useState<TCompareSetup>({
         symbol,
         candidate: initial_candidate ?? 'CALL',
@@ -301,16 +307,14 @@ const InsightsPanel = ({
 
     React.useEffect(() => {
         if (view !== 'compare' || markets.length || typeof access === 'string' || access.access === 'locked') return;
-        let active = true;
-        void getInsightMarkets(payload => ws.send(payload)).then(
+        const controller = new AbortController();
+        void getInsightMarkets(payload => ws.send(payload), controller.signal).then(
             result => {
-                if (active && result.length) setMarkets(result);
+                if (!controller.signal.aborted && result.length) setMarkets(result);
             },
             () => undefined
         );
-        return () => {
-            active = false;
-        };
+        return () => controller.abort();
     }, [view, markets.length, ws, access]);
 
     React.useEffect(() => {
@@ -360,12 +364,12 @@ const InsightsPanel = ({
                 setReport(undefined);
                 setError(localize('The comparison timed out. Try again.'));
             }
-        }, 120000);
+        }, 300000);
         try {
             const available = markets.length
                 ? markets
                 : await waitForInsightRequest(
-                      getInsightMarkets(payload => ws.send(payload)),
+                      getInsightMarkets(payload => ws.send(payload), controller.signal),
                       localize('Instrument list timed out.')
                   );
             if (controller.signal.aborted) return;
@@ -392,12 +396,15 @@ const InsightsPanel = ({
             if (controller.signal.aborted) return;
             setAccess(result?.access ?? { access: 'locked' });
             setReport(result ?? undefined);
-        } catch {
+        } catch (failure) {
             if (!controller.signal.aborted) {
-                setReport(undefined);
                 setError(
-                    localize('Could not load instrument comparisons. Check your market connection and try again.')
+                    failure instanceof InsightRateLimitError
+                        ? localize('Deriv is limiting requests. Wait a minute before scanning again.')
+                        : localize('Could not load instrument comparisons. Check your market connection and try again.')
                 );
+                setBusy(false);
+                controller.abort();
             }
         } finally {
             window.clearTimeout(timeout);
@@ -762,7 +769,28 @@ const InsightsPanel = ({
                 >
                     {localize('Compare')} ({starred.length + 1})
                 </button>
+                {onRuleBuy && (
+                    <button
+                        type='button'
+                        aria-pressed={view === 'signal'}
+                        disabled={busy}
+                        onClick={() => setView('signal')}
+                    >
+                        {localize('Signal Strategy')}
+                    </button>
+                )}
             </nav>
+            {view === 'signal' && onRuleBuy && (
+                <SignalStrategy
+                    symbol={symbol}
+                    currency={currency}
+                    account={ruleAccount}
+                    initialStake={initial_stake}
+                    initialTicks={initial_ticks}
+                    block={purchase_block || execution_block}
+                    buy={onRuleBuy}
+                />
+            )}
             {view === 'finder' && (
                 <form onSubmit={compare} className='tick-insights__fields'>
                     <label>
@@ -851,42 +879,44 @@ const InsightsPanel = ({
                     })}
                 </p>
             )}
-            <fieldset className='tick-insights__fields tick-insights__preset'>
-                <legend>{localize('Automatic settings')}</legend>
-                <label>
-                    {localize('Run stop loss (automatic only)')} ({currency})
-                    <input
-                        type='number'
-                        min='0.01'
-                        step='any'
-                        value={stop_loss}
-                        disabled={busy}
-                        onChange={e => {
-                            setStopLoss(e.target.value);
-                            setPresetSaved(false);
-                        }}
-                    />
-                </label>
-                <label>
-                    {localize('Run take profit (if required)')} ({currency})
-                    <input
-                        type='number'
-                        min='0.01'
-                        step='any'
-                        value={take_profit}
-                        disabled={busy}
-                        onChange={e => {
-                            setTakeProfit(e.target.value);
-                            setPresetSaved(false);
-                        }}
-                    />
-                </label>
-                {preset_key && (
-                    <button type='button' disabled={busy} onClick={savePreset}>
-                        {localize('Save automatic preset')}
-                    </button>
-                )}
-            </fieldset>
+            {view !== 'signal' && (
+                <fieldset className='tick-insights__fields tick-insights__preset'>
+                    <legend>{localize('Automatic settings')}</legend>
+                    <label>
+                        {localize('Run stop loss (automatic only)')} ({currency})
+                        <input
+                            type='number'
+                            min='0.01'
+                            step='any'
+                            value={stop_loss}
+                            disabled={busy}
+                            onChange={e => {
+                                setStopLoss(e.target.value);
+                                setPresetSaved(false);
+                            }}
+                        />
+                    </label>
+                    <label>
+                        {localize('Run take profit (if required)')} ({currency})
+                        <input
+                            type='number'
+                            min='0.01'
+                            step='any'
+                            value={take_profit}
+                            disabled={busy}
+                            onChange={e => {
+                                setTakeProfit(e.target.value);
+                                setPresetSaved(false);
+                            }}
+                        />
+                    </label>
+                    {preset_key && (
+                        <button type='button' disabled={busy} onClick={savePreset}>
+                            {localize('Save automatic preset')}
+                        </button>
+                    )}
+                </fieldset>
+            )}
             {preset_saved && <p role='status'>{localize('Automatic preset saved for this account.')}</p>}
             {error && <p role='alert'>{error}</p>}
             {view === 'compare' && (
@@ -915,7 +945,12 @@ const InsightsPanel = ({
                         durations={durations}
                         onDurations={setDurations}
                         send={payload => ws.send(payload)}
-                        subscribeTicks={ws.subscribeTicks}
+                        subscribeTicks={
+                            ws.subscribeTicks
+                                ? (market, callback) =>
+                                      ws.subscribeTicks(market, callback, { fancytrading_insights: true })
+                                : undefined
+                        }
                         markets={markets}
                         canBuy={!busy && !purchase_block}
                         canReview={contract => !busy && !execution_block && !!getStrategies(contract).length}

@@ -717,10 +717,19 @@ const AutoTrading = observer(
             'Purchase status is unknown. Check Positions or Reports, then reload before buying again.'
         );
 
-        const buyFromInsights = async (draft: TInsightTrade, signal: AbortSignal) => {
+        const buyFromInsights = async (draft: TInsightTrade, signal: AbortSignal, beforeRuleBuy?: () => void) => {
             if (starting.current) throw new Error(localize('A trade request is already in progress.'));
             if (unconfirmed_buy) throw new Error(unconfirmed_message);
-            const purchase_account_id = ensureInsightTrade(draft, signal);
+            const checkAccount = () => {
+                const id = ensureInsightTrade(draft, signal);
+                const automation = controller.current?.state;
+                if (beforeRuleBuy && (owner.current !== id || store.symbol !== draft.symbol || !automation?.ready ||
+                    automation.uncertain || automation.runs.some(item => item.status !== 'stopped'))) {
+                    throw new Error(localize('The market changed or another automatic run is active. Check Automatic settings.'));
+                }
+                return id;
+            };
+            const purchase_account_id = checkAccount();
             const template = buildInsightTemplate(draft);
             const connection = ws.getWSUrl?.();
             let subscription: { unsubscribe: () => void } | undefined;
@@ -728,29 +737,40 @@ const AutoTrading = observer(
             try {
                 const access = await fetchPremiumAccess('tick-insights', signal);
                 ensureInsightAccess(access);
-                ensureInsightTrade(draft, signal);
+                checkAccount();
                 // Only streaming proposal IDs can be bought with the current Deriv API.
                 const { proposal, error } = await waitForInsightRequest(
                     new Promise<{
                         proposal?: { id?: string; ask_price?: number | string; payout?: number | string };
                         error?: { message?: string };
                     }>(resolve => {
-                        subscription = ws.subscribeProposal({ ...template, subscribe: 1 }, resolve);
+                        subscription = ws.subscribeProposal({
+                            ...template, subscribe: 1,
+                            ...(beforeRuleBuy && { passthrough: { fancytrading_insights: true } }),
+                        }, resolve);
                     }),
                     localize('The quote request timed out. Refresh the comparison and try again.')
                 );
                 if (!proposal?.id || error)
                     throw new Error(error?.message || localize('No purchasable quote is available.'));
-                ensureInsightTrade(draft, signal);
+                checkAccount();
                 ensureInsightAccess(access);
                 if (ws.getWSUrl?.() !== connection)
                     throw new Error(localize('The market connection changed. Review the trade again.'));
-                ensureInsightQuote(draft, proposal);
+                if (beforeRuleBuy) {
+                    if (Number(proposal.ask_price) !== draft.stake || !Number.isFinite(Number(proposal.payout)) ||
+                        Number(proposal.payout) <= draft.stake) {
+                        throw new Error(localize('Deriv did not quote the exact stake for this rule.'));
+                    }
+                } else {
+                    ensureInsightQuote(draft, proposal);
+                }
 
                 const markUnconfirmed = () => {
                     setUnconfirmedPurchases(previous => [...previous, purchase_account_id]);
                     return new Error(unconfirmed_message);
                 };
+                beforeRuleBuy?.();
                 const response = await waitForInsightRequest(
                     processPurchase(proposal.id, draft.stake),
                     unconfirmed_message
@@ -1192,6 +1212,8 @@ const AutoTrading = observer(
                     execution_block={insight_block}
                     purchase_block={trade_block || (unconfirmed_buy ? unconfirmed_message : '')}
                     onBuy={buyFromInsights}
+                    onRuleBuy={buyFromInsights}
+                    ruleAccount={account_id ? { id: account_id, demo: !!client.is_virtual } : undefined}
                     getStrategies={getInsightStrategyOptions}
                     onRefreshAutomation={eligible && !state.busy ? () => { void controller.current?.refresh(); } : undefined}
                     onStart={startFromInsights}

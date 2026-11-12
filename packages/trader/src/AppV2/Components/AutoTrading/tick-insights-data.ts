@@ -132,8 +132,58 @@ type TMarketData = {
     error?: unknown;
 };
 
-export const getInsightMarkets = async (send: (payload: Record<string, unknown>) => Promise<TMarketData>) => {
-    const response = await send({ active_symbols: 'brief' });
+export const isInsightRateLimit = (response: unknown): boolean => {
+    const failure = response as { code?: string; error?: { code?: string } } | null;
+    return (failure?.error?.code ?? failure?.code) === 'RateLimit';
+};
+
+export class InsightRateLimitError extends Error {}
+
+const REQUEST_SPACING_MS = 400;
+const RATE_LIMIT_COOLDOWN_MS = 60000;
+let nextRequestAt = 0;
+let cooldownUntil = 0;
+let requestQueue = Promise.resolve();
+
+export const noteInsightRateLimit = () => {
+    cooldownUntil = performance.now() + RATE_LIMIT_COOLDOWN_MS;
+};
+
+export const waitForInsightRequestSlot = (signal: AbortSignal) => {
+    const turn = requestQueue.then(async () => {
+        if (signal.aborted) throw new DOMException('Comparison cancelled', 'AbortError');
+        if (performance.now() < cooldownUntil) throw new InsightRateLimitError();
+        const delay = nextRequestAt - performance.now();
+        if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
+        if (signal.aborted) throw new DOMException('Comparison cancelled', 'AbortError');
+        if (performance.now() < cooldownUntil) throw new InsightRateLimitError();
+        nextRequestAt = performance.now() + REQUEST_SPACING_MS;
+    });
+    requestQueue = turn.catch(() => undefined);
+    return turn;
+};
+
+const sendInsightRequest = async (
+    send: (payload: Record<string, unknown>) => Promise<TMarketData>,
+    payload: Record<string, unknown>,
+    signal: AbortSignal
+) => {
+    await waitForInsightRequestSlot(signal);
+    try {
+        const response = await send({ ...payload, passthrough: { fancytrading_insights: true } });
+        if (!isInsightRateLimit(response)) return response;
+    } catch (error) {
+        if (!isInsightRateLimit(error)) throw error;
+    }
+    noteInsightRateLimit();
+    throw new InsightRateLimitError();
+};
+
+export const getInsightMarkets = async (
+    send: (payload: Record<string, unknown>) => Promise<TMarketData>,
+    signal: AbortSignal
+) => {
+    const response = await sendInsightRequest(send, { active_symbols: 'brief' }, signal);
     if (response.error) throw new Error('Could not load instruments');
     return (response.active_symbols ?? []).map(item => ({
         symbol: item.underlying_symbol,
@@ -164,7 +214,7 @@ export const compareInsightMarkets = async (
                     if (!report) locked = true;
                     else reports.push({ ...report, rows: report.rows.map(row => ({ ...row, symbol })) });
                 } catch (error) {
-                    if (markets.length === 1) throw error;
+                    if (error instanceof InsightRateLimitError || markets.length === 1) throw error;
                 }
                 if (!signal.aborted) onProgress(++scanned);
             }
@@ -202,28 +252,36 @@ export const compareRecentTicks = async (
     const marketRequest = (key: string, payload: Record<string, unknown>) => {
         const existing = marketRequests.get(key);
         if (existing) return existing;
-        const request = send(payload);
+        const request = sendInsightRequest(send, payload, signal);
         marketRequests.set(key, request);
         return request;
     };
 
-    const historyRequest = marketRequest(`history:${symbol}`, {
+    const history = await marketRequest(`history:${symbol}`, {
         ticks_history: symbol,
         end: 'latest',
         count,
         style: 'ticks',
     });
+    if (signal.aborted) return null;
+    if (history?.error || history?.history?.prices?.length !== count || history?.history?.times?.length !== count) {
+        throw new Error('Incomplete tick history');
+    }
     const quotesRequest = Promise.allSettled(
         candidates.map(async candidate => {
             const settings = getInsightContract(family, candidate, ticks);
-            const response = await send({
-                proposal: 1,
-                amount: stake,
-                basis: 'stake',
-                currency,
-                underlying_symbol: symbol,
-                ...settings,
-            });
+            const response = await sendInsightRequest(
+                send,
+                {
+                    proposal: 1,
+                    amount: stake,
+                    basis: 'stake',
+                    currency,
+                    underlying_symbol: symbol,
+                    ...settings,
+                },
+                signal
+            );
             if (!response?.proposal || response.error) return [];
             const { ask_price, payout, spot, contract_details } = response.proposal;
             const { high_barrier, low_barrier, maximum_ticks, maximum_payout, tick_size_barrier_percentage } =
@@ -246,20 +304,20 @@ export const compareRecentTicks = async (
         })
     );
 
-    const history = await historyRequest;
-    if (signal.aborted) return null;
-    if (history?.error || history?.history?.prices?.length !== count || history?.history?.times?.length !== count) {
-        throw new Error('Incomplete tick history');
-    }
-
     const precisionRequest =
         family === 'digital' && !Number.isInteger(history.pip_size)
             ? marketRequest(`precision:${symbol}`, { ticks: symbol }).then(
                   response => response.tick?.pip_size,
-                  () => undefined
+                  error => {
+                      if (error instanceof InsightRateLimitError) throw error;
+                      return undefined;
+                  }
               )
             : Promise.resolve(history.pip_size);
     const [quotes, precision] = await Promise.all([quotesRequest, precisionRequest]);
+    if (quotes.some(quote => quote.status === 'rejected' && quote.reason instanceof InsightRateLimitError)) {
+        throw new InsightRateLimitError();
+    }
     if (signal.aborted) return null;
 
     return fetchTickInsights<TTickInsights>(

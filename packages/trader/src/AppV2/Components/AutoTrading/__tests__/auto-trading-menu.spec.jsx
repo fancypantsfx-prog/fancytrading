@@ -1,9 +1,12 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { configure, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { fetchPremiumAccess, fetchTickInsights } from '@deriv/api';
 import { processPurchase } from 'Stores/Modules/Trading/Actions/purchase';
 import AutoTrading from '../auto-trading';
 import { FancyTradingDialogContext } from '../fancy-trading-dialog-context';
+
+configure({ asyncUtilTimeout: 8000 });
+jest.setTimeout(15000);
 
 const mockStrategy = {
     strategy_id: 'martingale',

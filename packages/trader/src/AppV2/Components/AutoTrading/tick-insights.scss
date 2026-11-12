@@ -138,6 +138,16 @@
         }
     }
 
+    &__signal-fields {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        align-items: stretch;
+
+        label > :is(select, input) {
+            width: 100%;
+        }
+    }
+
     &__results {
         margin-block: 16px;
         padding-block-start: 12px;

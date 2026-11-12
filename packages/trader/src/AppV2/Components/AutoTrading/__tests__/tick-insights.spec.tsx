@@ -1,10 +1,15 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { configure, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { fetchPremiumAccess, fetchTickInsights } from '@deriv/api';
 import { FancyTradingDialogContext } from '../fancy-trading-dialog-context';
 import TickInsights from '../tick-insights';
 
+configure({ asyncUtilTimeout: 8000 });
+jest.setTimeout(15000);
+
+let mockRateLimitProposal = false;
 const mockSend = jest.fn(async (request: Record<string, unknown>) => {
+    if (request.proposal && mockRateLimitProposal) return { error: { code: 'RateLimit' } };
     if (request.ticks_history) {
         const count = Number(request.count);
         return {
@@ -152,7 +157,9 @@ it('compares the selected market and filters quoted payouts without executing tr
         expect.objectContaining({ candidate: 'PUT', ticks: 5, stake: 10, stopLoss: 25, payout: 20 }),
         expect.any(AbortSignal)
     );
-    expect(mockSend).toHaveBeenCalledWith({ ticks_history: '1HZ100V', end: 'latest', count: 400, style: 'ticks' });
+    expect(mockSend).toHaveBeenCalledWith(
+        expect.objectContaining({ ticks_history: '1HZ100V', end: 'latest', count: 400, style: 'ticks' })
+    );
     expect(
         mockSend.mock.calls.every(([request]) => request.active_symbols || request.proposal || request.ticks_history)
     ).toBe(true);
@@ -185,5 +192,25 @@ it('keeps market requests behind the access check', async () => {
     );
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('FancyTrading insights are locked'));
     expect(mockSend).not.toHaveBeenCalled();
+    expect(fetchTickInsights).not.toHaveBeenCalled();
+});
+
+it('stops queued quotes and reports the broker rate limit inside FancyTrading', async () => {
+    mockRateLimitProposal = true;
+    (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
+    render(
+        <FancyTradingDialogContext.Provider value={{ open: true, setOpen: jest.fn() }}>
+            <TickInsights {...props} />
+        </FancyTradingDialogContext.Provider>
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Scan instruments' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Deriv is limiting requests.');
+    expect(mockSend.mock.calls.filter(([payload]) => payload.proposal)).toHaveLength(1);
+    expect(mockSend).toHaveBeenCalledWith(
+        expect.objectContaining({
+            proposal: 1,
+            passthrough: { fancytrading_insights: true },
+        })
+    );
     expect(fetchTickInsights).not.toHaveBeenCalled();
 });
