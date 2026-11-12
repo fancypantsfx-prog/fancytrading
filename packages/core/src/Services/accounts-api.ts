@@ -78,12 +78,11 @@ export const fetchOTP = async (account_id: string): Promise<string> => {
 };
 
 /** POST /trading/v1/options/accounts/{id}/reset-demo-balance */
-export const resetDemoBalance = async (account_id: string): Promise<TAccount> => {
+export const resetDemoBalance = async (account_id: string): Promise<void> => {
     const res = await apiFetch(
         `${getApiV4BaseUrl()}/trading/v1/options/accounts/${account_id}/reset-demo-balance`,
         { method: 'POST' },
         false // no Content-Type — endpoint accepts no body
     );
     if (!res.ok) throw new Error(`resetDemoBalance failed: ${res.status}`);
-    return (await res.json()).data;
 };

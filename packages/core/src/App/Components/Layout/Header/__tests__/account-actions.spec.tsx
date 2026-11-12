@@ -33,13 +33,14 @@ const mockSendBridgeEvent = jest.fn(async (_event, fallback) => {
 });
 
 jest.mock('@deriv/api', () => ({
-    ...jest.requireActual('@deriv/api'),
     useDerivativesAccount: () => mockUseDerivativesAccount(),
     useMobileBridge: () => ({
         sendBridgeEvent: mockSendBridgeEvent,
         isBridgeAvailable: false,
     }),
 }));
+
+jest.mock('@deriv/quill-icons', () => ({}));
 
 jest.mock('@deriv-com/ui', () => ({
     useDevice: jest.fn(() => ({ isDesktop: true, isMobile: false })),
@@ -90,6 +91,24 @@ describe('AccountActions component', () => {
             </StoreProvider>
         );
     };
+
+    it('allows the demo balance to be reset from the account header', async () => {
+        const resetVirtualBalance = jest.fn();
+        renderWithStore({
+            client: { ...default_mock_store.client, is_virtual: true, resetVirtualBalance },
+        });
+
+        await userEvent.click(await screen.findByRole('button', { name: 'Reset balance' }));
+
+        expect(resetVirtualBalance).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the reset action hidden on real accounts', async () => {
+        renderWithStore();
+
+        await screen.findByTestId('dt_account_info');
+        expect(screen.queryByRole('button', { name: 'Reset balance' })).not.toBeInTheDocument();
+    });
 
     beforeEach(() => {
         jest.clearAllMocks();

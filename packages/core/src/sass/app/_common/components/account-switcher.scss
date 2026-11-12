@@ -1,3 +1,25 @@
+.reset-demo-balance {
+    position: relative;
+
+    &__button {
+        white-space: nowrap;
+    }
+
+    &__error {
+        position: absolute;
+        inset-inline-end: 0;
+        top: calc(100% + 0.4rem);
+        z-index: 2;
+        width: 18rem;
+        padding: 0.8rem;
+        border: 1px solid var(--color-surface-border);
+        border-radius: 0.8rem;
+        background: var(--color-surface-primary);
+        color: var(--color-text-primary);
+        font-size: 1.2rem;
+    }
+}
+
 /** @define acc-info */
 .acc-info {
     align-items: center;

@@ -66,6 +66,8 @@ const mock = (): TStores & { is_mock: boolean } => {
             setBalanceActiveAccount: jest.fn(),
             setEmail: jest.fn(),
             resetVirtualBalance: jest.fn(),
+            is_resetting_virtual_balance: false,
+            virtual_balance_reset_failed: false,
             logout: jest.fn(),
             removeTokenFromUrl: jest.fn(),
             is_crypto: jest.fn(),

@@ -26,6 +26,7 @@ const mockTrade = {
 };
 let mockRuns = [];
 let mockQuotePayout = 18;
+let mockStrategyListError;
 const mockSend = jest.fn(async (request) => {
     if (request.ticks_history) {
         return { pip_size: 2, history: {
@@ -34,6 +35,8 @@ const mockSend = jest.fn(async (request) => {
         } };
     }
     if (request.proposal) return { proposal: { ask_price: request.amount, payout: mockQuotePayout } };
+    if (request.auto_list_strategies && mockStrategyListError)
+        return { error: { message: mockStrategyListError } };
     if (request.auto_list_strategies)
         return { auto_list_strategies: { strategies: JSON.parse(JSON.stringify([mockStrategy])) } };
     if (request.auto_list) return { auto_list: { runs: mockRuns } };
@@ -134,6 +137,7 @@ beforeEach(() => {
     fetchPremiumAccess.mockReset().mockResolvedValue({ access: 'free' });
     fetchTickInsights.mockReset();
     mockQuotePayout = 18;
+    mockStrategyListError = undefined;
     mockHost.client.loginid = 'VRTC123';
     mockStrategy.supported_contract_types = ['CALL', 'PUT'];
     mockStrategy.strategy_id = 'martingale';
@@ -438,7 +442,7 @@ it('requires positive TP and SL with the actual live strategy schema', async () 
  expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
 });
 
-const reviewFancyTrade = async (candidate = 'CALL', automatic = true) => {
+const reviewFancyTrade = async (candidate = 'CALL', automatic = true, recoverStatus = false) => {
     const sample = { hits: 30, count: 39 };
     fetchTickInsights.mockResolvedValue({
         access: { access: 'free' },
@@ -465,9 +469,14 @@ const reviewFancyTrade = async (candidate = 'CALL', automatic = true) => {
     );
     await waitReady();
     if (candidate !== 'CALL')
-        fireEvent.change(await screen.findByLabelText('Compare'), { target: { value: 'accumulator' } });
+        fireEvent.change(await screen.findByLabelText('Contract group'), { target: { value: 'accumulator' } });
     if (automatic) fireEvent.change(await screen.findByLabelText(/Run stop loss/), { target: { value: '25' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Compare trades' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Scan instruments' }));
+    if (recoverStatus) {
+        await screen.findByText('Strategy list temporarily unavailable');
+        mockStrategyListError = undefined;
+        fireEvent.click(await screen.findByRole('button', { name: 'Refresh automatic status' }));
+    }
     const review = await screen.findByRole('button', {
         name: automatic ? (candidate === 'CALL' ? 'Review Rise' : 'Review 3% growth') : 'Buy Rise once',
     });
@@ -587,4 +596,41 @@ it('blocks a second one-off purchase after an unconfirmed broker response', asyn
     );
     expect(screen.getByRole('button', { name: 'Confirm and buy once' })).toBeDisabled();
     expect(processPurchase).toHaveBeenCalledTimes(1);
+});
+
+it('recovers automatic status and starts the explicitly selected strategy with Deriv’s required limits', async () => {
+    mockStrategyListError = 'Strategy list temporarily unavailable';
+    mockStrategy.description = 'Increases the stake after each loss.';
+    mockStrategy.parameters = {
+        type: 'object',
+        additionalProperties: false,
+        required: ['initial_stake', 'take_profit', 'stop_loss'],
+        properties: {
+            initial_stake: { type: 'string' },
+            multiplier: { type: 'number', exclusiveMinimum: 1, maximum: 10 },
+            max_stake: { type: 'string' },
+            take_profit: { type: 'string' },
+            stop_loss: { type: 'string' },
+        },
+    };
+
+    await reviewFancyTrade('CALL', true, true);
+    const review = within(screen.getByRole('region', { name: 'Review automatic run' }));
+    const confirm = review.getByRole('button', { name: 'Confirm and start run' });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(review.getByLabelText('Automatic strategy'), { target: { value: 'martingale' } });
+    expect(review.getByText('Increases the stake after each loss.')).toBeInTheDocument();
+    fireEvent.change(review.getByLabelText('Stake multiplier'), { target: { value: '2' } });
+    fireEvent.change(review.getByLabelText(/Maximum stake/), { target: { value: '20' } });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(review.getByLabelText(/Required run take profit/), { target: { value: '15' } });
+    fireEvent.click(confirm);
+    await screen.findByText(/Automatic run new-run started/);
+
+    expect(mockSend.mock.calls.filter(([request]) => request.auto_start)).toEqual([
+        [expect.objectContaining({
+            strategy_id: 'martingale',
+            strategy_parameters: { initial_stake: '10', multiplier: 2, max_stake: '20', take_profit: '15', stop_loss: '25' },
+        })],
+    ]);
 });

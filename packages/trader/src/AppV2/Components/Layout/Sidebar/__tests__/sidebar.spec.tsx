@@ -132,7 +132,7 @@ describe('<Sidebar />', () => {
                                 execution_block=''
                                 purchase_block=''
                                 onBuy={jest.fn()}
-                                supportsContract={() => false}
+                                getStrategies={() => []}
                                 onStart={jest.fn()}
                             />
                         )}

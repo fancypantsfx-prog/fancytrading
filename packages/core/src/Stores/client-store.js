@@ -15,8 +15,8 @@ import {
 } from '@deriv/shared';
 import { getInitialLanguage, localize } from '@deriv-com/translations';
 
-import { requestRestLogout, WS } from 'Services';
-import { fetchAccounts, fetchOTP } from '../Services/accounts-api';
+import { requestRestLogout } from 'Services';
+import { fetchAccounts, fetchOTP, resetDemoBalance } from '../Services/accounts-api';
 import { clearTokens, generateOAuthURL, getStoredToken } from '../Services/oauth';
 
 import { getClientAccountType } from './Helpers/client';
@@ -45,6 +45,8 @@ export default class ClientStore extends BaseStore {
     has_logged_out = false;
     should_redirect_user_to_login = false;
     is_new_session = false;
+    is_resetting_virtual_balance = false;
+    virtual_balance_reset_failed = false;
 
     currencies_list = {};
     selected_currency = '';
@@ -72,6 +74,8 @@ export default class ClientStore extends BaseStore {
             should_redirect_user_to_login: observable,
             has_cookie_account: observable,
             is_new_session: observable,
+            is_resetting_virtual_balance: observable,
+            virtual_balance_reset_failed: observable,
 
             balance: computed,
             currency: computed,
@@ -290,12 +294,47 @@ export default class ClientStore extends BaseStore {
     }
 
     async resetVirtualBalance() {
-        this.root_store.notifications.removeNotificationByKey({ key: 'reset_virtual_balance' });
-        this.root_store.notifications.removeNotificationMessage({
-            key: 'reset_virtual_balance',
-            should_show_again: true,
-        });
-        await WS.authorized.topupVirtual();
+        const { loginid } = this;
+        if (
+            this.is_resetting_virtual_balance ||
+            !this.is_logged_in ||
+            !this.is_virtual ||
+            this.current_account?.loginid !== loginid
+        ) {
+            return;
+        }
+
+        this.is_resetting_virtual_balance = true;
+        this.virtual_balance_reset_failed = false;
+        const previous_balance = this.balance;
+
+        try {
+            await resetDemoBalance(loginid);
+            if (this.loginid === loginid) {
+                this.root_store.notifications.removeNotificationByKey({ key: 'reset_virtual_balance' });
+                this.root_store.notifications.removeNotificationMessage({
+                    key: 'reset_virtual_balance',
+                    should_show_again: true,
+                });
+            }
+
+            // Refresh if the balance subscription has not already delivered an update.
+            if (this.loginid === loginid && this.balance === previous_balance) {
+                const accounts = await fetchAccounts().catch(() => []);
+                const account = accounts.find(item => item.account_id === loginid);
+                if (account && this.loginid === loginid && this.balance === previous_balance) {
+                    this.setBalanceActiveAccount({ loginid, balance: account.balance });
+                }
+            }
+        } catch {
+            runInAction(() => {
+                if (this.loginid === loginid) this.virtual_balance_reset_failed = true;
+            });
+        } finally {
+            runInAction(() => {
+                this.is_resetting_virtual_balance = false;
+            });
+        }
     }
 
     isAccountOfType = type => {
@@ -460,6 +499,7 @@ export default class ClientStore extends BaseStore {
     }
 
     setLoginId(loginid) {
+        if (this.loginid !== loginid) this.virtual_balance_reset_failed = false;
         this.loginid = loginid;
     }
 
@@ -515,7 +555,7 @@ export default class ClientStore extends BaseStore {
         }
 
         // Reset state
-        this.loginid = null;
+        this.setLoginId(null);
         this.user_id = null;
         this.external_id = null;
         this.current_account = null;

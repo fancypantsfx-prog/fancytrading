@@ -113,6 +113,15 @@ describe('AccountHeader', () => {
         );
     };
 
+    it('allows the demo balance to be reset from the desktop account header', async () => {
+        const resetVirtualBalance = jest.fn();
+        renderComponent(mockStore({ client: { ...default_mock_store.client, is_virtual: true, resetVirtualBalance } }));
+
+        await userEvent.click(screen.getByRole('button', { name: 'Reset balance' }));
+
+        expect(resetVirtualBalance).toHaveBeenCalledTimes(1);
+    });
+
     beforeEach(() => {
         jest.clearAllMocks();
         mockSendBridgeEvent.mockClear();

@@ -9,6 +9,7 @@ import { useStore } from '@deriv/stores';
 import { useTranslations } from '@deriv-com/translations';
 
 import { LoginButton } from './login-button';
+import ResetDemoBalanceButton from './reset-demo-balance-button';
 
 import 'Sass/app/_common/components/account-switcher.scss';
 
@@ -72,6 +73,7 @@ const AccountActionsComponent = observer(() => {
                 refetch={refetch}
                 onAccountSwitch={handleAccountSwitchStart}
             />
+            <ResetDemoBalanceButton />
             <Button
                 className='acc-info__transfer-button'
                 onClick={handleTransferClick}

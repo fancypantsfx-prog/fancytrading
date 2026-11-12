@@ -5,20 +5,21 @@ import type { TPremiumAccess } from '@deriv/api';
 import { getDecimalPlaces, getPlatformLogo, useWS } from '@deriv/shared';
 import { localize } from '@deriv-com/translations';
 import { FancyTradingDialogContext } from './fancy-trading-dialog-context';
-import { compareRecentTicks, getInsightContract, getInsightPreset, isInsightPresetValid } from './tick-insights-data';
-import type { TFamily, TInsightRun, TInsightTrade, TTickInsights } from './tick-insights-data';
+import {
+    compareInsightMarkets,
+    getInsightContract,
+    getInsightMarkets,
+    getInsightPreset,
+    isInsightPresetValid,
+    waitForInsightRequest,
+} from './tick-insights-data';
+import type { TFamily, TInsightRun, TInsightStrategyOption, TInsightTrade, TTickInsights } from './tick-insights-data';
+import InsightsCompare, { candidateLabel } from './insights-compare';
+import type { TCompareSetup } from './insights-compare';
 import './tick-insights.scss';
 
 const percent = (value: number) => value.toLocaleString(undefined, { style: 'percent', maximumFractionDigits: 1 });
 const hitRate = ({ hits, count }: { hits: number; count: number }) => hits / count;
-const candidateLabel = (candidate: string) =>
-    ({
-        CALL: localize('Rise'),
-        PUT: localize('Fall'),
-        DIGITEVEN: localize('Digit Even'),
-        DIGITODD: localize('Digit Odd'),
-    })[candidate] ?? localize('{{rate}}% growth', { rate: candidate });
-
 type TInsightRow = TTickInsights['rows'][number];
 
 const formatMoney = (value: number, currency: string) =>
@@ -29,17 +30,44 @@ const InsightsResults = ({
     onReview,
     canReview,
     canBuy,
+    onStar,
+    isStarred,
+    canStar,
 }: {
     report: TTickInsights;
     onReview: (row: TInsightRow, automatic: boolean) => void;
     canReview: (row: TInsightRow) => boolean;
     canBuy: boolean;
+    onStar: (row: TInsightRow) => void;
+    isStarred: (row: TInsightRow) => boolean;
+    canStar: boolean;
 }) => {
     const [minimum_payout, setMinimumPayout] = React.useState('');
-    const [sort_by_payout, setSortByPayout] = React.useState(false);
+    const [metric, setMetric] = React.useState('rate');
     const money = (value: number) => formatMoney(value, report.currency);
     const rows = report.rows.filter(row => row.payout >= Number(minimum_payout || 0));
-    if (sort_by_payout) rows.sort((a, b) => b.payout - a.payout);
+    const score = (row: TInsightRow) => {
+        switch (metric) {
+            case 'net':
+                return row.estimatedNet ?? -Infinity;
+            case 'return':
+                return row.returnOnStake ?? -Infinity;
+            case 'wins':
+                return row.maxWins ?? -Infinity;
+            case 'losses':
+                return row.maxLosses === undefined ? -Infinity : -row.maxLosses;
+            case 'payout':
+                return row.payout;
+            default:
+                return hitRate(row.historical);
+        }
+    };
+    rows.sort(
+        (a, b) =>
+            score(b) - score(a) ||
+            (a.symbol ?? '').localeCompare(b.symbol ?? '') ||
+            a.candidate.localeCompare(b.candidate)
+    );
 
     if (!report.rows.length) {
         return (
@@ -52,11 +80,19 @@ const InsightsResults = ({
     return (
         <div className='tick-insights__results' aria-live='polite'>
             <p>
-                {localize('400 ticks ending at {{time}} · {{ticks}}-tick target', {
+                {localize('Latest 400 ticks per instrument · {{ticks}}-tick target · Last sample {{time}}', {
                     time: new Date(report.lastTick * 1000).toLocaleString(),
                     ticks: String(report.ticks),
                 })}
             </p>
+            {!!report.marketsScanned && (
+                <p>
+                    {localize(
+                        '{{count}} instruments checked. Results use each instrument’s latest tick sample and current quote.',
+                        { count: String(report.marketsScanned) }
+                    )}
+                </p>
+            )}
             <div className='tick-insights__fields'>
                 <label>
                     {localize('Minimum total payout')} ({report.currency})
@@ -70,12 +106,13 @@ const InsightsResults = ({
                 </label>
                 <label>
                     {localize('Sort by')}
-                    <select
-                        value={sort_by_payout ? 'payout' : 'rate'}
-                        onChange={e => setSortByPayout(e.target.value === 'payout')}
-                    >
+                    <select value={metric} onChange={e => setMetric(e.target.value)}>
                         <option value='rate'>{localize('Historical hit rate')}</option>
                         <option value='payout'>{localize('Total payout')}</option>
+                        <option value='net'>{localize('Highest estimated net over the window')}</option>
+                        <option value='return'>{localize('Highest return on total staked')}</option>
+                        <option value='wins'>{localize('Most consecutive wins')}</option>
+                        <option value='losses'>{localize('Fewest consecutive losses')}</option>
                     </select>
                 </label>
             </div>
@@ -93,25 +130,26 @@ const InsightsResults = ({
                             <tr>
                                 <th scope='col'>{localize('Trade')}</th>
                                 <th scope='col'>{localize('Historical hit rate')}</th>
-                                <th scope='col'>{localize('Older / recent')}</th>
                                 <th scope='col'>{localize('Total payout')}</th>
                                 <th scope='col'>{localize('Stake / profit if successful')}</th>
                                 <th scope='col'>{localize('Break-even hit rate')}</th>
+                                <th scope='col'>{localize('Estimated net / return')}</th>
+                                <th scope='col'>{localize('Max consecutive wins / losses')}</th>
                                 <th scope='col'>{localize('Trade actions')}</th>
                             </tr>
                         </thead>
                         <tbody>
                             {rows.map(row => (
-                                <tr key={row.candidate}>
-                                    <th scope='row'>{candidateLabel(row.candidate)}</th>
+                                <tr key={`${row.symbol ?? ''}:${row.candidate}`}>
+                                    <th scope='row'>
+                                        {candidateLabel(row.candidate)}
+                                        {row.symbol && <small>{row.symbol}</small>}
+                                    </th>
                                     <td>
                                         <strong>{percent(hitRate(row.historical))}</strong>
                                         <small>
                                             {row.historical.hits}/{row.historical.count}
                                         </small>
-                                    </td>
-                                    <td>
-                                        {percent(hitRate(row.older))} / {percent(hitRate(row.recent))}
                                     </td>
                                     <td>
                                         <strong>{money(row.payout)}</strong>
@@ -122,6 +160,26 @@ const InsightsResults = ({
                                     </td>
                                     <td>{row.breakEven === undefined ? '—' : percent(row.breakEven)}</td>
                                     <td>
+                                        {row.estimatedNet === undefined ? '—' : money(row.estimatedNet)}
+                                        {row.returnOnStake != null && <small>{percent(row.returnOnStake)}</small>}
+                                    </td>
+                                    <td>
+                                        {row.maxWins ?? '—'} / {row.maxLosses ?? '—'}
+                                    </td>
+                                    <td>
+                                        <button
+                                            type='button'
+                                            aria-pressed={isStarred(row)}
+                                            disabled={!canStar && !isStarred(row)}
+                                            aria-label={
+                                                isStarred(row)
+                                                    ? localize('Remove from Compare')
+                                                    : localize('Add to Compare')
+                                            }
+                                            onClick={() => onStar(row)}
+                                        >
+                                            {isStarred(row) ? '★' : '☆'}
+                                        </button>
                                         <button
                                             type='button'
                                             disabled={!canReview(row)}
@@ -151,7 +209,7 @@ const InsightsResults = ({
             )}
             <p className='tick-insights__note'>
                 {localize(
-                    'The 400 ticks are split into two 200-tick samples. Trials share no price moves within each sample. Compare both halves before relying on a high historical hit rate.'
+                    'Simulated trades use non-overlapping tick moves. Estimated net uses historical outcomes and the current quoted payout at the selected stake.'
                 )}
             </p>
             <p className='tick-insights__note'>
@@ -170,14 +228,23 @@ type TProps = {
     currency: string;
     initial_stake: number;
     initial_ticks: number;
+    initial_candidate?: string;
     is_accumulator: boolean;
     account_label: string;
     execution_block: string;
     purchase_block: string;
     preset_key?: string;
     onBuy: (trade: TInsightTrade, signal: AbortSignal) => Promise<string>;
-    supportsContract: (contract_type: string) => boolean;
+    getStrategies: (contract_type: string) => TInsightStrategyOption[];
+    onRefreshAutomation?: () => void;
     onStart: (draft: TInsightRun, signal: AbortSignal) => Promise<string>;
+};
+
+type TPanelProps = TProps & {
+    starred: TCompareSetup[];
+    setStarred: (setups: TCompareSetup[]) => void;
+    durations: number[];
+    setDurations: (durations: number[]) => void;
 };
 
 const InsightsPanel = ({
@@ -185,17 +252,25 @@ const InsightsPanel = ({
     currency,
     initial_stake,
     initial_ticks,
+    initial_candidate,
     is_accumulator,
     account_label,
     execution_block,
     purchase_block,
     preset_key,
     onBuy,
-    supportsContract,
+    getStrategies,
+    onRefreshAutomation,
     onStart,
-}: TProps) => {
+    starred,
+    setStarred,
+    durations,
+    setDurations,
+}: TPanelProps) => {
     const ws = useWS();
     const [family, setFamily] = React.useState<TFamily>(is_accumulator ? 'accumulator' : 'digital');
+    const [finderGroup, setFinderGroup] = React.useState(is_accumulator ? 'accumulator' : 'digital');
+    const [finderBarrier, setFinderBarrier] = React.useState('5');
     const [preset] = React.useState(() => getInsightPreset(preset_key));
     const [stake, setStake] = React.useState(String(preset?.stake ?? initial_stake));
     const [stop_loss, setStopLoss] = React.useState(preset ? String(preset.stopLoss) : '');
@@ -205,7 +280,7 @@ const InsightsPanel = ({
     const [preset_saved, setPresetSaved] = React.useState(false);
     const [draft, setDraft] = React.useState<{
         trade: TInsightTrade;
-        run?: Pick<TInsightRun, 'stopLoss' | 'takeProfit'>;
+        run?: Omit<TInsightRun, keyof TInsightTrade>;
     }>();
     const [result, setResult] = React.useState<{ id: string; automatic: boolean }>();
     const review_ref = React.useRef<HTMLElement>(null);
@@ -215,7 +290,28 @@ const InsightsPanel = ({
     const [report, setReport] = React.useState<TTickInsights>();
     const [error, setError] = React.useState('');
     const [busy, setBusy] = React.useState(false);
+    const [view, setView] = React.useState<'finder' | 'compare'>('finder');
+    const [manualSetup, setManualSetup] = React.useState<TCompareSetup>({
+        symbol,
+        candidate: initial_candidate ?? 'CALL',
+    });
+    const [markets, setMarkets] = React.useState<{ symbol: string; label: string }[]>([]);
+    const [progress, setProgress] = React.useState<{ scanned: number; total: number }>();
     const request = React.useRef<AbortController>();
+
+    React.useEffect(() => {
+        if (view !== 'compare' || markets.length || typeof access === 'string' || access.access === 'locked') return;
+        let active = true;
+        void getInsightMarkets(payload => ws.send(payload)).then(
+            result => {
+                if (active && result.length) setMarkets(result);
+            },
+            () => undefined
+        );
+        return () => {
+            active = false;
+        };
+    }, [view, markets.length, ws, access]);
 
     React.useEffect(() => {
         const controller = new AbortController();
@@ -256,6 +352,7 @@ const InsightsPanel = ({
         setBusy(true);
         setError('');
         setResult(undefined);
+        setProgress(undefined);
         const timeout = window.setTimeout(() => {
             if (!controller.signal.aborted) {
                 controller.abort();
@@ -263,12 +360,34 @@ const InsightsPanel = ({
                 setReport(undefined);
                 setError(localize('The comparison timed out. Try again.'));
             }
-        }, 15000);
+        }, 120000);
         try {
-            const result = await compareRecentTicks(
+            const available = markets.length
+                ? markets
+                : await waitForInsightRequest(
+                      getInsightMarkets(payload => ws.send(payload)),
+                      localize('Instrument list timed out.')
+                  );
+            if (controller.signal.aborted) return;
+            setMarkets(available);
+            const symbols = [...new Set([symbol, ...available.map(market => market.symbol)])];
+            setProgress({ scanned: 0, total: symbols.length });
+            const candidates =
+                finderGroup === 'digit-barrier'
+                    ? ['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF']
+                          .filter(
+                              type =>
+                                  !(type === 'DIGITOVER' && finderBarrier === '9') &&
+                                  !(type === 'DIGITUNDER' && finderBarrier === '0')
+                          )
+                          .map(type => `${type}:${finderBarrier}`)
+                    : undefined;
+            const result = await compareInsightMarkets(
                 payload => ws.send(payload),
-                { symbol, currency, family, stake: Number(stake), ticks: Number(ticks) },
-                controller.signal
+                { symbol, currency, family, stake: Number(stake), ticks: Number(ticks), candidates, windowSize: 400 },
+                symbols,
+                controller.signal,
+                scanned => setProgress({ scanned, total: symbols.length })
             );
             if (controller.signal.aborted) return;
             setAccess(result?.access ?? { access: 'locked' });
@@ -277,7 +396,7 @@ const InsightsPanel = ({
             if (!controller.signal.aborted) {
                 setReport(undefined);
                 setError(
-                    localize('Could not load the 400-tick comparison. Check your market connection and try again.')
+                    localize('Could not load instrument comparisons. Check your market connection and try again.')
                 );
             }
         } finally {
@@ -286,9 +405,26 @@ const InsightsPanel = ({
         }
     };
 
+    const is_reviewing = !!draft;
     React.useEffect(() => {
-        if (draft) review_ref.current?.focus();
-    }, [draft]);
+        if (is_reviewing) review_ref.current?.focus();
+    }, [is_reviewing]);
+
+    const optionsFor = (candidate: string, duration: number, tradeFamily = family) =>
+        getStrategies(getInsightContract(tradeFamily, candidate, duration).contract_type);
+
+    const isStarred = (row: TInsightRow) =>
+        starred.some(item => item.symbol === (row.symbol ?? symbol) && item.candidate === row.candidate);
+    const star = (row: TInsightRow) => {
+        const setup = { symbol: row.symbol ?? symbol, candidate: row.candidate };
+        if (isStarred(row)) {
+            setStarred(starred.filter(item => item.symbol !== setup.symbol || item.candidate !== setup.candidate));
+            return;
+        }
+        if (manualSetup.symbol !== setup.symbol || manualSetup.candidate !== setup.candidate)
+            setStarred([...starred, setup]);
+        setDurations([...new Set([...durations, report?.ticks ?? Number(ticks)])]);
+    };
 
     const savePreset = () => {
         if (!preset_key) return;
@@ -315,23 +451,22 @@ const InsightsPanel = ({
         }
     };
 
-    const review = (row: TInsightRow, automatic: boolean) => {
+    const review = (
+        row: TInsightRow,
+        automatic: boolean,
+        duration = report?.ticks ?? Number(ticks),
+        tradeFamily = family
+    ) => {
         if (row.stake !== Number(stake)) {
             setError(localize('The quoted stake differs from the entered stake. Adjust the stake and compare again.'));
             return;
         }
         const stopLoss = Number(stop_loss);
         const takeProfit = take_profit === '' ? undefined : Number(take_profit);
-        if (automatic && (!Number.isFinite(stopLoss) || stopLoss < row.stake)) {
-            setError(localize('Enter a run stop loss at least as large as the quoted stake.'));
-            return;
-        }
-        if (automatic && takeProfit !== undefined && (!Number.isFinite(takeProfit) || takeProfit <= 0)) {
-            setError(localize('Enter a run take profit greater than zero.'));
-            return;
-        }
         const contractTakeProfit =
-            family === 'accumulator' ? Number((row.payout - row.stake).toFixed(getDecimalPlaces(currency))) : undefined;
+            tradeFamily === 'accumulator'
+                ? Number((row.payout - row.stake).toFixed(getDecimalPlaces(currency)))
+                : undefined;
         if (contractTakeProfit !== undefined && contractTakeProfit <= 0) {
             setError(localize('This payout target rounds to zero profit. Increase the stake or tick target.'));
             return;
@@ -340,15 +475,24 @@ const InsightsPanel = ({
         setDraft({
             trade: {
                 candidate: row.candidate,
-                family,
-                ticks: Number(ticks),
-                symbol,
+                family: tradeFamily,
+                ticks: duration,
+                symbol: row.symbol ?? symbol,
                 currency,
                 stake: row.stake,
                 payout: row.payout,
                 contractTakeProfit,
             },
-            run: automatic ? { stopLoss, takeProfit } : undefined,
+            run: automatic
+                ? {
+                      stopLoss,
+                      takeProfit,
+                      strategyId:
+                          optionsFor(row.candidate, duration, tradeFamily).find(
+                              option => option.id === '__fixed_stake__'
+                          )?.id ?? '',
+                  }
+                : undefined,
         });
     };
 
@@ -405,30 +549,125 @@ const InsightsPanel = ({
         const title = run ? localize('Review automatic run') : localize('Review one contract');
         const block = run ? execution_block : purchase_block;
         const money = (value: number) => formatMoney(value, trade.currency);
+        const strategies = run ? optionsFor(trade.candidate, trade.ticks, trade.family) : [];
+        const selected_strategy = strategies.find(option => option.id === run?.strategyId);
+        const valid_stop_loss = !!run && Number.isFinite(run.stopLoss) && run.stopLoss >= trade.stake;
+        const strategy_incomplete =
+            !!run &&
+            (!selected_strategy ||
+                !valid_stop_loss ||
+                (selected_strategy.requiresTakeProfit && run.takeProfit === undefined) ||
+                (run.takeProfit !== undefined && (!Number.isFinite(run.takeProfit) || run.takeProfit <= 0)) ||
+                (!!selected_strategy.multiplier && !run.multiplier));
         return (
             <section ref={review_ref} tabIndex={-1} className='tick-insights__review' aria-label={title}>
                 <h3>{title}</h3>
+                {run && (
+                    <div className='tick-insights__fields'>
+                        <label>
+                            {localize('Automatic strategy')}
+                            <select
+                                disabled={busy}
+                                value={run.strategyId}
+                                onChange={e => {
+                                    const option = strategies.find(item => item.id === e.target.value);
+                                    setError('');
+                                    setDraft({
+                                        trade,
+                                        run: {
+                                            ...run,
+                                            strategyId: e.target.value,
+                                            multiplier: option?.multiplier?.defaultValue,
+                                            maxStake: undefined,
+                                        },
+                                    });
+                                }}
+                            >
+                                <option value=''>{localize('Select a strategy')}</option>
+                                {strategies.map(option => (
+                                    <option key={option.id} value={option.id}>
+                                        {option.label}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                        <label>
+                            {localize('Run stop loss')} ({currency})
+                            <input
+                                type='number'
+                                min={trade.stake}
+                                step='any'
+                                disabled={busy}
+                                value={run.stopLoss || ''}
+                                onChange={e => setDraft({ trade, run: { ...run, stopLoss: Number(e.target.value) } })}
+                            />
+                            {!valid_stop_loss && (
+                                <small>
+                                    {localize('Enter a run stop loss at least as large as the quoted stake.')}
+                                </small>
+                            )}
+                        </label>
+                        {selected_strategy?.multiplier && (
+                            <label>
+                                {localize('Stake multiplier')}
+                                <input
+                                    type='number'
+                                    step='any'
+                                    disabled={busy}
+                                    value={run.multiplier ?? ''}
+                                    onChange={e => setDraft({ trade, run: { ...run, multiplier: e.target.value } })}
+                                />
+                            </label>
+                        )}
+                        {selected_strategy?.maxStake && (
+                            <label>
+                                {localize('Maximum stake (optional)')} ({currency})
+                                <input
+                                    type='number'
+                                    min={trade.stake}
+                                    step='any'
+                                    disabled={busy}
+                                    value={run.maxStake ?? ''}
+                                    onChange={e => setDraft({ trade, run: { ...run, maxStake: e.target.value } })}
+                                />
+                            </label>
+                        )}
+                        {(selected_strategy?.requiresTakeProfit || run.takeProfit !== undefined) && (
+                            <label>
+                                {selected_strategy?.requiresTakeProfit
+                                    ? localize('Required run take profit')
+                                    : localize('Run take profit')}{' '}
+                                ({currency})
+                                <input
+                                    type='number'
+                                    min='0.01'
+                                    step='any'
+                                    disabled={busy}
+                                    value={run.takeProfit ?? ''}
+                                    onChange={e =>
+                                        setDraft({
+                                            trade,
+                                            run: {
+                                                ...run,
+                                                takeProfit: e.target.value ? Number(e.target.value) : undefined,
+                                            },
+                                        })
+                                    }
+                                />
+                            </label>
+                        )}
+                    </div>
+                )}
+                {selected_strategy?.description && <p>{selected_strategy.description}</p>}
                 <dl>
                     <dt>{localize('Account')}</dt>
                     <dd>{account_label}</dd>
                     <dt>{localize('Market and contract')}</dt>
                     <dd>
-                        {symbol} · {candidateLabel(trade.candidate)}
+                        {trade.symbol} · {candidateLabel(trade.candidate)}
                     </dd>
-                    <dt>{localize('Stake per contract')}</dt>
+                    <dt>{run ? localize('Initial stake') : localize('Stake')}</dt>
                     <dd>{money(trade.stake)}</dd>
-                    {run && (
-                        <>
-                            <dt>{localize('Run stop loss')}</dt>
-                            <dd>{money(run.stopLoss)}</dd>
-                        </>
-                    )}
-                    {run?.takeProfit !== undefined && (
-                        <>
-                            <dt>{localize('Run take profit')}</dt>
-                            <dd>{money(run.takeProfit)}</dd>
-                        </>
-                    )}
                     {trade.contractTakeProfit === undefined ? (
                         <>
                             <dt>{localize('Duration')}</dt>
@@ -456,13 +695,18 @@ const InsightsPanel = ({
                 <p>
                     {run
                         ? localize(
-                              'The run uses a fixed stake. The stop loss stops new purchases at the loss threshold. Open contracts can still settle and increase the loss.'
+                              'The run stop loss stops new purchases at the loss threshold. Open contracts can still settle and increase the loss.'
                           )
                         : localize('This buys one contract. The full stake is at risk.')}
                 </p>
                 <p>{localize('Pricing can change between review and execution.')}</p>
                 {error && <p role='alert'>{error}</p>}
                 {!busy && block && <p role='status'>{block}</p>}
+                {!busy && block && run && onRefreshAutomation && (
+                    <button type='button' onClick={onRefreshAutomation}>
+                        {localize('Refresh automatic status')}
+                    </button>
+                )}
                 <div className='tick-insights__actions'>
                     <button
                         type='button'
@@ -474,7 +718,11 @@ const InsightsPanel = ({
                     >
                         {localize('Back to comparison')}
                     </button>
-                    <button type='button' disabled={busy || !!block} onClick={() => void confirm()}>
+                    <button
+                        type='button'
+                        disabled={busy || !!block || strategy_incomplete}
+                        onClick={() => void confirm()}
+                    >
                         {busy
                             ? localize('Submitting…')
                             : run
@@ -497,76 +745,112 @@ const InsightsPanel = ({
                         : localize('Contract {{id}} purchased. View it in Positions or Reports.', { id: result.id })}
                 </p>
             )}
-            <p className='tick-insights__badge'>
-                {access.access === 'paid'
-                    ? localize('Premium access')
-                    : access.access === 'preview'
-                      ? localize('Free preview')
-                      : localize('Free launch access')}
-            </p>
-            <p>
-                {localize(
-                    'Compare historical outcomes and current payout quotes for {{symbol}}, then review a one-off trade or an automatic run.',
-                    { symbol }
-                )}
-            </p>
-            <form onSubmit={compare} className='tick-insights__fields'>
-                <label>
-                    {localize('Compare')}
-                    <select
-                        value={family}
-                        onChange={e => {
-                            setFamily(e.target.value as TFamily);
-                            setReport(undefined);
-                        }}
-                        disabled={busy}
-                    >
-                        <option value='accumulator'>{localize('Accumulator growth rates')}</option>
-                        <option value='digital'>{localize('Rise / Fall and Even / Odd')}</option>
-                    </select>
-                </label>
-                <label>
-                    {localize('Stake per contract')} ({currency})
-                    <input
-                        type='number'
-                        required
-                        min='0.01'
-                        max='1000000'
-                        step='any'
-                        value={stake}
-                        disabled={busy}
-                        onChange={e => {
-                            setStake(e.target.value);
-                            setPresetSaved(false);
-                            setReport(undefined);
-                        }}
-                    />
-                </label>
-                <label>
-                    {localize('Tick target')}
-                    <input
-                        type='number'
-                        required
-                        min='1'
-                        max='20'
-                        step='1'
-                        value={ticks}
-                        disabled={busy}
-                        onChange={e => {
-                            setTicks(e.target.value);
-                            setPresetSaved(false);
-                            setReport(undefined);
-                        }}
-                    />
-                </label>
-                <button type='submit' disabled={busy}>
-                    {busy
-                        ? localize('Comparing…')
-                        : report
-                          ? localize('Refresh comparison')
-                          : localize('Compare trades')}
+            <nav className='tick-insights__navigation' aria-label={localize('FancyTrading views')}>
+                <button
+                    type='button'
+                    aria-pressed={view === 'finder'}
+                    disabled={busy}
+                    onClick={() => setView('finder')}
+                >
+                    {localize('Strategy finder')}
                 </button>
-            </form>
+                <button
+                    type='button'
+                    aria-pressed={view === 'compare'}
+                    disabled={busy}
+                    onClick={() => setView('compare')}
+                >
+                    {localize('Compare')} ({starred.length + 1})
+                </button>
+            </nav>
+            {view === 'finder' && (
+                <form onSubmit={compare} className='tick-insights__fields'>
+                    <label>
+                        {localize('Contract group')}
+                        <select
+                            value={finderGroup}
+                            onChange={e => {
+                                setFinderGroup(e.target.value);
+                                setFamily(e.target.value === 'accumulator' ? 'accumulator' : 'digital');
+                                setReport(undefined);
+                            }}
+                            disabled={busy}
+                        >
+                            <option value='accumulator'>{localize('Accumulator growth rates')}</option>
+                            <option value='digital'>{localize('Rise / Fall and Even / Odd')}</option>
+                            <option value='digit-barrier'>
+                                {localize('Digit Over / Under and Matches / Differs')}
+                            </option>
+                        </select>
+                    </label>
+                    {finderGroup === 'digit-barrier' && (
+                        <label>
+                            {localize('Barrier')}
+                            <select
+                                value={finderBarrier}
+                                disabled={busy}
+                                onChange={e => {
+                                    setFinderBarrier(e.target.value);
+                                    setReport(undefined);
+                                }}
+                            >
+                                {Array.from({ length: 10 }, (_, value) => (
+                                    <option key={value}>{value}</option>
+                                ))}
+                            </select>
+                        </label>
+                    )}
+                    <label>
+                        {localize('Stake per contract')} ({currency})
+                        <input
+                            type='number'
+                            required
+                            min='0.01'
+                            max='1000000'
+                            step='any'
+                            value={stake}
+                            disabled={busy}
+                            onChange={e => {
+                                setStake(e.target.value);
+                                setPresetSaved(false);
+                                setReport(undefined);
+                            }}
+                        />
+                    </label>
+                    <label>
+                        {localize('Tick target')}
+                        <input
+                            type='number'
+                            required
+                            min='1'
+                            max='20'
+                            step='1'
+                            value={ticks}
+                            disabled={busy}
+                            onChange={e => {
+                                setTicks(e.target.value);
+                                setPresetSaved(false);
+                                setReport(undefined);
+                            }}
+                        />
+                    </label>
+                    <button type='submit' disabled={busy}>
+                        {busy
+                            ? localize('Comparing…')
+                            : report
+                              ? localize('Refresh comparison')
+                              : localize('Scan instruments')}
+                    </button>
+                </form>
+            )}
+            {busy && progress && (
+                <p role='status'>
+                    {localize('Checked {{scanned}} of {{total}} instruments', {
+                        scanned: String(progress.scanned),
+                        total: String(progress.total),
+                    })}
+                </p>
+            )}
             <fieldset className='tick-insights__fields tick-insights__preset'>
                 <legend>{localize('Automatic settings')}</legend>
                 <label>
@@ -605,19 +889,71 @@ const InsightsPanel = ({
             </fieldset>
             {preset_saved && <p role='status'>{localize('Automatic preset saved for this account.')}</p>}
             {error && <p role='alert'>{error}</p>}
-            {report && (
+            {view === 'compare' && (
+                <>
+                    {!initial_candidate && (
+                        <p className='tick-insights__note'>
+                            {localize(
+                                'This manual contract has no tick replay. Compare starts with Rise on the active instrument.'
+                            )}
+                        </p>
+                    )}
+                    <InsightsCompare
+                        symbol={symbol}
+                        currency={currency}
+                        stake={stake}
+                        onStake={value => {
+                            setStake(value);
+                            setPresetSaved(false);
+                            setReport(undefined);
+                        }}
+                        setups={[manualSetup, ...starred]}
+                        onSetups={([first, ...rest]) => {
+                            setManualSetup(first);
+                            setStarred(rest);
+                        }}
+                        durations={durations}
+                        onDurations={setDurations}
+                        send={payload => ws.send(payload)}
+                        subscribeTicks={ws.subscribeTicks}
+                        markets={markets}
+                        canBuy={!busy && !purchase_block}
+                        canReview={contract => !busy && !execution_block && !!getStrategies(contract).length}
+                        onReview={({ setup, row, report }, automatic) =>
+                            review(
+                                { ...row, symbol: setup.symbol },
+                                automatic,
+                                report.ticks,
+                                /^[1-5]$/.test(setup.candidate) ? 'accumulator' : 'digital'
+                            )
+                        }
+                    />
+                </>
+            )}
+            {view === 'finder' && report && (
                 <>
                     {purchase_block && <p role='status'>{purchase_block}</p>}
                     {execution_block && execution_block !== purchase_block && <p role='status'>{execution_block}</p>}
+                    {execution_block && onRefreshAutomation && (
+                        <button type='button' disabled={busy} onClick={onRefreshAutomation}>
+                            {localize('Refresh automatic status')}
+                        </button>
+                    )}
+                    {!execution_block &&
+                        !!report.rows.length &&
+                        report.rows.every(row => !optionsFor(row.candidate, report.ticks).length) && (
+                            <p role='status'>
+                                {localize('Deriv has no automatic strategies for the contracts in this comparison.')}
+                            </p>
+                        )}
                     <InsightsResults
                         report={report}
                         onReview={review}
                         canBuy={!busy && !purchase_block}
-                        canReview={row =>
-                            !busy &&
-                            !execution_block &&
-                            supportsContract(getInsightContract(family, row.candidate, report.ticks).contract_type)
-                        }
+                        canReview={row => !busy && !execution_block && !!optionsFor(row.candidate, report.ticks).length}
+                        onStar={star}
+                        isStarred={isStarred}
+                        canStar={starred.length < 3 && (durations.length < 4 || durations.includes(report.ticks))}
                     />
                 </>
             )}
@@ -632,6 +968,8 @@ const InsightsPanel = ({
 
 const TickInsights = (props: TProps) => {
     const dialog = React.useRef<HTMLDialogElement>(null);
+    const [starred, setStarred] = React.useState<TCompareSetup[]>([]);
+    const [durations, setDurations] = React.useState<number[]>();
     const title = React.useId();
     const fancy_trading = React.useContext(FancyTradingDialogContext);
     const open = !!props.symbol && !!fancy_trading?.open;
@@ -668,7 +1006,13 @@ const TickInsights = (props: TProps) => {
                     ×
                 </button>
             </header>
-            <InsightsPanel {...props} />
+            <InsightsPanel
+                {...props}
+                starred={starred}
+                setStarred={setStarred}
+                durations={durations ?? [props.initial_ticks]}
+                setDurations={setDurations}
+            />
         </dialog>,
         document.body
     );

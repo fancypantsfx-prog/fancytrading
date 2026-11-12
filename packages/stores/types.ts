@@ -235,6 +235,8 @@ export type TClientStore = {
     setBalanceActiveAccount: (obj_balance: any) => void;
     setEmail: (email: string) => void;
     resetVirtualBalance: () => Promise<void>;
+    is_resetting_virtual_balance: boolean;
+    virtual_balance_reset_failed: boolean;
     logout: () => Promise<LogOutResponse>;
     removeTokenFromUrl: () => void;
     is_crypto: (currency?: string) => boolean;

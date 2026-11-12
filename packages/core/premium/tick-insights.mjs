@@ -5,23 +5,36 @@ const toNumber = value =>
     typeof value === 'number' || (typeof value === 'string' && value.trim() !== '') ? Number(value) : NaN;
 const positive = value => Number.isFinite(value) && value > 0;
 
-const compareWindows = (prices, ticks, wins) => {
+const compareWindows = (prices, ticks, wins, continuous = false) => {
     const sample = (start, end) => {
-        let hits = 0;
-        let count = 0;
+        const outcomes = [];
         for (let entry = start; entry + ticks < end; entry += ticks) {
-            if (wins(entry, entry + ticks)) hits++;
-            count++;
+            outcomes.push(wins(entry, entry + ticks));
         }
-        return { hits, count };
+        return outcomes;
     };
-    const middle = prices.length / 2;
+    const middle = Math.floor(prices.length / 2);
     const older = sample(0, middle);
     const recent = sample(middle, prices.length);
+    const outcomes = continuous ? sample(0, prices.length) : [...older, ...recent];
+    const summarize = trials => ({ hits: trials.filter(Boolean).length, count: trials.length });
+    let winStreak = 0;
+    let lossStreak = 0;
+    let maxWins = 0;
+    let maxLosses = 0;
+    for (const win of outcomes) {
+        winStreak = win ? winStreak + 1 : 0;
+        lossStreak = win ? 0 : lossStreak + 1;
+        maxWins = Math.max(maxWins, winStreak);
+        maxLosses = Math.max(maxLosses, lossStreak);
+    }
     return {
-        older,
-        recent,
-        historical: { hits: older.hits + recent.hits, count: older.count + recent.count },
+        older: summarize(older),
+        recent: summarize(recent),
+        historical: summarize(outcomes),
+        outcomes,
+        maxWins,
+        maxLosses,
     };
 };
 
@@ -40,7 +53,7 @@ const readAccumulatorRange = proposal => {
     return positive(width) && width < 1 ? { lower: -width, upper: width } : null;
 };
 
-const accumulatorOutcome = (prices, ticks, growth, stake, proposal) => {
+const accumulatorOutcome = (prices, ticks, growth, stake, proposal, continuous) => {
     const range = readAccumulatorRange(proposal);
     const details = proposal.contract_details;
     const maxTicks = toNumber(details?.maximum_ticks);
@@ -50,24 +63,42 @@ const accumulatorOutcome = (prices, ticks, growth, stake, proposal) => {
         return null;
     }
 
-    const result = compareWindows(prices, ticks, (entry, exit) => {
-        for (let index = entry; index < exit; index++) {
-            const change = (prices[index + 1] - prices[index]) / prices[index];
-            if (change <= range.lower || change >= range.upper) return false;
-        }
-        return true;
-    });
+    const result = compareWindows(
+        prices,
+        ticks,
+        (entry, exit) => {
+            for (let index = entry; index < exit; index++) {
+                const change = (prices[index + 1] - prices[index]) / prices[index];
+                if (change <= range.lower || change >= range.upper) return false;
+            }
+            return true;
+        },
+        continuous
+    );
 
     return { ...result, payout, estimated: true };
 };
 
 export const analyzeTickInsights = input => {
-    const { prices: rawPrices, times: rawTimes, ticks, precision, quotes, family, currency } = input ?? {};
+    const {
+        prices: rawPrices,
+        times: rawTimes,
+        ticks,
+        precision,
+        quotes,
+        family,
+        currency,
+        windowSize,
+        candidate: selectedCandidate,
+        candidates: selectedCandidates,
+    } = input ?? {};
+    const sampleSize = windowSize ?? TICK_SAMPLE_SIZE;
     if (
         !Array.isArray(rawPrices) ||
-        rawPrices.length !== TICK_SAMPLE_SIZE ||
+        ![20, 100, TICK_SAMPLE_SIZE].includes(sampleSize) ||
+        rawPrices.length !== sampleSize ||
         !Array.isArray(rawTimes) ||
-        rawTimes.length !== TICK_SAMPLE_SIZE ||
+        rawTimes.length !== sampleSize ||
         !Number.isInteger(ticks) ||
         ticks < 1 ||
         ticks > 20 ||
@@ -83,7 +114,7 @@ export const analyzeTickInsights = input => {
     const times = rawTimes.map(toNumber);
     if (
         !prices.every(positive) ||
-        !times.every((time, i) => Number.isSafeInteger(time) && time > (times[i - 1] ?? 0))
+        !times.every((time, i) => Number.isSafeInteger(time) && time > 0 && (i === 0 || time >= times[i - 1]))
     ) {
         return null;
     }
@@ -97,14 +128,38 @@ export const analyzeTickInsights = input => {
         DIGITEVEN: (_entry, exit) => digits[exit] % 2 === 0,
         DIGITODD: (_entry, exit) => digits[exit] % 2 === 1,
     };
+    for (let digit = 0; digit <= 9; digit++) {
+        if (digit < 9) outcomes[`DIGITOVER:${digit}`] = (_entry, exit) => digits[exit] > digit;
+        if (digit > 0) outcomes[`DIGITUNDER:${digit}`] = (_entry, exit) => digits[exit] < digit;
+        outcomes[`DIGITMATCH:${digit}`] = (_entry, exit) => digits[exit] === digit;
+        outcomes[`DIGITDIFF:${digit}`] = (_entry, exit) => digits[exit] !== digit;
+    }
+    const available = family === 'accumulator' ? candidates : Object.keys(outcomes);
+    if (selectedCandidate !== undefined && !available.includes(selectedCandidate)) return null;
+    if (
+        selectedCandidates !== undefined &&
+        (!Array.isArray(selectedCandidates) ||
+            selectedCandidates.length > 8 ||
+            !selectedCandidates.every(value => available.includes(value)))
+    )
+        return null;
 
     const rows = [];
-    for (const candidate of candidates) {
+    for (const candidate of new Set(
+        selectedCandidate === undefined ? (selectedCandidates ?? candidates) : [selectedCandidate]
+    )) {
         const proposal = quotes[candidate];
         const stake = toNumber(proposal?.ask_price);
         if (!positive(stake)) continue;
         if (family === 'accumulator') {
-            const result = accumulatorOutcome(prices, ticks, Number(candidate), stake, proposal);
+            const result = accumulatorOutcome(
+                prices,
+                ticks,
+                Number(candidate),
+                stake,
+                proposal,
+                windowSize !== undefined
+            );
             if (result) rows.push({ candidate, stake, ...result });
             continue;
         }
@@ -117,9 +172,24 @@ export const analyzeTickInsights = input => {
             payout,
             estimated: false,
             breakEven: stake / payout,
-            ...compareWindows(prices, ticks, outcomes[candidate]),
+            ...compareWindows(prices, ticks, outcomes[candidate], windowSize !== undefined),
         });
     }
     rows.sort((a, b) => b.historical.hits / b.historical.count - a.historical.hits / a.historical.count);
-    return { currency, ticks, firstTick: times[0], lastTick: times.at(-1), rows };
+    return {
+        currency,
+        ticks,
+        firstTick: times[0],
+        lastTick: times.at(-1),
+        rows: rows.map(row => {
+            const totalStaked = row.historical.count * row.stake;
+            const estimatedNet = row.historical.hits * row.payout - totalStaked;
+            return {
+                ...row,
+                totalStaked,
+                estimatedNet,
+                returnOnStake: totalStaked ? estimatedNet / totalStaked : null,
+            };
+        }),
+    };
 };

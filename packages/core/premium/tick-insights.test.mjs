@@ -75,6 +75,28 @@ test('excludes a range touch and omits targets outside the quoted accumulator li
     assert.equal(rows[0].estimated, true);
 });
 
+test('compares a digit barrier over a selected window and totals the settled replay', () => {
+    const digits = [0, 6, 7, 8, 3, 2, 9, 5, 4, 6, 7, 2, 5, 1, 9, 7, 6, 3, 2, 0];
+    const {
+        rows: [row],
+    } = analyzeTickInsights({
+        ...digital,
+        windowSize: 20,
+        ticks: 1,
+        precision: 1,
+        prices: digits.map(digit => 100 + digit / 10),
+        times: ticks.times.slice(0, 20),
+        candidate: 'DIGITOVER:5',
+        quotes: { 'DIGITOVER:5': { ask_price: 10, payout: 20 } },
+    });
+    assert.deepEqual(row.historical, { hits: 9, count: 19 });
+    assert.equal(row.maxWins, 3);
+    assert.equal(row.maxLosses, 3);
+    assert.equal(row.totalStaked, 190);
+    assert.equal(row.estimatedNet, -10);
+    assert.equal(row.returnOnStake, -10 / 190);
+});
+
 test('serves free launch and timed preview, and enforces paid access on the analysis endpoint', async () => {
     const makeRequest = () =>
         new Request('https://fancytrading.org/api/premium/tick-insights/analysis', {
