@@ -41,6 +41,8 @@ type TRun = {
     net: number;
     count: number;
     pending: boolean;
+    purchaseSent: boolean;
+    stopRequested: boolean;
     armed: boolean;
 };
 type TProps = {
@@ -92,6 +94,8 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
     const [max, setMax] = React.useState('5');
     const [history, setHistory] = React.useState<TSignalTick[]>([]);
     const [active, setActive] = React.useState(false);
+    const [stopping, setStopping] = React.useState(false);
+    const [startPending, setStartPending] = React.useState(false);
     const [acknowledged, setAcknowledged] = React.useState(false);
     const [status, setStatus] = React.useState('');
     const [totals, setTotals] = React.useState({ count: 0, net: 0 });
@@ -154,10 +158,23 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
         run.current = undefined;
         current?.controller.abort();
         current?.release();
+        if (current) setStartPending(true);
         setActive(false);
+        setStopping(false);
         setAcknowledged(false);
         setStatus(message);
     }, []);
+
+    const stopRun = React.useCallback(() => {
+        const current = run.current;
+        if (!current?.purchaseSent) {
+            stop(localize('Run stopped.'));
+            return;
+        }
+        current.stopRequested = true;
+        setStopping(true);
+        setStatus(localize('New trades stopped. Waiting for the last trade to settle before restarting.'));
+    }, [stop]);
 
     const checkSettlement = async (id: string, signal: AbortSignal) => {
         await waitForInsightRequestSlot(signal);
@@ -234,7 +251,7 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
 
     processTick.current = nextTicks => {
         const current = run.current;
-        if (!current || !marker) return;
+        if (!current || current.stopRequested || !marker) return;
         if (tradeBlock.current) {
             if (!current.pending) setStatus(localize('Run paused. {{reason}}', { reason: tradeBlock.current }));
             return;
@@ -260,7 +277,7 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
         current.armed = false;
         const deadline = performance.now() + 4000;
         const quoteFeedVersion = feedVersion.current;
-        let purchaseSent = false;
+
         const candidate = next.candidates[Math.floor(Math.random() * next.candidates.length)];
         const signal = current.controller.signal;
         setStatus(localize('Requesting a quote for {{contract}}…', { contract: candidateLabel(candidate) }));
@@ -293,7 +310,7 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                         if (localStorage.getItem(marker))
                             throw new Error(localize('Check the previous trade in Positions or Reports first.'));
                         localStorage.setItem(marker, 'pending');
-                        purchaseSent = true;
+                        current.purchaseSent = true;
                     }
                 );
                 if (signal.aborted) return;
@@ -309,7 +326,12 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                 current.net = Number((current.net + profit).toFixed(precision));
                 current.count++;
                 current.pending = false;
+                current.purchaseSent = false;
                 setTotals({ count: current.count, net: current.net });
+                if (current.stopRequested) {
+                    stop(localize('Run stopped. The last trade has settled.'));
+                    return;
+                }
                 if (
                     current.count >= current.max ||
                     current.net <= -current.loss ||
@@ -320,7 +342,7 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
             } catch (error) {
                 if (
                     !signal.aborted &&
-                    !purchaseSent &&
+                    !current.purchaseSent &&
                     (error instanceof StaleSignal ||
                         error instanceof InsightRateLimitError ||
                         tradeBlock.current ||
@@ -461,8 +483,7 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
         const onSocketReconnect = () => reconnect(localize('Connection restored. Waiting for fresh ticks�'));
         ws.setOnReconnect?.(onSocketReconnect);
         const visibility = () => {
-            if (document.hidden && run.current)
-                stop(localize('Run stopped when the tab was hidden. Open trades can still settle.'));
+            if (document.hidden && run.current) stopRun();
         };
         document.addEventListener('visibilitychange', visibility);
         void subscribe();
@@ -478,7 +499,7 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
             document.removeEventListener('visibilitychange', visibility);
             subscription?.unsubscribe();
         };
-    }, [symbol, stop, ws]);
+    }, [symbol, stopRun, ws]);
 
     const start = (event: React.FormEvent) => {
         event.preventDefault();
@@ -524,9 +545,14 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
             return;
         }
         starting.current = true;
+        setStartPending(true);
         void navigator.locks
             .request(marker, { ifAvailable: true }, async lock => {
-                if (!live.current || !latestTicks.current.length || document.hidden) return;
+                if (!live.current) return;
+                if (!latestTicks.current.length || document.hidden || tradeBlock.current) {
+                    setStatus(localize('Wait for an open connection and fresh ticks, then try Start again.'));
+                    return;
+                }
                 if (!lock) {
                     setStatus(localize('A Signal Strategy run is already open for this account in another tab.'));
                     return;
@@ -547,9 +573,12 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                         net: 0,
                         count: 0,
                         pending: false,
+                        purchaseSent: false,
+                        stopRequested: false,
                         armed: true,
                     };
                     setTotals({ count: 0, net: 0 });
+                    setStartPending(false);
                     setActive(true);
                     setStatus(localize('Waiting for the next tick.'));
                 });
@@ -560,6 +589,7 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
             })
             .finally(() => {
                 starting.current = false;
+                if (live.current) setStartPending(false);
             });
     };
 
@@ -567,7 +597,11 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
         if (!marker || !navigator.locks) return;
         try {
             await navigator.locks.request(marker, { ifAvailable: true }, lock => {
-                if (!lock || !live.current) return;
+                if (!live.current) return;
+                if (!lock) {
+                    setStatus(localize('Another tab is still checking this trade. Wait and try again.'));
+                    return;
+                }
                 localStorage.removeItem(marker);
                 setStatus(localize('Previous purchase acknowledged. You can start a new run.'));
             });
@@ -602,7 +636,12 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                 }}
             >
                 <div className='tick-insights__actions'>
-                    <button type='button' aria-haspopup='dialog' onClick={() => rules.current?.showModal()}>
+                    <button
+                        type='button'
+                        aria-haspopup='dialog'
+                        disabled={active}
+                        onClick={() => rules.current?.showModal()}
+                    >
                         {localize('Rules')}
                     </button>
                     <MenuHelp
@@ -611,7 +650,12 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                             'Choose which tick movement or digit outcome triggers a trade, and how often it must occur.'
                         )}
                     />
-                    <button type='button' aria-haspopup='dialog' onClick={() => limits.current?.showModal()}>
+                    <button
+                        type='button'
+                        aria-haspopup='dialog'
+                        disabled={active}
+                        onClick={() => limits.current?.showModal()}
+                    >
                         {localize('Automatic settings')}
                     </button>
                     <MenuHelp
@@ -627,33 +671,52 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                         disabled={active}
                     >
                         <legend>{rulesTitle}</legend>
-                        <p>
-                            {localize('Signal source')} · {localize('Live ticks from {{market}}', { market: symbol })}
-                        </p>
-                        <label>
-                            {localize('Contract side')}
-                            <select
-                                value={choice}
-                                onChange={event => {
-                                    const next = event.target.value as TSignalChoice;
-                                    setChoice(next);
-                                    if (next === 'first' || next === 'second')
-                                        setWatch(watchOptions[Number(next === 'second')]);
-                                    if (!signalDigits(family, next).includes(digit)) setDigit(5);
-                                }}
-                            >
-                                <option value='first'>{candidateLabel(signalContracts[family][0])}</option>
-                                <option value='second'>{candidateLabel(signalContracts[family][1])}</option>
-                                <option value='alternate'>{localize('Alternate between both')}</option>
-                                <option value='random'>{localize('Pick either side at random')}</option>
-                                {(family === 'parity' || family === 'direction') && (
-                                    <>
-                                        <option value='same'>{localize('Follow the latest tick')}</option>
-                                        <option value='opposite'>{localize('Go opposite to the latest tick')}</option>
-                                    </>
+                        <div className='tick-insights__action-help'>
+                            <p>
+                                {localize('Signal source')} ·{' '}
+                                {localize('Live ticks from {{market}}', { market: symbol })}
+                            </p>
+                            <MenuHelp
+                                label={localize('Signal source')}
+                                description={localize(
+                                    'The rule reads live price updates from this market. One price update is called a tick.'
                                 )}
-                            </select>
-                        </label>
+                            />
+                        </div>
+                        <div className='tick-insights__field-help'>
+                            <label>
+                                {localize('Contract side')}
+                                <select
+                                    value={choice}
+                                    onChange={event => {
+                                        const next = event.target.value as TSignalChoice;
+                                        setChoice(next);
+                                        if (next === 'first' || next === 'second')
+                                            setWatch(watchOptions[Number(next === 'second')]);
+                                        if (!signalDigits(family, next).includes(digit)) setDigit(5);
+                                    }}
+                                >
+                                    <option value='first'>{candidateLabel(signalContracts[family][0])}</option>
+                                    <option value='second'>{candidateLabel(signalContracts[family][1])}</option>
+                                    <option value='alternate'>{localize('Alternate between both')}</option>
+                                    <option value='random'>{localize('Pick either side at random')}</option>
+                                    {(family === 'parity' || family === 'direction') && (
+                                        <>
+                                            <option value='same'>{localize('Follow the latest tick')}</option>
+                                            <option value='opposite'>
+                                                {localize('Go opposite to the latest tick')}
+                                            </option>
+                                        </>
+                                    )}
+                                </select>
+                            </label>
+                            <MenuHelp
+                                label={localize('Contract side')}
+                                description={localize(
+                                    'Choose what to buy when the rule triggers. You can use one side or choose how to switch between both sides.'
+                                )}
+                            />
+                        </div>
                         {family === 'match' && (
                             <label>
                                 {localize('How to choose the digit')}
@@ -671,53 +734,84 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                             </label>
                         )}
                         {(family === 'barrier' || (family === 'match' && digitChoice === 'fixed')) && (
-                            <label>
-                                {family === 'barrier' ? localize('Barrier') : localize('Digit')}
-                                <select value={digit} onChange={event => setDigit(Number(event.target.value))}>
-                                    {signalDigits(family, choice).map(value => (
-                                        <option key={value} value={value}>
-                                            {value}
-                                        </option>
-                                    ))}
-                                </select>
-                            </label>
-                        )}
-                        <label>
-                            {localize('Entry condition')}
-                            <select
-                                value={condition}
-                                onChange={event => {
-                                    const value = event.target.value as TCondition;
-                                    setCondition(value);
-                                    setTarget(value === 'frequency' ? '60' : '4');
-                                }}
-                            >
-                                <option value='always'>{localize('After each trade settles')}</option>
-                                <option value='streak'>{localize('After a streak')}</option>
-                                <option value='frequency'>
-                                    {localize('When a side reaches a share of the last 20 ticks')}
-                                </option>
-                                {family === 'match' && (
-                                    <option value='pattern'>{localize('After an exact digit sequence')}</option>
-                                )}
-                            </select>
-                        </label>
-                        {(condition === 'streak' || condition === 'frequency') && (
-                            <>
+                            <div className='tick-insights__field-help'>
                                 <label>
-                                    {localize('Watch for')}
-                                    <select value={watch} onChange={event => setWatch(event.target.value as TWatch)}>
-                                        {watchOptions.map(value => (
+                                    {family === 'barrier' ? localize('Barrier') : localize('Digit')}
+                                    <select value={digit} onChange={event => setDigit(Number(event.target.value))}>
+                                        {signalDigits(family, choice).map(value => (
                                             <option key={value} value={value}>
-                                                {family === 'match' && digitChoice === 'random'
-                                                    ? value === 'selected'
-                                                        ? localize('Digits matching the watch digit')
-                                                        : watchLabels.different_digit
-                                                    : watchLabels[value]}
+                                                {value}
                                             </option>
                                         ))}
                                     </select>
                                 </label>
+                                <MenuHelp
+                                    label={family === 'barrier' ? localize('Barrier') : localize('Digit')}
+                                    description={
+                                        family === 'barrier'
+                                            ? localize('With a barrier of 5, Over wins on 6�9 and Under wins on 0�4.')
+                                            : localize(
+                                                  'Choose the digit to compare against. Matches wins if the last digit equals it. Differs wins if the last digit is different.'
+                                              )
+                                    }
+                                />
+                            </div>
+                        )}
+                        <div className='tick-insights__field-help'>
+                            <label>
+                                {localize('Entry condition')}
+                                <select
+                                    value={condition}
+                                    onChange={event => {
+                                        const value = event.target.value as TCondition;
+                                        setCondition(value);
+                                        setTarget(value === 'frequency' ? '60' : '4');
+                                    }}
+                                >
+                                    <option value='always'>{localize('After each trade settles')}</option>
+                                    <option value='streak'>{localize('After a streak')}</option>
+                                    <option value='frequency'>
+                                        {localize('When a side reaches a share of the last 20 ticks')}
+                                    </option>
+                                    {family === 'match' && (
+                                        <option value='pattern'>{localize('After an exact digit sequence')}</option>
+                                    )}
+                                </select>
+                            </label>
+                            <MenuHelp
+                                label={localize('Entry condition')}
+                                description={localize(
+                                    'Choose whether to enter after a streak, at a frequency threshold, or as soon as the previous trade settles. Digit matching also supports exact sequences.'
+                                )}
+                            />
+                        </div>
+                        {(condition === 'streak' || condition === 'frequency') && (
+                            <>
+                                <div className='tick-insights__field-help'>
+                                    <label>
+                                        {localize('Watch for')}
+                                        <select
+                                            value={watch}
+                                            onChange={event => setWatch(event.target.value as TWatch)}
+                                        >
+                                            {watchOptions.map(value => (
+                                                <option key={value} value={value}>
+                                                    {family === 'match' && digitChoice === 'random'
+                                                        ? value === 'selected'
+                                                            ? localize('Digits matching the watch digit')
+                                                            : watchLabels.different_digit
+                                                        : watchLabels[value]}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </label>
+                                    <MenuHelp
+                                        label={localize('Watch for')}
+                                        description={localize(
+                                            'Choose the market movement or digit outcome the entry rule counts.'
+                                        )}
+                                    />
+                                </div>
                                 {family === 'match' && digitChoice === 'random' && (
                                     <label>
                                         {localize('Digit to watch')}
@@ -746,21 +840,31 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                                         </select>
                                     </label>
                                 )}
-                                <label>
-                                    {condition === 'streak'
-                                        ? localize('Ticks in a row')
-                                        : comparison === 'range'
-                                          ? localize('Lower threshold (%)')
-                                          : localize('Threshold (%)')}
-                                    <input
-                                        type='number'
-                                        required
-                                        min={condition === 'streak' ? 1 : 0}
-                                        max={condition === 'streak' ? 20 : 100}
-                                        value={target}
-                                        onChange={event => setTarget(event.target.value)}
+                                <div className='tick-insights__field-help'>
+                                    <label>
+                                        {condition === 'streak'
+                                            ? localize('Ticks in a row')
+                                            : comparison === 'range'
+                                              ? localize('Lower threshold (%)')
+                                              : localize('Threshold (%)')}
+                                        <input
+                                            type='number'
+                                            required
+                                            min={condition === 'streak' ? 1 : 0}
+                                            max={condition === 'streak' ? 20 : 100}
+                                            value={target}
+                                            onChange={event => setTarget(event.target.value)}
+                                        />
+                                    </label>
+                                    <MenuHelp
+                                        label={
+                                            condition === 'streak' ? localize('Ticks in a row') : localize('Threshold')
+                                        }
+                                        description={localize(
+                                            'For a streak, enter the number of consecutive ticks that must match. A frequency threshold is a share of the last 20 observations, so 60% means 12 out of 20.'
+                                        )}
                                     />
-                                </label>
+                                </div>
                                 {condition === 'frequency' && comparison === 'range' && (
                                     <label>
                                         {localize('Upper threshold (%)')}
@@ -792,36 +896,66 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                         )}
                         {condition !== 'always' && (
                             <>
-                                <label>
-                                    {localize('Trade when')}
-                                    <select
-                                        value={negate ? 'no' : 'yes'}
-                                        onChange={event => setNegate(event.target.value === 'no')}
-                                    >
-                                        <option value='yes'>{localize('The condition holds')}</option>
-                                        <option value='no'>{localize('The condition does not hold')}</option>
-                                    </select>
-                                </label>
-                                <label>
-                                    {localize('How far to look back')}
-                                    <select value={memory} onChange={event => setMemory(Number(event.target.value))}>
-                                        <option value={1}>{localize('Latest tick only')}</option>
-                                        <option value={3}>{localize('Any of the last 3 ticks')}</option>
-                                        <option value={5}>{localize('Any of the last 5 ticks')}</option>
-                                    </select>
-                                </label>
-                                <label>
-                                    {localize('After a trade')}
-                                    <select value={after} onChange={event => setAfter(event.target.value as TAfter)}>
-                                        <option value='reset'>{localize('Wait for the condition to reset')}</option>
-                                        <option value='repeat'>
-                                            {localize('Trade again if the condition still holds')}
-                                        </option>
-                                        <option value='once'>
-                                            {localize('Use the condition only to start the run')}
-                                        </option>
-                                    </select>
-                                </label>
+                                <div className='tick-insights__field-help'>
+                                    <label>
+                                        {localize('Trade when')}
+                                        <select
+                                            value={negate ? 'no' : 'yes'}
+                                            onChange={event => setNegate(event.target.value === 'no')}
+                                        >
+                                            <option value='yes'>{localize('The condition holds')}</option>
+                                            <option value='no'>{localize('The condition does not hold')}</option>
+                                        </select>
+                                    </label>
+                                    <MenuHelp
+                                        label={localize('Trade when')}
+                                        description={localize(
+                                            'Choose whether to enter when the rule is true or when it is false.'
+                                        )}
+                                    />
+                                </div>
+                                <div className='tick-insights__field-help'>
+                                    <label>
+                                        {localize('How far to look back')}
+                                        <select
+                                            value={memory}
+                                            onChange={event => setMemory(Number(event.target.value))}
+                                        >
+                                            <option value={1}>{localize('Latest tick only')}</option>
+                                            <option value={3}>{localize('Any of the last 3 ticks')}</option>
+                                            <option value={5}>{localize('Any of the last 5 ticks')}</option>
+                                        </select>
+                                    </label>
+                                    <MenuHelp
+                                        label={localize('How far to look back')}
+                                        description={localize(
+                                            'Choose whether the rule must be true on the newest tick or can have been true on any of the last three or five ticks.'
+                                        )}
+                                    />
+                                </div>
+                                <div className='tick-insights__field-help'>
+                                    <label>
+                                        {localize('After a trade')}
+                                        <select
+                                            value={after}
+                                            onChange={event => setAfter(event.target.value as TAfter)}
+                                        >
+                                            <option value='reset'>{localize('Wait for the condition to reset')}</option>
+                                            <option value='repeat'>
+                                                {localize('Trade again if the condition still holds')}
+                                            </option>
+                                            <option value='once'>
+                                                {localize('Use the condition only to start the run')}
+                                            </option>
+                                        </select>
+                                    </label>
+                                    <MenuHelp
+                                        label={localize('After a trade')}
+                                        description={localize(
+                                            'After settlement, wait for a new signal, trade again if the rule still holds, or use the rule only for the first trade.'
+                                        )}
+                                    />
+                                </div>
                             </>
                         )}
                     </fieldset>
@@ -860,38 +994,58 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                                 onChange={event => setTicks(event.target.value)}
                             />
                         </label>
-                        <label>
-                            {localize('Stop loss')}
-                            <input
-                                type='number'
-                                min={stake}
-                                step='any'
-                                required
-                                value={loss}
-                                onChange={event => setLoss(event.target.value)}
+                        <div className='tick-insights__field-help'>
+                            <label>
+                                {localize('Stop loss')}
+                                <input
+                                    type='number'
+                                    min={stake}
+                                    step='any'
+                                    required
+                                    value={loss}
+                                    onChange={event => setLoss(event.target.value)}
+                                />
+                            </label>
+                            <MenuHelp
+                                label={localize('Stop loss')}
+                                description={localize('The most this run can lose before it stops placing new trades.')}
                             />
-                        </label>
-                        <label>
-                            {localize('Take profit (optional)')}
-                            <input
-                                type='number'
-                                min='0.01'
-                                step='any'
-                                value={goal}
-                                onChange={event => setGoal(event.target.value)}
+                        </div>
+                        <div className='tick-insights__field-help'>
+                            <label>
+                                {localize('Take profit (optional)')}
+                                <input
+                                    type='number'
+                                    min='0.01'
+                                    step='any'
+                                    value={goal}
+                                    onChange={event => setGoal(event.target.value)}
+                                />
+                            </label>
+                            <MenuHelp
+                                label={localize('Take profit (optional)')}
+                                description={localize(
+                                    'The net profit at which the run stops. Leave blank to use the other limits.'
+                                )}
                             />
-                        </label>
-                        <label>
-                            {localize('Maximum trades')}
-                            <input
-                                type='number'
-                                min='1'
-                                max='20'
-                                required
-                                value={max}
-                                onChange={event => setMax(event.target.value)}
+                        </div>
+                        <div className='tick-insights__field-help'>
+                            <label>
+                                {localize('Maximum trades')}
+                                <input
+                                    type='number'
+                                    min='1'
+                                    max='20'
+                                    required
+                                    value={max}
+                                    onChange={event => setMax(event.target.value)}
+                                />
+                            </label>
+                            <MenuHelp
+                                label={localize('Maximum trades')}
+                                description={localize('The run stops after this many trades have settled.')}
                             />
-                        </label>
+                        </div>
                     </fieldset>
                     <button type='button' onClick={() => limits.current?.close()}>
                         {localize('Done')}
@@ -945,18 +1099,25 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                 )}
                 <div className='tick-insights__actions'>
                     {active ? (
-                        <button
-                            type='button'
-                            onClick={() => stop(localize('Run stopped. Open trades can still settle.'))}
-                        >
-                            {localize('Stop run')}
+                        <button type='button' disabled={stopping} onClick={stopRun}>
+                            {stopping ? localize('Stopping�') : localize('Stop run')}
                         </button>
                     ) : (
                         <button
                             type='submit'
-                            disabled={!!block || !account || !history.length || (!account.demo && !acknowledged)}
+                            disabled={
+                                startPending ||
+                                !!block ||
+                                !account ||
+                                !history.length ||
+                                (!account.demo && !acknowledged)
+                            }
                         >
-                            {account?.demo ? localize('Start on demo') : localize('Start on real account')}
+                            {startPending
+                                ? localize('Please wait�')
+                                : account?.demo
+                                  ? localize('Start on demo')
+                                  : localize('Start on real account')}
                         </button>
                     )}
                 </div>

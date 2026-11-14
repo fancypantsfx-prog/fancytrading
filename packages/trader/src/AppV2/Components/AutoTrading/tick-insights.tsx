@@ -602,80 +602,116 @@ const InsightsPanel = ({
             {signalError && <p role='alert'>{signalError}</p>}
             {view === 'finder' && (
                 <form onSubmit={compare} className='tick-insights__fields'>
-                    <label>
-                        {localize('Contract group')}
-                        <select
-                            value={finderGroup}
-                            onChange={e => {
-                                setFinderGroup(e.target.value as TFinderContract);
-                                setReport(undefined);
-                            }}
-                            disabled={busy}
-                        >
-                            <option value='rise_fall'>{localize('Rise / Fall')}</option>
-                            <option value='even_odd'>{localize('Even / Odd')}</option>
-                            <option value='over_under'>{localize('Over / Under')}</option>
-                            <option value='match_diff'>{localize('Matches / Differs')}</option>
-                        </select>
-                    </label>
-                    {(finderGroup === 'over_under' || finderGroup === 'match_diff') && (
+                    <div className='tick-insights__field-help'>
                         <label>
-                            {localize('Barrier')}
+                            {localize('Contract group')}
                             <select
-                                value={finderBarrier}
-                                disabled={busy}
+                                value={finderGroup}
                                 onChange={e => {
-                                    setFinderBarrier(e.target.value);
+                                    setFinderGroup(e.target.value as TFinderContract);
                                     setReport(undefined);
                                 }}
+                                disabled={busy}
                             >
-                                {Array.from({ length: 10 }, (_, value) => (
-                                    <option key={value}>{value}</option>
-                                ))}
+                                <option value='rise_fall'>{localize('Rise / Fall')}</option>
+                                <option value='even_odd'>{localize('Even / Odd')}</option>
+                                <option value='over_under'>{localize('Over / Under')}</option>
+                                <option value='match_diff'>{localize('Matches / Differs')}</option>
                             </select>
                         </label>
+                        <MenuHelp
+                            label={localize('Contract group')}
+                            description={localize('Choose the contract types to rank using historical ticks.')}
+                        />
+                    </div>
+                    {(finderGroup === 'over_under' || finderGroup === 'match_diff') && (
+                        <div className='tick-insights__field-help'>
+                            <label>
+                                {localize('Barrier')}
+                                <select
+                                    value={finderBarrier}
+                                    disabled={busy}
+                                    onChange={e => {
+                                        setFinderBarrier(e.target.value);
+                                        setReport(undefined);
+                                    }}
+                                >
+                                    {Array.from({ length: 10 }, (_, value) => (
+                                        <option key={value}>{value}</option>
+                                    ))}
+                                </select>
+                            </label>
+                            <MenuHelp
+                                label={localize('Barrier')}
+                                description={localize(
+                                    'The digit used for the comparison. With a barrier of 3, Over wins on 4�9 and Under wins on 0�2. Matches uses the exact digit.'
+                                )}
+                            />
+                        </div>
                     )}
-                    <label>
-                        {localize('Stake per contract')} ({currency})
-                        <input
-                            type='number'
-                            required
-                            min='0.01'
-                            max='1000000'
-                            step='any'
-                            value={stake}
-                            disabled={busy}
-                            onChange={e => {
-                                setStake(e.target.value);
-                                setPresetSaved(false);
-                                setReport(undefined);
-                            }}
+                    <div className='tick-insights__field-help'>
+                        <label>
+                            {localize('Stake per contract')} ({currency})
+                            <input
+                                type='number'
+                                required
+                                min='0.01'
+                                max='1000000'
+                                step='any'
+                                value={stake}
+                                disabled={busy}
+                                onChange={e => {
+                                    setStake(e.target.value);
+                                    setPresetSaved(false);
+                                    setReport(undefined);
+                                }}
+                            />
+                        </label>
+                        <MenuHelp
+                            label={localize('Stake per contract')}
+                            description={localize(
+                                'The amount you would risk on one contract. This is used when you request a live quote.'
+                            )}
                         />
-                    </label>
-                    <label>
-                        {localize('Tick target')}
-                        <input
-                            type='number'
-                            required
-                            min='1'
-                            max='20'
-                            step='1'
-                            value={ticks}
-                            disabled={busy}
-                            onChange={e => {
-                                setTicks(e.target.value);
-                                setPresetSaved(false);
-                                setReport(undefined);
-                            }}
+                    </div>
+                    <div className='tick-insights__field-help'>
+                        <label>
+                            {localize('Tick target')}
+                            <input
+                                type='number'
+                                required
+                                min='1'
+                                max='20'
+                                step='1'
+                                value={ticks}
+                                disabled={busy}
+                                onChange={e => {
+                                    setTicks(e.target.value);
+                                    setPresetSaved(false);
+                                    setReport(undefined);
+                                }}
+                            />
+                        </label>
+                        <MenuHelp
+                            label={localize('Tick target')}
+                            description={localize('How many market price updates each simulated contract lasts.')}
                         />
-                    </label>
-                    <button type='submit' disabled={busy}>
-                        {busy
-                            ? localize('Comparing…')
-                            : report
-                              ? localize('Refresh comparison')
-                              : localize('Scan instruments')}
-                    </button>
+                    </div>
+                    <div className='tick-insights__action-help'>
+                        <button type='submit' disabled={busy}>
+                            {busy
+                                ? localize('Comparing…')
+                                : report
+                                  ? localize('Refresh comparison')
+                                  : localize('Scan instruments')}
+                        </button>
+                        <MenuHelp
+                            label={localize('Scan instruments')}
+                            description={localize(
+                                'Rank the available markets using past ticks. You can review a live quote after selecting a result.'
+                            )}
+                        />
+                    </div>
                 </form>
             )}
             <>

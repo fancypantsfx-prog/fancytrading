@@ -132,8 +132,8 @@ it('loads the saved automatic settings for the matching account and currency', a
             <TickInsights {...props} />
         </FancyTradingDialogContext.Provider>
     );
-    expect(await screen.findByLabelText(/Stake per contract/)).toHaveValue(12);
-    expect(screen.getByLabelText(/Tick target/)).toHaveValue(7);
+    expect(await screen.findByRole('spinbutton', { name: /Stake per contract/ })).toHaveValue(12);
+    expect(screen.getByRole('spinbutton', { name: /Tick target/ })).toHaveValue(7);
     fireEvent.click(screen.getByRole('button', { name: 'Automatic settings' }));
     expect(screen.getByLabelText(/Run stop loss/)).toHaveValue(24);
     expect(screen.getByLabelText(/Run take profit/)).toHaveValue(16);

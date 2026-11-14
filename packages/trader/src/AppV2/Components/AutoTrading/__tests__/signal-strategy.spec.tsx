@@ -74,7 +74,7 @@ it.each([
         expect(screen.getByRole('button', { name: 'Stop run' })).toBeInTheDocument();
         const [reconnect] = mockWS.setOnReconnect.mock.calls[0];
         act(() => reconnect());
-        expect(screen.getByText('Run paused. Waiting for fresh ticks…')).toBeInTheDocument();
+        expect(screen.getByText('Run paused. Waiting for fresh ticksï¿½')).toBeInTheDocument();
         expect(screen.getByRole('button', { name: 'Stop run' })).toBeInTheDocument();
         await waitFor(() => expect(mockWS.subscribeTicks).toHaveBeenCalledTimes(2), { timeout: 3000 });
     }
@@ -135,4 +135,47 @@ it('shows barrier rules and subscribes again when the trading connection returns
     act(() => mockTick({ tick: { quote: 106, epoch: 2, underlying_symbol: 'R_100' } }));
     expect(screen.getByRole('button', { name: 'Start on demo' })).toBeEnabled();
     expect(buy).not.toHaveBeenCalled();
+});
+
+it('stops new orders on command and can restart after the last purchase settles', async () => {
+    jest.clearAllMocks();
+    localStorage.clear();
+    const buy = jest.fn(async (_trade: TInsightTrade, _signal: AbortSignal, beforePurchase: () => void) => {
+        beforePurchase();
+        return '456';
+    });
+    render(
+        <SignalStrategy
+            symbol='R_100'
+            currency='USD'
+            contract='DIGITEVEN'
+            account={{ id: 'STOP-TEST', demo: true }}
+            initialStake={10}
+            initialTicks={1}
+            block=''
+            buy={buy}
+        />
+    );
+    await waitFor(() => expect(mockWS.subscribeTicks).toHaveBeenCalled());
+    const emit = (epoch: number) => act(() => mockTick({ tick: { quote: 102, epoch } }));
+    emit(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Start on demo' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop run' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Start on demo' })).toBeEnabled());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start on demo' }));
+    await screen.findByRole('button', { name: 'Stop run' });
+    [2, 3, 4].forEach(emit);
+    await waitFor(() => expect(mockWS.subscribeProposalOpenContract).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: 'Stop run' }));
+    expect(screen.getByRole('button', { name: 'Stoppingï¿½' })).toBeDisabled();
+    emit(5);
+    expect(buy).toHaveBeenCalledTimes(1);
+
+    act(() => mockSettlement({ proposal_open_contract: { contract_id: 456, is_sold: 1, profit: '8' } }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Start on demo' })).toBeEnabled());
+    expect(localStorage.getItem('fancytrading-rule-purchase:STOP-TEST')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Start on demo' }));
+    expect(await screen.findByRole('button', { name: 'Stop run' })).toBeEnabled();
+    expect(buy).toHaveBeenCalledTimes(1);
 });

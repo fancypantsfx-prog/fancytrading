@@ -1,4 +1,5 @@
 import React from 'react';
+import MenuHelp from './menu-help';
 import { localize } from '@deriv-com/translations';
 import {
     compareRecentTicks,
@@ -15,16 +16,7 @@ export type TCompareSetup = { symbol: string; candidate: string };
 export type TCompareResult = { setup: TCompareSetup; report: TTickInsights; row: TTickInsights['rows'][number] };
 const familyOf = (candidate: string): TFamily => (/^[1-5]$/.test(candidate) ? 'accumulator' : 'digital');
 const percent = (value: number) => value.toLocaleString(undefined, { style: 'percent', maximumFractionDigits: 1 });
-const contracts = [
-    'CALL',
-    'PUT',
-    'DIGITEVEN',
-    'DIGITODD',
-    'DIGITOVER',
-    'DIGITUNDER',
-    'DIGITMATCH',
-    'DIGITDIFF',
-];
+const contracts = ['CALL', 'PUT', 'DIGITEVEN', 'DIGITODD', 'DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'];
 
 export const candidateLabel = (candidate: string) => {
     const [type, barrier] = candidate.split(':');
@@ -215,47 +207,77 @@ const InsightsCompare = ({
     return (
         <section aria-label={localize('Compare setups')}>
             <div className='tick-insights__fields'>
-                <label>
-                    {localize('History window')}
-                    <select value={windowSize} onChange={e => setWindowSize(Number(e.target.value))}>
-                        {[20, 100, 400].map(size => (
-                            <option key={size} value={size}>
-                                {localize('Last {{size}} ticks', { size: String(size) })}
-                            </option>
-                        ))}
-                    </select>
-                </label>
-                <label>
-                    {localize('Stake per trade')} ({currency})
-                    <input
-                        type='number'
-                        min='0.01'
-                        max='1000000'
-                        step='any'
-                        value={stake}
-                        onChange={e => onStake(e.target.value)}
+                <div className='tick-insights__field-help'>
+                    <label>
+                        {localize('History window')}
+                        <select value={windowSize} onChange={e => setWindowSize(Number(e.target.value))}>
+                            {[20, 100, 400].map(size => (
+                                <option key={size} value={size}>
+                                    {localize('Last {{size}} ticks', { size: String(size) })}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                    <MenuHelp
+                        label={localize('History window')}
+                        description={localize(
+                            'Choose how many recent price updates to use in the simulation. A larger window includes older ticks.'
+                        )}
                     />
-                </label>
-                <button
-                    type='button'
-                    aria-pressed={live}
-                    onClick={() => {
-                        setRateLimited(false);
-                        setLive(!live);
-                    }}
-                >
-                    {live ? localize('Pause') : localize('Go live')}
-                </button>
-                <button
-                    type='button'
-                    onClick={() => {
-                        setRateLimited(false);
-                        setSnapshot(undefined);
-                        setRefresh(refresh + 1);
-                    }}
-                >
-                    {localize('Refresh')}
-                </button>
+                </div>
+                <div className='tick-insights__field-help'>
+                    <label>
+                        {localize('Stake per trade')} ({currency})
+                        <input
+                            type='number'
+                            min='0.01'
+                            max='1000000'
+                            step='any'
+                            value={stake}
+                            onChange={e => onStake(e.target.value)}
+                        />
+                    </label>
+                    <MenuHelp
+                        label={localize('Stake per trade')}
+                        description={localize(
+                            'The amount you could lose on a single trade. Compare uses it to estimate results.'
+                        )}
+                    />
+                </div>
+                <div className='tick-insights__action-help'>
+                    <button
+                        type='button'
+                        aria-pressed={live}
+                        onClick={() => {
+                            setRateLimited(false);
+                            setLive(!live);
+                        }}
+                    >
+                        {live ? localize('Pause') : localize('Go live')}
+                    </button>
+                    <MenuHelp
+                        label={live ? localize('Pause') : localize('Go live')}
+                        description={localize(
+                            'Go live updates the comparison as new ticks arrive. Pause freezes the displayed comparison. These controls only update the simulation.'
+                        )}
+                    />
+                </div>
+                <div className='tick-insights__action-help'>
+                    <button
+                        type='button'
+                        onClick={() => {
+                            setRateLimited(false);
+                            setSnapshot(undefined);
+                            setRefresh(refresh + 1);
+                        }}
+                    >
+                        {localize('Refresh')}
+                    </button>
+                    <MenuHelp
+                        label={localize('Refresh')}
+                        description={localize('Request a new snapshot and check the quotes again.')}
+                    />
+                </div>
             </div>
             <fieldset className='tick-insights__fields tick-insights__preset'>
                 <legend>{localize('Durations applied to every setup')}</legend>
@@ -270,21 +292,37 @@ const InsightsCompare = ({
                         {ticks} {localize('ticks')} ×
                     </button>
                 ))}
-                <label>
-                    {localize('Duration in ticks')}
-                    <select value={duration} onChange={e => setDuration(e.target.value)}>
-                        {Array.from({ length: 20 }, (_, index) => index + 1).map(value => (
-                            <option key={value}>{value}</option>
-                        ))}
-                    </select>
-                </label>
-                <button
-                    type='button'
-                    disabled={durations.length >= 4 || durations.includes(Number(duration))}
-                    onClick={() => onDurations([...durations, Number(duration)])}
-                >
-                    {localize('Add duration')}
-                </button>
+                <div className='tick-insights__field-help'>
+                    <label>
+                        {localize('Duration in ticks')}
+                        <select value={duration} onChange={e => setDuration(e.target.value)}>
+                            {Array.from({ length: 20 }, (_, index) => index + 1).map(value => (
+                                <option key={value}>{value}</option>
+                            ))}
+                        </select>
+                    </label>
+                    <MenuHelp
+                        label={localize('Duration in ticks')}
+                        description={localize(
+                            'A tick is one price update. A five-tick contract lasts for five updates.'
+                        )}
+                    />
+                </div>
+                <div className='tick-insights__action-help'>
+                    <button
+                        type='button'
+                        disabled={durations.length >= 4 || durations.includes(Number(duration))}
+                        onClick={() => onDurations([...durations, Number(duration)])}
+                    >
+                        {localize('Add duration')}
+                    </button>
+                    <MenuHelp
+                        label={localize('Add duration')}
+                        description={localize(
+                            'Apply this duration to every setup so you can compare results at different lengths.'
+                        )}
+                    />
+                </div>
             </fieldset>
             {setups.map((setup, index) => {
                 const [contract, barrier] = setup.candidate.split(':');
@@ -294,57 +332,81 @@ const InsightsCompare = ({
                 return (
                     <fieldset className='tick-insights__fields tick-insights__preset' key={index}>
                         <legend>{localize('Setup {{number}}', { number: String(index + 1) })}</legend>
-                        <label>
-                            {localize('Instrument')}
-                            <select
-                                value={setup.symbol}
-                                onChange={e => changeSetup(index, { ...setup, symbol: e.target.value })}
-                            >
-                                {!markets.some(item => item.symbol === setup.symbol) && (
-                                    <option value={setup.symbol}>{setup.symbol}</option>
-                                )}
-                                {markets.map(item => (
-                                    <option key={item.symbol} value={item.symbol}>
-                                        {item.label}
-                                    </option>
-                                ))}
-                            </select>
-                        </label>
-                        <label>
-                            {localize('Contract')}
-                            <select
-                                value={contract}
-                                onChange={e => {
-                                    const type = e.target.value;
-                                    changeSetup(index, {
-                                        ...setup,
-                                        candidate: ['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'].includes(type)
-                                            ? `${type}:5`
-                                            : type,
-                                    });
-                                }}
-                            >
-                                {contracts.map(value => (
-                                    <option key={value} value={value}>
-                                        {candidateLabel(value)}
-                                    </option>
-                                ))}
-                            </select>
-                        </label>
-                        {barrier !== undefined && (
+                        <div className='tick-insights__field-help'>
                             <label>
-                                {localize('Barrier')}
+                                {localize('Instrument')}
                                 <select
-                                    value={barrier}
-                                    onChange={e =>
-                                        changeSetup(index, { ...setup, candidate: `${contract}:${e.target.value}` })
-                                    }
+                                    value={setup.symbol}
+                                    onChange={e => changeSetup(index, { ...setup, symbol: e.target.value })}
                                 >
-                                    {digits.map(digit => (
-                                        <option key={digit}>{digit}</option>
+                                    {!markets.some(item => item.symbol === setup.symbol) && (
+                                        <option value={setup.symbol}>{setup.symbol}</option>
+                                    )}
+                                    {markets.map(item => (
+                                        <option key={item.symbol} value={item.symbol}>
+                                            {item.label}
+                                        </option>
                                     ))}
                                 </select>
                             </label>
+                            <MenuHelp
+                                label={localize('Instrument')}
+                                description={localize('Choose the market whose price updates you want to test.')}
+                            />
+                        </div>
+                        <div className='tick-insights__field-help'>
+                            <label>
+                                {localize('Contract')}
+                                <select
+                                    value={contract}
+                                    onChange={e => {
+                                        const type = e.target.value;
+                                        changeSetup(index, {
+                                            ...setup,
+                                            candidate: ['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'].includes(
+                                                type
+                                            )
+                                                ? `${type}:5`
+                                                : type,
+                                        });
+                                    }}
+                                >
+                                    {contracts.map(value => (
+                                        <option key={value} value={value}>
+                                            {candidateLabel(value)}
+                                        </option>
+                                    ))}
+                                </select>
+                            </label>
+                            <MenuHelp
+                                label={localize('Contract')}
+                                description={localize(
+                                    'Choose the outcome that would win the trade, such as a rising price or a last digit above a number.'
+                                )}
+                            />
+                        </div>
+                        {barrier !== undefined && (
+                            <div className='tick-insights__field-help'>
+                                <label>
+                                    {localize('Barrier')}
+                                    <select
+                                        value={barrier}
+                                        onChange={e =>
+                                            changeSetup(index, { ...setup, candidate: `${contract}:${e.target.value}` })
+                                        }
+                                    >
+                                        {digits.map(digit => (
+                                            <option key={digit}>{digit}</option>
+                                        ))}
+                                    </select>
+                                </label>
+                                <MenuHelp
+                                    label={localize('Barrier')}
+                                    description={localize(
+                                        'The digit used for the comparison. With a barrier of 3, Over wins on 4�9 and Under wins on 0�2. Matches uses the exact digit.'
+                                    )}
+                                />
+                            </div>
                         )}
                         {setups.length > 1 && (
                             <button
@@ -357,28 +419,46 @@ const InsightsCompare = ({
                     </fieldset>
                 );
             })}
-            <button
-                type='button'
-                disabled={setups.length >= 4}
-                onClick={() => onSetups([...setups, { symbol, candidate: 'DIGITOVER:4' }])}
-            >
-                {localize('Add setup')}
-            </button>
-            <details className='tick-insights__metrics'>
-                <summary>{localize('Show metrics')}</summary>
-                <label>
-                    <input type='checkbox' checked={showWins} onChange={e => setShowWins(e.target.checked)} />
-                    {localize('Max consecutive wins')}
-                </label>
-                <label>
-                    <input type='checkbox' checked={showLosses} onChange={e => setShowLosses(e.target.checked)} />
-                    {localize('Max consecutive losses')}
-                </label>
-                <label>
-                    <input type='checkbox' checked={showTimeline} onChange={e => setShowTimeline(e.target.checked)} />
-                    {localize('Win/loss timeline')}
-                </label>
-            </details>
+            <div className='tick-insights__action-help'>
+                <button
+                    type='button'
+                    disabled={setups.length >= 4}
+                    onClick={() => onSetups([...setups, { symbol, candidate: 'DIGITOVER:4' }])}
+                >
+                    {localize('Add setup')}
+                </button>
+                <MenuHelp
+                    label={localize('Add setup')}
+                    description={localize('Add another market or contract to compare side by side.')}
+                />
+            </div>
+            <div className='tick-insights__action-help'>
+                <details className='tick-insights__metrics'>
+                    <summary>{localize('Show metrics')}</summary>
+                    <label>
+                        <input type='checkbox' checked={showWins} onChange={e => setShowWins(e.target.checked)} />
+                        {localize('Max consecutive wins')}
+                    </label>
+                    <label>
+                        <input type='checkbox' checked={showLosses} onChange={e => setShowLosses(e.target.checked)} />
+                        {localize('Max consecutive losses')}
+                    </label>
+                    <label>
+                        <input
+                            type='checkbox'
+                            checked={showTimeline}
+                            onChange={e => setShowTimeline(e.target.checked)}
+                        />
+                        {localize('Win/loss timeline')}
+                    </label>
+                </details>
+                <MenuHelp
+                    label={localize('Show metrics')}
+                    description={localize(
+                        'Show extra measurements such as the longest winning or losing streak and the order of simulated outcomes.'
+                    )}
+                />
+            </div>
             {rateLimited && (
                 <p role='status'>
                     {localize('Deriv is limiting requests. Wait a minute before refreshing or going live again.')}
