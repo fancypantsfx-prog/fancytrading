@@ -91,6 +91,7 @@ export const analyzeTickInsights = input => {
         windowSize,
         candidate: selectedCandidate,
         candidates: selectedCandidates,
+        historyOnly = false,
     } = input ?? {};
     const sampleSize = windowSize ?? TICK_SAMPLE_SIZE;
     if (
@@ -105,8 +106,8 @@ export const analyzeTickInsights = input => {
         !['digital', 'accumulator'].includes(family) ||
         typeof currency !== 'string' ||
         !/^[A-Z]{3}$/.test(currency) ||
-        !quotes ||
-        typeof quotes !== 'object'
+        (!historyOnly && (!quotes || typeof quotes !== 'object')) ||
+        (historyOnly && family !== 'digital')
     )
         return null;
 
@@ -148,6 +149,12 @@ export const analyzeTickInsights = input => {
     for (const candidate of new Set(
         selectedCandidate === undefined ? (selectedCandidates ?? candidates) : [selectedCandidate]
     )) {
+        if (historyOnly) {
+            if (!usableDigits && candidate.startsWith('DIGIT')) continue;
+            const { outcomes: _outcomes, ...statistics } = compareWindows(prices, ticks, outcomes[candidate], true);
+            rows.push({ candidate, ...statistics });
+            continue;
+        }
         const proposal = quotes[candidate];
         const stake = toNumber(proposal?.ask_price);
         if (!positive(stake)) continue;
@@ -181,15 +188,17 @@ export const analyzeTickInsights = input => {
         ticks,
         firstTick: times[0],
         lastTick: times.at(-1),
-        rows: rows.map(row => {
-            const totalStaked = row.historical.count * row.stake;
-            const estimatedNet = row.historical.hits * row.payout - totalStaked;
-            return {
-                ...row,
-                totalStaked,
-                estimatedNet,
-                returnOnStake: totalStaked ? estimatedNet / totalStaked : null,
-            };
-        }),
+        rows: historyOnly
+            ? rows
+            : rows.map(row => {
+                  const totalStaked = row.historical.count * row.stake;
+                  const estimatedNet = row.historical.hits * row.payout - totalStaked;
+                  return {
+                      ...row,
+                      totalStaked,
+                      estimatedNet,
+                      returnOnStake: totalStaked ? estimatedNet / totalStaked : null,
+                  };
+              }),
     };
 };

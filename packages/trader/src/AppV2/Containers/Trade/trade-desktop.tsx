@@ -16,6 +16,7 @@ import OnboardingGuide, {
     OnboardingGuideDesktop,
     OnboardingGuideDesktopReturning,
 } from 'AppV2/Components/OnboardingGuide/GuideForPages';
+import { FancyTradingDialogContext } from 'AppV2/Components/AutoTrading/fancy-trading-dialog-context';
 import AutoTrading from 'AppV2/Components/AutoTrading/auto-trading';
 import TradeErrorSnackbar from 'AppV2/Components/TradeErrorSnackbar';
 import { TradeParameters } from 'AppV2/Components/TradeParameters';
@@ -33,6 +34,7 @@ import { TradeChart } from '../Chart';
 import TradeTypes from './trade-types';
 
 const TradeDesktop = observer(() => {
+    const signalOpen = React.useContext(FancyTradingDialogContext)?.signalOpen;
     const chart_ref = React.useRef<HTMLDivElement>(null);
     const {
         client,
@@ -152,11 +154,11 @@ const TradeDesktop = observer(() => {
                             {is_accumulator && <AccumulatorStats />}
                         </div>
                         <div className='trade-params'>
-                            <Guide show_guide_for_selected_contract />
-                            <TradeParameters />
-                            <ClosedMarketMessage />
+                            {!signalOpen && <Guide show_guide_for_selected_contract />}
+                            {!signalOpen && <TradeParameters />}
+                            {!signalOpen && <ClosedMarketMessage />}
                             <AutoTrading is_market_closed={is_market_closed} />
-                            <TradeParamsFooter />
+                            {!signalOpen && <TradeParamsFooter />}
                         </div>
                     </div>
                     {/* Mobile onboarding */}

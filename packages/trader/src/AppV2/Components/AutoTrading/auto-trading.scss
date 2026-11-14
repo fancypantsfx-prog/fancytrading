@@ -288,11 +288,11 @@
         padding-inline: 16px;
     }
 }
-.trade__grid > .trade-params:has(.auto-trading) {
+.trade__grid > .trade-params:has(.auto-trading, .tick-insights__signal-panel) {
     min-height: 0;
     overflow-y: auto;
 }
-.trade-params__container:has(.auto-trading) {
+.trade-params__container:has(.auto-trading, .tick-insights__signal-panel) {
     max-height: calc(100dvh - 8rem);
     overflow-y: auto;
 }

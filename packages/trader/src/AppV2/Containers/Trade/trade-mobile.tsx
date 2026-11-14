@@ -4,7 +4,7 @@ import { observer } from 'mobx-react-lite';
 
 import { useLocalStorageData } from '@deriv/api';
 import { Button, Loading } from '@deriv/components';
-import { getSymbolDisplayName } from '@deriv/shared';
+import { getSymbolDisplayName, redirectToLogin } from '@deriv/shared';
 import { useStore } from '@deriv/stores';
 
 import AccumulatorStats from 'AppV2/Components/AccumulatorStats';
@@ -132,7 +132,9 @@ const Trade = observer(() => {
                                     aria-haspopup='dialog'
                                     aria-expanded={!!fancy_trading?.open}
                                     disabled={!symbol}
-                                    onClick={() => fancy_trading?.setOpen(true)}
+                                    onClick={() =>
+                                        is_logged_in ? fancy_trading?.setOpen(true) : void redirectToLogin(current_language)
+                                    }
                                 >
                                     FancyTrading
                                 </Button>

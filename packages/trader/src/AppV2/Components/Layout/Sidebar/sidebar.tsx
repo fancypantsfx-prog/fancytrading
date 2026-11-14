@@ -26,6 +26,7 @@ import {
     getHomeUrl,
     getHelpCentreUrl,
     isFeatureEnabled,
+    redirectToLogin,
     routes,
 } from '@deriv/shared';
 // [/AI]
@@ -151,6 +152,10 @@ const Sidebar = observer(() => {
             label: 'FancyTrading',
             onClick: () => {
                 closeSidebarFlyout();
+                if (!is_logged_in) {
+                    void redirectToLogin(currentLang);
+                    return;
+                }
                 fancy_trading?.setOpen(true);
             },
             isActive: !!fancy_trading?.open,

@@ -14,7 +14,7 @@ import Router from '../../Routes/router';
 import './app-shell.scss';
 
 const AppShell = observer(() => {
-    const { ui } = useStore();
+    const { client, ui } = useStore();
     const { active_sidebar_flyout } = ui;
     const { isMobile } = useDevice();
     const location = useLocation();
@@ -26,7 +26,7 @@ const AppShell = observer(() => {
     }, [location.pathname]);
 
     return (
-        <FancyTradingDialogProvider enabled={location.pathname === routes.index}>
+        <FancyTradingDialogProvider enabled={location.pathname === routes.index && !!client.is_logged_in}>
             <div className='app-shell'>
                 {!isMobile && <Sidebar />}
                 <div className='app-shell__main-content'>

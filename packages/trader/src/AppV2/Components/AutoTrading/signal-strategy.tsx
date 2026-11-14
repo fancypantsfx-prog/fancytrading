@@ -44,16 +44,24 @@ type TProps = {
     symbol: string;
     currency: string;
     account?: { id: string; demo: boolean };
+    contract: string;
     initialStake: number;
     initialTicks: number;
     block: string;
     buy: (trade: TInsightTrade, signal: AbortSignal, beforePurchase: () => void) => Promise<string>;
 };
 
-const SignalStrategy = ({ symbol, currency, account, initialStake, initialTicks, block, buy }: TProps) => {
+const SignalStrategy = ({ symbol, currency, account, contract, initialStake, initialTicks, block, buy }: TProps) => {
     const ws = useWS();
-    const [family, setFamily] = React.useState<TSignalFamily>('parity');
-    const [choice, setChoice] = React.useState<TSignalChoice>('first');
+    const family =
+        (Object.keys(signalContracts) as TSignalFamily[]).find(key =>
+            signalContracts[key].some(type => type === contract)
+        ) ?? 'parity';
+    const rules = React.useRef<HTMLDialogElement>(null);
+    const limits = React.useRef<HTMLDialogElement>(null);
+    const [choice, setChoice] = React.useState<TSignalChoice>(
+        contract === signalContracts[family][1] ? 'second' : 'first'
+    );
     const [digitChoice, setDigitChoice] = React.useState<TDigitChoice>('fixed');
     const [digit, setDigit] = React.useState(5);
     const [condition, setCondition] = React.useState<TCondition>('streak');
@@ -464,279 +472,294 @@ const SignalStrategy = ({ symbol, currency, account, initialStake, initialTicks,
                     ? (account.demo ? localize('Demo account') : localize('Real account')) + ' · ' + account.id
                     : localize('Sign in to run a rule')}
             </p>
-            <form onSubmit={start}>
-                <fieldset
-                    className='tick-insights__fields tick-insights__preset tick-insights__signal-fields'
-                    disabled={active}
-                >
-                    <legend>{localize('Trade rule')}</legend>
-                    <p>
-                        {localize('Signal source')} · {localize('Live ticks from {{market}}', { market: symbol })}
-                    </p>
-                    <label>
-                        {localize('What to buy')}
-                        <select
-                            value={family}
-                            onChange={event => {
-                                setFamily(event.target.value as TSignalFamily);
-                                setChoice('first');
-                                setDigit(5);
-                                if (watch === 'selected') setWatch('odd');
-                            }}
-                        >
-                            <option value='parity'>{localize('Even / Odd')}</option>
-                            <option value='direction'>{localize('Rise / Fall')}</option>
-                            <option value='match'>{localize('Matches / Differs')}</option>
-                            <option value='barrier'>{localize('Over / Under')}</option>
-                        </select>
-                    </label>
-                    <label>
-                        {localize('Which side')}
-                        <select
-                            value={choice}
-                            onChange={event => {
-                                const next = event.target.value as TSignalChoice;
-                                setChoice(next);
-                                if (!signalDigits(family, next).includes(digit)) setDigit(5);
-                            }}
-                        >
-                            <option value='first'>{candidateLabel(signalContracts[family][0])}</option>
-                            <option value='second'>{candidateLabel(signalContracts[family][1])}</option>
-                            <option value='alternate'>{localize('Alternate between both')}</option>
-                            <option value='random'>{localize('Pick either side at random')}</option>
-                            {(family === 'parity' || family === 'direction') && (
-                                <>
-                                    <option value='same'>{localize('Follow the latest tick')}</option>
-                                    <option value='opposite'>{localize('Go opposite to the latest tick')}</option>
-                                </>
-                            )}
-                        </select>
-                    </label>
-                    {family === 'match' && (
+            <form
+                onSubmit={start}
+                onInvalidCapture={event => {
+                    if (event.target instanceof HTMLElement) {
+                        const dialog = event.target.closest('dialog');
+                        if (dialog && !dialog.open) dialog.showModal();
+                    }
+                }}
+            >
+                <div className='tick-insights__actions'>
+                    <button type='button' aria-haspopup='dialog' onClick={() => rules.current?.showModal()}>
+                        {localize('Rules')}
+                    </button>
+                    <button type='button' aria-haspopup='dialog' onClick={() => limits.current?.showModal()}>
+                        {localize('Automatic settings')}
+                    </button>
+                </div>
+                <dialog ref={rules} className='tick-insights tick-insights__dialog' aria-label={localize('Rules')}>
+                    <fieldset
+                        className='tick-insights__fields tick-insights__preset tick-insights__signal-fields'
+                        disabled={active}
+                    >
+                        <legend>{localize('Trade rule')}</legend>
+                        <p>
+                            {localize('Signal source')} · {localize('Live ticks from {{market}}', { market: symbol })}
+                        </p>
                         <label>
-                            {localize('How to choose the digit')}
+                            {localize('Which side')}
                             <select
-                                value={digitChoice}
+                                value={choice}
                                 onChange={event => {
-                                    setDigitChoice(event.target.value as TDigitChoice);
-                                    if (event.target.value === 'random' && watch === 'selected') setWatch('odd');
+                                    const next = event.target.value as TSignalChoice;
+                                    setChoice(next);
+                                    if (!signalDigits(family, next).includes(digit)) setDigit(5);
                                 }}
                             >
-                                <option value='fixed'>{localize('Use a digit I choose')}</option>
-                                <option value='rarest'>{localize('Least frequent in the last 20 ticks')}</option>
-                                <option value='frequent'>{localize('Most frequent in the last 20 ticks')}</option>
-                                <option value='random'>{localize('Pick a random digit')}</option>
+                                <option value='first'>{candidateLabel(signalContracts[family][0])}</option>
+                                <option value='second'>{candidateLabel(signalContracts[family][1])}</option>
+                                <option value='alternate'>{localize('Alternate between both')}</option>
+                                <option value='random'>{localize('Pick either side at random')}</option>
+                                {(family === 'parity' || family === 'direction') && (
+                                    <>
+                                        <option value='same'>{localize('Follow the latest tick')}</option>
+                                        <option value='opposite'>{localize('Go opposite to the latest tick')}</option>
+                                    </>
+                                )}
                             </select>
                         </label>
-                    )}
-                    {(family === 'barrier' || (family === 'match' && digitChoice === 'fixed')) && (
-                        <label>
-                            {family === 'barrier' ? localize('Barrier') : localize('Digit')}
-                            <select value={digit} onChange={event => setDigit(Number(event.target.value))}>
-                                {signalDigits(family, choice).map(value => (
-                                    <option key={value} value={value}>
-                                        {value}
-                                    </option>
-                                ))}
-                            </select>
-                        </label>
-                    )}
-                    <label>
-                        {localize('Entry condition')}
-                        <select
-                            value={condition}
-                            onChange={event => {
-                                const value = event.target.value as TCondition;
-                                setCondition(value);
-                                setTarget(value === 'frequency' ? '60' : '4');
-                            }}
-                        >
-                            <option value='always'>{localize('After each trade settles')}</option>
-                            <option value='streak'>{localize('After a streak')}</option>
-                            <option value='frequency'>
-                                {localize('When a side reaches a share of the last 20 ticks')}
-                            </option>
-                            <option value='pattern'>{localize('After an exact digit sequence')}</option>
-                        </select>
-                    </label>
-                    {(condition === 'streak' || condition === 'frequency') && (
-                        <>
+                        {family === 'match' && (
                             <label>
-                                {localize('Watch for')}
-                                <select value={watch} onChange={event => setWatch(event.target.value as TWatch)}>
-                                    {Object.entries(watchLabels)
-                                        .filter(([value]) => value !== 'selected' || canWatchSelected)
-                                        .map(([value, label]) => (
-                                            <option key={value} value={value}>
-                                                {label}
-                                            </option>
-                                        ))}
+                                {localize('How to choose the digit')}
+                                <select
+                                    value={digitChoice}
+                                    onChange={event => {
+                                        setDigitChoice(event.target.value as TDigitChoice);
+                                        if (event.target.value === 'random' && watch === 'selected') setWatch('odd');
+                                    }}
+                                >
+                                    <option value='fixed'>{localize('Use a digit I choose')}</option>
+                                    <option value='rarest'>{localize('Least frequent in the last 20 ticks')}</option>
+                                    <option value='frequent'>{localize('Most frequent in the last 20 ticks')}</option>
+                                    <option value='random'>{localize('Pick a random digit')}</option>
                                 </select>
                             </label>
-                            {['digit', 'over', 'under'].includes(watch) && (
-                                <label>
-                                    {localize('Digit to watch')}
-                                    <select
-                                        value={watchDigit}
-                                        onChange={event => setWatchDigit(Number(event.target.value))}
-                                    >
-                                        {signalDigits('match', 'first').map(value => (
-                                            <option key={value} value={value}>
-                                                {value}
-                                            </option>
-                                        ))}
-                                    </select>
-                                </label>
-                            )}
-                            {condition === 'frequency' && (
-                                <label>
-                                    {localize('Comparison')}
-                                    <select
-                                        value={comparison}
-                                        onChange={event => setComparison(event.target.value as TComparison)}
-                                    >
-                                        <option value='minimum'>{localize('At or above')}</option>
-                                        <option value='maximum'>{localize('At or below')}</option>
-                                        <option value='range'>{localize('Inside a range')}</option>
-                                    </select>
-                                </label>
-                            )}
+                        )}
+                        {(family === 'barrier' || (family === 'match' && digitChoice === 'fixed')) && (
                             <label>
-                                {condition === 'streak'
-                                    ? localize('Ticks in a row')
-                                    : comparison === 'range'
-                                      ? localize('Lower threshold (%)')
-                                      : localize('Threshold (%)')}
-                                <input
-                                    type='number'
-                                    required
-                                    min={condition === 'streak' ? 1 : 0}
-                                    max={condition === 'streak' ? 20 : 100}
-                                    value={target}
-                                    onChange={event => setTarget(event.target.value)}
-                                />
+                                {family === 'barrier' ? localize('Barrier') : localize('Digit')}
+                                <select value={digit} onChange={event => setDigit(Number(event.target.value))}>
+                                    {signalDigits(family, choice).map(value => (
+                                        <option key={value} value={value}>
+                                            {value}
+                                        </option>
+                                    ))}
+                                </select>
                             </label>
-                            {condition === 'frequency' && comparison === 'range' && (
+                        )}
+                        <label>
+                            {localize('Entry condition')}
+                            <select
+                                value={condition}
+                                onChange={event => {
+                                    const value = event.target.value as TCondition;
+                                    setCondition(value);
+                                    setTarget(value === 'frequency' ? '60' : '4');
+                                }}
+                            >
+                                <option value='always'>{localize('After each trade settles')}</option>
+                                <option value='streak'>{localize('After a streak')}</option>
+                                <option value='frequency'>
+                                    {localize('When a side reaches a share of the last 20 ticks')}
+                                </option>
+                                <option value='pattern'>{localize('After an exact digit sequence')}</option>
+                            </select>
+                        </label>
+                        {(condition === 'streak' || condition === 'frequency') && (
+                            <>
                                 <label>
-                                    {localize('Upper threshold (%)')}
+                                    {localize('Watch for')}
+                                    <select value={watch} onChange={event => setWatch(event.target.value as TWatch)}>
+                                        {Object.entries(watchLabels)
+                                            .filter(([value]) => value !== 'selected' || canWatchSelected)
+                                            .map(([value, label]) => (
+                                                <option key={value} value={value}>
+                                                    {label}
+                                                </option>
+                                            ))}
+                                    </select>
+                                </label>
+                                {['digit', 'over', 'under'].includes(watch) && (
+                                    <label>
+                                        {localize('Digit to watch')}
+                                        <select
+                                            value={watchDigit}
+                                            onChange={event => setWatchDigit(Number(event.target.value))}
+                                        >
+                                            {signalDigits('match', 'first').map(value => (
+                                                <option key={value} value={value}>
+                                                    {value}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </label>
+                                )}
+                                {condition === 'frequency' && (
+                                    <label>
+                                        {localize('Comparison')}
+                                        <select
+                                            value={comparison}
+                                            onChange={event => setComparison(event.target.value as TComparison)}
+                                        >
+                                            <option value='minimum'>{localize('At or above')}</option>
+                                            <option value='maximum'>{localize('At or below')}</option>
+                                            <option value='range'>{localize('Inside a range')}</option>
+                                        </select>
+                                    </label>
+                                )}
+                                <label>
+                                    {condition === 'streak'
+                                        ? localize('Ticks in a row')
+                                        : comparison === 'range'
+                                          ? localize('Lower threshold (%)')
+                                          : localize('Threshold (%)')}
                                     <input
                                         type='number'
-                                        min={Number(target)}
-                                        max='100'
                                         required
-                                        value={upper}
-                                        onChange={event => setUpper(event.target.value)}
+                                        min={condition === 'streak' ? 1 : 0}
+                                        max={condition === 'streak' ? 20 : 100}
+                                        value={target}
+                                        onChange={event => setTarget(event.target.value)}
                                     />
                                 </label>
-                            )}
-                        </>
-                    )}
-                    {condition === 'pattern' && (
+                                {condition === 'frequency' && comparison === 'range' && (
+                                    <label>
+                                        {localize('Upper threshold (%)')}
+                                        <input
+                                            type='number'
+                                            min={Number(target)}
+                                            max='100'
+                                            required
+                                            value={upper}
+                                            onChange={event => setUpper(event.target.value)}
+                                        />
+                                    </label>
+                                )}
+                            </>
+                        )}
+                        {condition === 'pattern' && (
+                            <label>
+                                {localize('Digits to wait for, oldest first')}
+                                <input
+                                    type='text'
+                                    inputMode='numeric'
+                                    pattern='[0-9]{1,20}'
+                                    maxLength={20}
+                                    required
+                                    value={pattern}
+                                    onChange={event => setPattern(event.target.value)}
+                                />
+                            </label>
+                        )}
+                        {condition !== 'always' && (
+                            <>
+                                <label>
+                                    {localize('Trade when')}
+                                    <select
+                                        value={negate ? 'no' : 'yes'}
+                                        onChange={event => setNegate(event.target.value === 'no')}
+                                    >
+                                        <option value='yes'>{localize('The condition holds')}</option>
+                                        <option value='no'>{localize('The condition does not hold')}</option>
+                                    </select>
+                                </label>
+                                <label>
+                                    {localize('How far to look back')}
+                                    <select value={memory} onChange={event => setMemory(Number(event.target.value))}>
+                                        <option value={1}>{localize('Latest tick only')}</option>
+                                        <option value={3}>{localize('Any of the last 3 ticks')}</option>
+                                        <option value={5}>{localize('Any of the last 5 ticks')}</option>
+                                    </select>
+                                </label>
+                                <label>
+                                    {localize('After a trade')}
+                                    <select value={after} onChange={event => setAfter(event.target.value as TAfter)}>
+                                        <option value='reset'>{localize('Wait for the condition to reset')}</option>
+                                        <option value='repeat'>
+                                            {localize('Trade again if the condition still holds')}
+                                        </option>
+                                        <option value='once'>
+                                            {localize('Use the condition only to start the run')}
+                                        </option>
+                                    </select>
+                                </label>
+                            </>
+                        )}
+                    </fieldset>
+                    <button type='button' onClick={() => rules.current?.close()}>
+                        {localize('Done')}
+                    </button>
+                </dialog>
+                <dialog
+                    ref={limits}
+                    className='tick-insights tick-insights__dialog'
+                    aria-label={localize('Automatic settings')}
+                >
+                    <fieldset className='tick-insights__fields tick-insights__preset' disabled={active}>
+                        <legend>
+                            {localize('Run limits')} ({currency})
+                        </legend>
                         <label>
-                            {localize('Digits to wait for, oldest first')}
+                            {localize('Stake per trade')}
                             <input
-                                type='text'
-                                inputMode='numeric'
-                                pattern='[0-9]{1,20}'
-                                maxLength={20}
+                                type='number'
+                                min='0.01'
+                                step='any'
                                 required
-                                value={pattern}
-                                onChange={event => setPattern(event.target.value)}
+                                value={stake}
+                                onChange={event => setStake(event.target.value)}
                             />
                         </label>
-                    )}
-                    {condition !== 'always' && (
-                        <>
-                            <label>
-                                {localize('Trade when')}
-                                <select
-                                    value={negate ? 'no' : 'yes'}
-                                    onChange={event => setNegate(event.target.value === 'no')}
-                                >
-                                    <option value='yes'>{localize('The condition holds')}</option>
-                                    <option value='no'>{localize('The condition does not hold')}</option>
-                                </select>
-                            </label>
-                            <label>
-                                {localize('How far to look back')}
-                                <select value={memory} onChange={event => setMemory(Number(event.target.value))}>
-                                    <option value={1}>{localize('Latest tick only')}</option>
-                                    <option value={3}>{localize('Any of the last 3 ticks')}</option>
-                                    <option value={5}>{localize('Any of the last 5 ticks')}</option>
-                                </select>
-                            </label>
-                            <label>
-                                {localize('After a trade')}
-                                <select value={after} onChange={event => setAfter(event.target.value as TAfter)}>
-                                    <option value='reset'>{localize('Wait for the condition to reset')}</option>
-                                    <option value='repeat'>
-                                        {localize('Trade again if the condition still holds')}
-                                    </option>
-                                    <option value='once'>{localize('Use the condition only to start the run')}</option>
-                                </select>
-                            </label>
-                        </>
-                    )}
-                </fieldset>
-                <fieldset className='tick-insights__fields tick-insights__preset' disabled={active}>
-                    <legend>
-                        {localize('Run limits')} ({currency})
-                    </legend>
-                    <label>
-                        {localize('Stake per trade')}
-                        <input
-                            type='number'
-                            min='0.01'
-                            step='any'
-                            required
-                            value={stake}
-                            onChange={event => setStake(event.target.value)}
-                        />
-                    </label>
-                    <label>
-                        {localize('Duration in ticks')}
-                        <input
-                            type='number'
-                            min='1'
-                            max='10'
-                            required
-                            value={ticks}
-                            onChange={event => setTicks(event.target.value)}
-                        />
-                    </label>
-                    <label>
-                        {localize('Stop loss')}
-                        <input
-                            type='number'
-                            min={stake}
-                            step='any'
-                            required
-                            value={loss}
-                            onChange={event => setLoss(event.target.value)}
-                        />
-                    </label>
-                    <label>
-                        {localize('Take profit (optional)')}
-                        <input
-                            type='number'
-                            min='0.01'
-                            step='any'
-                            value={goal}
-                            onChange={event => setGoal(event.target.value)}
-                        />
-                    </label>
-                    <label>
-                        {localize('Maximum trades')}
-                        <input
-                            type='number'
-                            min='1'
-                            max='20'
-                            required
-                            value={max}
-                            onChange={event => setMax(event.target.value)}
-                        />
-                    </label>
-                </fieldset>
+                        <label>
+                            {localize('Duration in ticks')}
+                            <input
+                                type='number'
+                                min='1'
+                                max='10'
+                                required
+                                value={ticks}
+                                onChange={event => setTicks(event.target.value)}
+                            />
+                        </label>
+                        <label>
+                            {localize('Stop loss')}
+                            <input
+                                type='number'
+                                min={stake}
+                                step='any'
+                                required
+                                value={loss}
+                                onChange={event => setLoss(event.target.value)}
+                            />
+                        </label>
+                        <label>
+                            {localize('Take profit (optional)')}
+                            <input
+                                type='number'
+                                min='0.01'
+                                step='any'
+                                value={goal}
+                                onChange={event => setGoal(event.target.value)}
+                            />
+                        </label>
+                        <label>
+                            {localize('Maximum trades')}
+                            <input
+                                type='number'
+                                min='1'
+                                max='20'
+                                required
+                                value={max}
+                                onChange={event => setMax(event.target.value)}
+                            />
+                        </label>
+                    </fieldset>
+                    <button type='button' onClick={() => limits.current?.close()}>
+                        {localize('Done')}
+                    </button>
+                </dialog>
                 <p>
                     <strong>{localize('Next trade')}</strong> ·{' '}
                     {decision.candidates.length === 1

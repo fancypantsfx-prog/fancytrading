@@ -1,229 +1,44 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
-import { fetchPremiumAccess } from '@deriv/api';
+import { fetchPremiumAccess, fetchStrategyFinder } from '@deriv/api';
 import type { TPremiumAccess } from '@deriv/api';
-import { getDecimalPlaces, getPlatformLogo, useWS } from '@deriv/shared';
+import { getPlatformLogo, useWS } from '@deriv/shared';
 import { localize } from '@deriv-com/translations';
 import { FancyTradingDialogContext } from './fancy-trading-dialog-context';
 import {
-    compareInsightMarkets,
+    getLiveInsightQuote,
     getInsightContract,
     getInsightMarkets,
     getInsightPreset,
     InsightRateLimitError,
     isInsightPresetValid,
-    waitForInsightRequest,
 } from './tick-insights-data';
-import type { TFamily, TInsightRun, TInsightStrategyOption, TInsightTrade, TTickInsights } from './tick-insights-data';
+import type { TInsightRun, TInsightStrategyOption, TInsightTrade, TTickInsights } from './tick-insights-data';
 import InsightsCompare, { candidateLabel } from './insights-compare';
 import type { TCompareSetup } from './insights-compare';
-import SignalStrategy from './signal-strategy';
 import './tick-insights.scss';
 
 const percent = (value: number) => value.toLocaleString(undefined, { style: 'percent', maximumFractionDigits: 1 });
-const hitRate = ({ hits, count }: { hits: number; count: number }) => hits / count;
 type TInsightRow = TTickInsights['rows'][number];
 
 const formatMoney = (value: number, currency: string) =>
     value.toLocaleString(undefined, { style: 'currency', currency });
 
-const InsightsResults = ({
-    report,
-    onReview,
-    canReview,
-    canBuy,
-    onStar,
-    isStarred,
-    canStar,
-}: {
-    report: TTickInsights;
-    onReview: (row: TInsightRow, automatic: boolean) => void;
-    canReview: (row: TInsightRow) => boolean;
-    canBuy: boolean;
-    onStar: (row: TInsightRow) => void;
-    isStarred: (row: TInsightRow) => boolean;
-    canStar: boolean;
-}) => {
-    const [minimum_payout, setMinimumPayout] = React.useState('');
-    const [metric, setMetric] = React.useState('rate');
-    const money = (value: number) => formatMoney(value, report.currency);
-    const rows = report.rows.filter(row => row.payout >= Number(minimum_payout || 0));
-    const score = (row: TInsightRow) => {
-        switch (metric) {
-            case 'net':
-                return row.estimatedNet ?? -Infinity;
-            case 'return':
-                return row.returnOnStake ?? -Infinity;
-            case 'wins':
-                return row.maxWins ?? -Infinity;
-            case 'losses':
-                return row.maxLosses === undefined ? -Infinity : -row.maxLosses;
-            case 'payout':
-                return row.payout;
-            default:
-                return hitRate(row.historical);
-        }
-    };
-    rows.sort(
-        (a, b) =>
-            score(b) - score(a) ||
-            (a.symbol ?? '').localeCompare(b.symbol ?? '') ||
-            a.candidate.localeCompare(b.candidate)
-    );
-
-    if (!report.rows.length) {
-        return (
-            <p role='status'>
-                {localize('No comparable quotes are available. Try another trade type, stake or tick target.')}
-            </p>
-        );
-    }
-
-    return (
-        <div className='tick-insights__results' aria-live='polite'>
-            <p>
-                {localize('Latest 400 ticks per instrument · {{ticks}}-tick target · Last sample {{time}}', {
-                    time: new Date(report.lastTick * 1000).toLocaleString(),
-                    ticks: String(report.ticks),
-                })}
-            </p>
-            {!!report.marketsScanned && (
-                <p>
-                    {localize(
-                        '{{count}} instruments checked. Results use each instrument’s latest tick sample and current quote.',
-                        { count: String(report.marketsScanned) }
-                    )}
-                </p>
-            )}
-            <div className='tick-insights__fields'>
-                <label>
-                    {localize('Minimum total payout')} ({report.currency})
-                    <input
-                        type='number'
-                        min='0'
-                        step='any'
-                        value={minimum_payout}
-                        onChange={e => setMinimumPayout(e.target.value)}
-                    />
-                </label>
-                <label>
-                    {localize('Sort by')}
-                    <select value={metric} onChange={e => setMetric(e.target.value)}>
-                        <option value='rate'>{localize('Historical hit rate')}</option>
-                        <option value='payout'>{localize('Total payout')}</option>
-                        <option value='net'>{localize('Highest estimated net over the window')}</option>
-                        <option value='return'>{localize('Highest return on total staked')}</option>
-                        <option value='wins'>{localize('Most consecutive wins')}</option>
-                        <option value='losses'>{localize('Fewest consecutive losses')}</option>
-                    </select>
-                </label>
-            </div>
-            {!rows.length ? (
-                <p role='status'>{localize('No available quotes meet that payout target.')}</p>
-            ) : (
-                <div
-                    className='tick-insights__table'
-                    tabIndex={0}
-                    role='region'
-                    aria-label={localize('Trade comparison')}
-                >
-                    <table>
-                        <thead>
-                            <tr>
-                                <th scope='col'>{localize('Trade')}</th>
-                                <th scope='col'>{localize('Historical hit rate')}</th>
-                                <th scope='col'>{localize('Total payout')}</th>
-                                <th scope='col'>{localize('Stake / profit if successful')}</th>
-                                <th scope='col'>{localize('Break-even hit rate')}</th>
-                                <th scope='col'>{localize('Estimated net / return')}</th>
-                                <th scope='col'>{localize('Max consecutive wins / losses')}</th>
-                                <th scope='col'>{localize('Trade actions')}</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {rows.map(row => (
-                                <tr key={`${row.symbol ?? ''}:${row.candidate}`}>
-                                    <th scope='row'>
-                                        {candidateLabel(row.candidate)}
-                                        {row.symbol && <small>{row.symbol}</small>}
-                                    </th>
-                                    <td>
-                                        <strong>{percent(hitRate(row.historical))}</strong>
-                                        <small>
-                                            {row.historical.hits}/{row.historical.count}
-                                        </small>
-                                    </td>
-                                    <td>
-                                        <strong>{money(row.payout)}</strong>
-                                        {row.estimated && <small>{localize('Estimate')}</small>}
-                                    </td>
-                                    <td>
-                                        {money(row.stake)} / {money(row.payout - row.stake)}
-                                    </td>
-                                    <td>{row.breakEven === undefined ? '—' : percent(row.breakEven)}</td>
-                                    <td>
-                                        {row.estimatedNet === undefined ? '—' : money(row.estimatedNet)}
-                                        {row.returnOnStake != null && <small>{percent(row.returnOnStake)}</small>}
-                                    </td>
-                                    <td>
-                                        {row.maxWins ?? '—'} / {row.maxLosses ?? '—'}
-                                    </td>
-                                    <td>
-                                        <button
-                                            type='button'
-                                            aria-pressed={isStarred(row)}
-                                            disabled={!canStar && !isStarred(row)}
-                                            aria-label={
-                                                isStarred(row)
-                                                    ? localize('Remove from Compare')
-                                                    : localize('Add to Compare')
-                                            }
-                                            onClick={() => onStar(row)}
-                                        >
-                                            {isStarred(row) ? '★' : '☆'}
-                                        </button>
-                                        <button
-                                            type='button'
-                                            disabled={!canReview(row)}
-                                            aria-label={localize('Review {{trade}}', {
-                                                trade: candidateLabel(row.candidate),
-                                            })}
-                                            onClick={() => onReview(row, true)}
-                                        >
-                                            {localize('Review automatic')}
-                                        </button>
-                                        <button
-                                            type='button'
-                                            disabled={!canBuy}
-                                            aria-label={localize('Buy {{trade}} once', {
-                                                trade: candidateLabel(row.candidate),
-                                            })}
-                                            onClick={() => onReview(row, false)}
-                                        >
-                                            {localize('Buy once')}
-                                        </button>
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
-            )}
-            <p className='tick-insights__note'>
-                {localize(
-                    'Simulated trades use non-overlapping tick moves. Estimated net uses historical outcomes and the current quoted payout at the selected stake.'
-                )}
-            </p>
-            <p className='tick-insights__note'>
-                {localize(
-                    report.rows.some(row => row.estimated)
-                        ? 'Accumulator results replay the currently quoted range on past ticks. Payout estimates assume the full target stays in range. Actual ranges, settlement and payouts can differ.'
-                        : 'Break-even is quoted stake divided by total payout for a full loss on unsuccessful trades. Quotes can change before entry.'
-                )}
-            </p>
-        </div>
-    );
+type TFinderRow = Pick<TInsightRow, 'candidate' | 'historical'> & { symbol: string };
+type TFinderReport = {
+    access: TPremiumAccess;
+    rows: TFinderRow[];
+    ticks: number;
+    updatedAt: number;
+    marketsScanned: number;
 };
+const finderContracts = {
+    rise_fall: ['CALL', 'PUT'],
+    even_odd: ['DIGITEVEN', 'DIGITODD'],
+    over_under: ['DIGITOVER', 'DIGITUNDER'],
+    match_diff: ['DIGITMATCH', 'DIGITDIFF'],
+} as const;
+type TFinderContract = keyof typeof finderContracts;
 
 type TProps = {
     symbol: string;
@@ -231,14 +46,13 @@ type TProps = {
     initial_stake: number;
     initial_ticks: number;
     initial_candidate?: string;
-    is_accumulator: boolean;
     account_label: string;
     execution_block: string;
     purchase_block: string;
     preset_key?: string;
     onBuy: (trade: TInsightTrade, signal: AbortSignal) => Promise<string>;
-    onRuleBuy?: (trade: TInsightTrade, signal: AbortSignal, beforePurchase: () => void) => Promise<string>;
-    ruleAccount?: { id: string; demo: boolean };
+    onOpenSignal?: () => void;
+    signalError?: string;
     getStrategies: (contract_type: string) => TInsightStrategyOption[];
     onRefreshAutomation?: () => void;
     onStart: (draft: TInsightRun, signal: AbortSignal) => Promise<string>;
@@ -257,14 +71,13 @@ const InsightsPanel = ({
     initial_stake,
     initial_ticks,
     initial_candidate,
-    is_accumulator,
     account_label,
     execution_block,
     purchase_block,
     preset_key,
     onBuy,
-    onRuleBuy,
-    ruleAccount,
+    onOpenSignal,
+    signalError,
     getStrategies,
     onRefreshAutomation,
     onStart,
@@ -274,15 +87,24 @@ const InsightsPanel = ({
     setDurations,
 }: TPanelProps) => {
     const ws = useWS();
-    const [family, setFamily] = React.useState<TFamily>(is_accumulator ? 'accumulator' : 'digital');
-    const [finderGroup, setFinderGroup] = React.useState(is_accumulator ? 'accumulator' : 'digital');
-    const [finderBarrier, setFinderBarrier] = React.useState('5');
+    const [finderGroup, setFinderGroup] = React.useState<TFinderContract>(
+        () =>
+            (Object.keys(finderContracts) as TFinderContract[]).find(group =>
+                finderContracts[group].some(type => type === initial_candidate?.split(':')[0])
+            ) ?? 'rise_fall'
+    );
+    const [finderBarrier, setFinderBarrier] = React.useState(initial_candidate?.split(':')[1] ?? '5');
     const [preset] = React.useState(() => getInsightPreset(preset_key));
     const [stake, setStake] = React.useState(String(preset?.stake ?? initial_stake));
     const [stop_loss, setStopLoss] = React.useState(preset ? String(preset.stopLoss) : '');
     const [take_profit, setTakeProfit] = React.useState(
         preset?.takeProfit === undefined ? '' : String(preset.takeProfit)
     );
+    const [settingsOpen, setSettingsOpen] = React.useState(false);
+    const settingsDialog = React.useRef<HTMLDialogElement>(null);
+    React.useEffect(() => {
+        if (settingsOpen) settingsDialog.current?.showModal();
+    }, [settingsOpen]);
     const [preset_saved, setPresetSaved] = React.useState(false);
     const [draft, setDraft] = React.useState<{
         trade: TInsightTrade;
@@ -293,17 +115,17 @@ const InsightsPanel = ({
     const [ticks, setTicks] = React.useState(String(preset?.ticks ?? initial_ticks));
     const [access, setAccess] = React.useState<TPremiumAccess | 'checking' | 'error'>('checking');
     const [check, setCheck] = React.useState(0);
-    const [report, setReport] = React.useState<TTickInsights>();
+    const [report, setReport] = React.useState<TFinderReport>();
     const [error, setError] = React.useState('');
     const [busy, setBusy] = React.useState(false);
-    const [view, setView] = React.useState<'finder' | 'compare' | 'signal'>('finder');
+    const [view, setView] = React.useState<'finder' | 'compare'>('finder');
     const [manualSetup, setManualSetup] = React.useState<TCompareSetup>({
         symbol,
         candidate: initial_candidate ?? 'CALL',
     });
     const [markets, setMarkets] = React.useState<{ symbol: string; label: string }[]>([]);
-    const [progress, setProgress] = React.useState<{ scanned: number; total: number }>();
     const request = React.useRef<AbortController>();
+    const prefetched = React.useRef<{ settings: string; result: TFinderReport }>();
 
     React.useEffect(() => {
         if (view !== 'compare' || markets.length || typeof access === 'string' || access.access === 'locked') return;
@@ -338,6 +160,7 @@ const InsightsPanel = ({
                 setBusy(false);
                 setReport(undefined);
                 setDraft(undefined);
+                prefetched.current = undefined;
                 setAccess('checking');
                 setCheck(value => value + 1);
             },
@@ -348,6 +171,25 @@ const InsightsPanel = ({
 
     React.useEffect(() => () => request.current?.abort(), []);
 
+    const scanSettings = new URLSearchParams({ contract: finderGroup, ticks, barrier: finderBarrier }).toString();
+    const hasScanAccess = typeof access !== 'string' && access.access !== 'locked';
+
+    React.useEffect(() => {
+        if (view !== 'finder' || !hasScanAccess || !/^([1-9]|1[0-9]|20)$/.test(ticks)) return;
+        const controller = new AbortController();
+        const timer = window.setTimeout(() => {
+            void fetchStrategyFinder<TFinderReport>(new URLSearchParams(scanSettings), controller.signal)
+                .then(result => {
+                    if (result && !controller.signal.aborted) prefetched.current = { settings: scanSettings, result };
+                })
+                .catch(() => undefined);
+        }, 250);
+        return () => {
+            window.clearTimeout(timer);
+            controller.abort();
+        };
+    }, [view, hasScanAccess, ticks, scanSettings]);
+
     const compare = async (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
         if (busy) return;
@@ -355,59 +197,20 @@ const InsightsPanel = ({
         request.current = controller;
         setBusy(true);
         setError('');
-        setResult(undefined);
-        setProgress(undefined);
-        const timeout = window.setTimeout(() => {
-            if (!controller.signal.aborted) {
-                controller.abort();
-                setBusy(false);
-                setReport(undefined);
-                setError(localize('The comparison timed out. Try again.'));
-            }
-        }, 300000);
         try {
-            const available = markets.length
-                ? markets
-                : await waitForInsightRequest(
-                      getInsightMarkets(payload => ws.send(payload), controller.signal),
-                      localize('Instrument list timed out.')
-                  );
-            if (controller.signal.aborted) return;
-            setMarkets(available);
-            const symbols = [...new Set([symbol, ...available.map(market => market.symbol)])];
-            setProgress({ scanned: 0, total: symbols.length });
-            const candidates =
-                finderGroup === 'digit-barrier'
-                    ? ['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF']
-                          .filter(
-                              type =>
-                                  !(type === 'DIGITOVER' && finderBarrier === '9') &&
-                                  !(type === 'DIGITUNDER' && finderBarrier === '0')
-                          )
-                          .map(type => `${type}:${finderBarrier}`)
-                    : undefined;
-            const result = await compareInsightMarkets(
-                payload => ws.send(payload),
-                { symbol, currency, family, stake: Number(stake), ticks: Number(ticks), candidates, windowSize: 400 },
-                symbols,
-                controller.signal,
-                scanned => setProgress({ scanned, total: symbols.length })
-            );
+            const ready = prefetched.current;
+            const result =
+                !report && ready?.settings === scanSettings && Date.now() - ready.result.updatedAt < 5 * 60 * 1000
+                    ? ready.result
+                    : await fetchStrategyFinder<TFinderReport>(new URLSearchParams(scanSettings), controller.signal);
             if (controller.signal.aborted) return;
             setAccess(result?.access ?? { access: 'locked' });
             setReport(result ?? undefined);
-        } catch (failure) {
+        } catch {
             if (!controller.signal.aborted) {
-                setError(
-                    failure instanceof InsightRateLimitError
-                        ? localize('Deriv is limiting requests. Wait a minute before scanning again.')
-                        : localize('Could not load instrument comparisons. Check your market connection and try again.')
-                );
-                setBusy(false);
-                controller.abort();
+                setError(localize('Cached market data is temporarily unavailable. Try scanning again shortly.'));
             }
         } finally {
-            window.clearTimeout(timeout);
             if (!controller.signal.aborted) setBusy(false);
         }
     };
@@ -417,21 +220,8 @@ const InsightsPanel = ({
         if (is_reviewing) review_ref.current?.focus();
     }, [is_reviewing]);
 
-    const optionsFor = (candidate: string, duration: number, tradeFamily = family) =>
-        getStrategies(getInsightContract(tradeFamily, candidate, duration).contract_type);
-
-    const isStarred = (row: TInsightRow) =>
-        starred.some(item => item.symbol === (row.symbol ?? symbol) && item.candidate === row.candidate);
-    const star = (row: TInsightRow) => {
-        const setup = { symbol: row.symbol ?? symbol, candidate: row.candidate };
-        if (isStarred(row)) {
-            setStarred(starred.filter(item => item.symbol !== setup.symbol || item.candidate !== setup.candidate));
-            return;
-        }
-        if (manualSetup.symbol !== setup.symbol || manualSetup.candidate !== setup.candidate)
-            setStarred([...starred, setup]);
-        setDurations([...new Set([...durations, report?.ticks ?? Number(ticks)])]);
-    };
+    const optionsFor = (candidate: string, duration: number) =>
+        getStrategies(getInsightContract('digital', candidate, duration).contract_type);
 
     const savePreset = () => {
         if (!preset_key) return;
@@ -459,10 +249,9 @@ const InsightsPanel = ({
     };
 
     const review = (
-        row: TInsightRow,
+        row: Pick<TInsightRow, 'candidate' | 'symbol' | 'stake' | 'payout'>,
         automatic: boolean,
-        duration = report?.ticks ?? Number(ticks),
-        tradeFamily = family
+        duration = report?.ticks ?? Number(ticks)
     ) => {
         if (row.stake !== Number(stake)) {
             setError(localize('The quoted stake differs from the entered stake. Adjust the stake and compare again.'));
@@ -470,37 +259,54 @@ const InsightsPanel = ({
         }
         const stopLoss = Number(stop_loss);
         const takeProfit = take_profit === '' ? undefined : Number(take_profit);
-        const contractTakeProfit =
-            tradeFamily === 'accumulator'
-                ? Number((row.payout - row.stake).toFixed(getDecimalPlaces(currency)))
-                : undefined;
-        if (contractTakeProfit !== undefined && contractTakeProfit <= 0) {
-            setError(localize('This payout target rounds to zero profit. Increase the stake or tick target.'));
-            return;
-        }
         setError('');
         setDraft({
             trade: {
                 candidate: row.candidate,
-                family: tradeFamily,
+                family: 'digital',
                 ticks: duration,
                 symbol: row.symbol ?? symbol,
                 currency,
                 stake: row.stake,
                 payout: row.payout,
-                contractTakeProfit,
             },
             run: automatic
                 ? {
                       stopLoss,
                       takeProfit,
                       strategyId:
-                          optionsFor(row.candidate, duration, tradeFamily).find(
-                              option => option.id === '__fixed_stake__'
-                          )?.id ?? '',
+                          optionsFor(row.candidate, duration).find(option => option.id === '__fixed_stake__')?.id ?? '',
                   }
                 : undefined,
         });
+    };
+
+    const quoteFinderRow = async (row: TFinderRow, automatic: boolean) => {
+        if (!report || busy) return;
+        const controller = new AbortController();
+        request.current = controller;
+        setBusy(true);
+        setError('');
+        try {
+            const quote = await getLiveInsightQuote(
+                payload => ws.send(payload),
+                { symbol: row.symbol, currency, stake: Number(stake), ticks: report.ticks, candidate: row.candidate },
+                controller.signal
+            );
+            if (controller.signal.aborted) return;
+            if (!quote) throw new Error(localize('Deriv has no live quote for this selection.'));
+            review({ ...row, ...quote }, automatic, report.ticks);
+        } catch (failure) {
+            if (!controller.signal.aborted) {
+                setError(
+                    failure instanceof InsightRateLimitError
+                        ? localize('Deriv is limiting requests. Wait a minute before requesting another quote.')
+                        : localize('Could not quote this trade. Check the stake and contract availability.')
+                );
+            }
+        } finally {
+            if (!controller.signal.aborted) setBusy(false);
+        }
     };
 
     const confirm = async () => {
@@ -556,7 +362,7 @@ const InsightsPanel = ({
         const title = run ? localize('Review automatic run') : localize('Review one contract');
         const block = run ? execution_block : purchase_block;
         const money = (value: number) => formatMoney(value, trade.currency);
-        const strategies = run ? optionsFor(trade.candidate, trade.ticks, trade.family) : [];
+        const strategies = run ? optionsFor(trade.candidate, trade.ticks) : [];
         const selected_strategy = strategies.find(option => option.id === run?.strategyId);
         const valid_stop_loss = !!run && Number.isFinite(run.stopLoss) && run.stopLoss >= trade.stake;
         const strategy_incomplete =
@@ -769,28 +575,13 @@ const InsightsPanel = ({
                 >
                     {localize('Compare')} ({starred.length + 1})
                 </button>
-                {onRuleBuy && (
-                    <button
-                        type='button'
-                        aria-pressed={view === 'signal'}
-                        disabled={busy}
-                        onClick={() => setView('signal')}
-                    >
+                {onOpenSignal && (
+                    <button type='button' disabled={busy} onClick={onOpenSignal}>
                         {localize('Signal Strategy')}
                     </button>
                 )}
             </nav>
-            {view === 'signal' && onRuleBuy && (
-                <SignalStrategy
-                    symbol={symbol}
-                    currency={currency}
-                    account={ruleAccount}
-                    initialStake={initial_stake}
-                    initialTicks={initial_ticks}
-                    block={purchase_block || execution_block}
-                    buy={onRuleBuy}
-                />
-            )}
+            {signalError && <p role='alert'>{signalError}</p>}
             {view === 'finder' && (
                 <form onSubmit={compare} className='tick-insights__fields'>
                     <label>
@@ -798,20 +589,18 @@ const InsightsPanel = ({
                         <select
                             value={finderGroup}
                             onChange={e => {
-                                setFinderGroup(e.target.value);
-                                setFamily(e.target.value === 'accumulator' ? 'accumulator' : 'digital');
+                                setFinderGroup(e.target.value as TFinderContract);
                                 setReport(undefined);
                             }}
                             disabled={busy}
                         >
-                            <option value='accumulator'>{localize('Accumulator growth rates')}</option>
-                            <option value='digital'>{localize('Rise / Fall and Even / Odd')}</option>
-                            <option value='digit-barrier'>
-                                {localize('Digit Over / Under and Matches / Differs')}
-                            </option>
+                            <option value='rise_fall'>{localize('Rise / Fall')}</option>
+                            <option value='even_odd'>{localize('Even / Odd')}</option>
+                            <option value='over_under'>{localize('Over / Under')}</option>
+                            <option value='match_diff'>{localize('Matches / Differs')}</option>
                         </select>
                     </label>
-                    {finderGroup === 'digit-barrier' && (
+                    {(finderGroup === 'over_under' || finderGroup === 'match_diff') && (
                         <label>
                             {localize('Barrier')}
                             <select
@@ -871,52 +660,59 @@ const InsightsPanel = ({
                     </button>
                 </form>
             )}
-            {busy && progress && (
-                <p role='status'>
-                    {localize('Checked {{scanned}} of {{total}} instruments', {
-                        scanned: String(progress.scanned),
-                        total: String(progress.total),
-                    })}
-                </p>
-            )}
-            {view !== 'signal' && (
-                <fieldset className='tick-insights__fields tick-insights__preset'>
-                    <legend>{localize('Automatic settings')}</legend>
-                    <label>
-                        {localize('Run stop loss (automatic only)')} ({currency})
-                        <input
-                            type='number'
-                            min='0.01'
-                            step='any'
-                            value={stop_loss}
-                            disabled={busy}
-                            onChange={e => {
-                                setStopLoss(e.target.value);
-                                setPresetSaved(false);
-                            }}
-                        />
-                    </label>
-                    <label>
-                        {localize('Run take profit (if required)')} ({currency})
-                        <input
-                            type='number'
-                            min='0.01'
-                            step='any'
-                            value={take_profit}
-                            disabled={busy}
-                            onChange={e => {
-                                setTakeProfit(e.target.value);
-                                setPresetSaved(false);
-                            }}
-                        />
-                    </label>
-                    {preset_key && (
-                        <button type='button' disabled={busy} onClick={savePreset}>
-                            {localize('Save automatic preset')}
+            <>
+                <button type='button' aria-haspopup='dialog' onClick={() => setSettingsOpen(true)}>
+                    {localize('Automatic settings')}
+                </button>
+                {settingsOpen && (
+                    <dialog
+                        ref={settingsDialog}
+                        className='tick-insights tick-insights__dialog'
+                        aria-label={localize('Automatic settings')}
+                        onClose={() => setSettingsOpen(false)}
+                    >
+                        <button type='button' onClick={() => settingsDialog.current?.close()}>
+                            {localize('Done')}
                         </button>
-                    )}
-                </fieldset>
-            )}
+                        <fieldset className='tick-insights__fields tick-insights__preset'>
+                            <legend>{localize('Automatic settings')}</legend>
+                            <label>
+                                {localize('Run stop loss (automatic only)')} ({currency})
+                                <input
+                                    type='number'
+                                    min='0.01'
+                                    step='any'
+                                    value={stop_loss}
+                                    disabled={busy}
+                                    onChange={e => {
+                                        setStopLoss(e.target.value);
+                                        setPresetSaved(false);
+                                    }}
+                                />
+                            </label>
+                            <label>
+                                {localize('Run take profit (if required)')} ({currency})
+                                <input
+                                    type='number'
+                                    min='0.01'
+                                    step='any'
+                                    value={take_profit}
+                                    disabled={busy}
+                                    onChange={e => {
+                                        setTakeProfit(e.target.value);
+                                        setPresetSaved(false);
+                                    }}
+                                />
+                            </label>
+                            {preset_key && (
+                                <button type='button' disabled={busy} onClick={savePreset}>
+                                    {localize('Save automatic preset')}
+                                </button>
+                            )}
+                        </fieldset>
+                    </dialog>
+                )}
+            </>
             {preset_saved && <p role='status'>{localize('Automatic preset saved for this account.')}</p>}
             {error && <p role='alert'>{error}</p>}
             {view === 'compare' && (
@@ -955,12 +751,7 @@ const InsightsPanel = ({
                         canBuy={!busy && !purchase_block}
                         canReview={contract => !busy && !execution_block && !!getStrategies(contract).length}
                         onReview={({ setup, row, report }, automatic) =>
-                            review(
-                                { ...row, symbol: setup.symbol },
-                                automatic,
-                                report.ticks,
-                                /^[1-5]$/.test(setup.candidate) ? 'accumulator' : 'digital'
-                            )
+                            review({ ...row, symbol: setup.symbol }, automatic, report.ticks)
                         }
                     />
                 </>
@@ -981,15 +772,80 @@ const InsightsPanel = ({
                                 {localize('Deriv has no automatic strategies for the contracts in this comparison.')}
                             </p>
                         )}
-                    <InsightsResults
-                        report={report}
-                        onReview={review}
-                        canBuy={!busy && !purchase_block}
-                        canReview={row => !busy && !execution_block && !!optionsFor(row.candidate, report.ticks).length}
-                        onStar={star}
-                        isStarred={isStarred}
-                        canStar={starred.length < 3 && (durations.length < 4 || durations.includes(report.ticks))}
-                    />
+                    <p role='status'>
+                        {localize('{{count}} instruments � Snapshot updated {{time}}', {
+                            count: String(report.marketsScanned),
+                            time: new Date(report.updatedAt).toLocaleTimeString(),
+                        })}
+                    </p>
+                    <div
+                        className='tick-insights__table'
+                        tabIndex={0}
+                        role='region'
+                        aria-label={localize('Scan results')}
+                    >
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th scope='col'>{localize('Trade')}</th>
+                                    <th scope='col'>{localize('Historical hit rate')}</th>
+                                    <th scope='col'>{localize('Trade actions')}</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {report.rows.map(row => (
+                                    <tr key={`${row.symbol}:${row.candidate}`}>
+                                        <th scope='row'>
+                                            {row.symbol} � {candidateLabel(row.candidate)}
+                                        </th>
+                                        <td>{percent(row.historical.hits / row.historical.count)}</td>
+                                        <td>
+                                            <button
+                                                type='button'
+                                                disabled={busy || !!purchase_block}
+                                                onClick={() => void quoteFinderRow(row, false)}
+                                            >
+                                                {localize('Get live quote')}
+                                            </button>
+                                            <button
+                                                type='button'
+                                                disabled={
+                                                    busy ||
+                                                    !!execution_block ||
+                                                    !optionsFor(row.candidate, report.ticks).length
+                                                }
+                                                onClick={() => void quoteFinderRow(row, true)}
+                                            >
+                                                {localize('Review automatic')}
+                                            </button>
+                                            <button
+                                                type='button'
+                                                disabled={
+                                                    starred.length >= 3 ||
+                                                    [manualSetup, ...starred].some(
+                                                        setup =>
+                                                            setup.symbol === row.symbol &&
+                                                            setup.candidate === row.candidate
+                                                    )
+                                                }
+                                                onClick={() => {
+                                                    setStarred([
+                                                        ...starred,
+                                                        { symbol: row.symbol, candidate: row.candidate },
+                                                    ]);
+                                                    if (durations.length < 4)
+                                                        setDurations([...new Set([...durations, report.ticks])]);
+                                                }}
+                                            >
+                                                {localize('Add to Compare')}
+                                            </button>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                    {!report.rows.length && <p role='status'>{localize('No matching tick history is available.')}</p>}
                 </>
             )}
             <p className='tick-insights__note'>

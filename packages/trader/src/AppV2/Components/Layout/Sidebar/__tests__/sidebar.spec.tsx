@@ -127,7 +127,6 @@ describe('<Sidebar />', () => {
                                 currency='USD'
                                 initial_stake={10}
                                 initial_ticks={5}
-                                is_accumulator
                                 account_label=''
                                 execution_block=''
                                 purchase_block=''

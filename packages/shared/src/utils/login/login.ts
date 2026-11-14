@@ -1,4 +1,11 @@
-import { getAuthBaseUrl, getOAuthAppId, getOAuthClientId, getOAuthRedirectUri, getSignupUrl } from '../brand';
+import {
+    getAuthBaseUrl,
+    getOAuthAppId,
+    getOAuthClientId,
+    getOAuthRedirectUri,
+    getSignupReferralToken,
+    getSignupUrl,
+} from '../brand';
 
 // ---------------------------------------------------------------------------
 // PKCE helpers (duplicated here to avoid circular dependency with core)
@@ -40,7 +47,7 @@ const storePKCEVerifier = (verifier: string): void => {
  * Uses window.location.replace() so the authorize URL does not appear
  * in browser history (prevents back-button returning to a broken state).
  */
-export const redirectToLogin = async (_language?: string): Promise<void> => {
+const redirectToOAuth = async (referral_token?: string): Promise<void> => {
     const verifier = generateCodeVerifier();
     const challenge = await generateCodeChallenge(verifier);
     storePKCEVerifier(verifier);
@@ -59,12 +66,21 @@ export const redirectToLogin = async (_language?: string): Promise<void> => {
     });
     const oauth_app_id = getOAuthAppId();
     if (oauth_app_id) params.set('app_id', oauth_app_id);
+    if (referral_token) {
+        params.set('prompt', 'registration');
+        params.set('t', referral_token);
+    }
 
     const auth_url = `${getAuthBaseUrl()}/oauth2/auth?${params}`;
     window.location.replace(auth_url);
 };
 
-export const redirectToSignUp = (_language?: string): void => {
+export const redirectToLogin = (_language?: string): Promise<void> => redirectToOAuth();
+
+export const redirectToSignUp = (_language?: string): Promise<void> | void => {
+    const referral_token = getSignupReferralToken();
+    if (referral_token) return redirectToOAuth(referral_token);
+
     const signup_url = getSignupUrl();
     if (signup_url) window.open(signup_url, '_blank', 'noopener,noreferrer');
 };

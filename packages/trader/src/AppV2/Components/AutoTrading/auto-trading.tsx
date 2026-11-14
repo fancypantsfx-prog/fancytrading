@@ -36,6 +36,9 @@ import {
     stepNumber,
 } from './automation';
 import TickInsights from './tick-insights';
+import SignalStrategy from './signal-strategy';
+import { FancyTradingDialogContext } from './fancy-trading-dialog-context';
+import { signalContracts } from './signal-rule';
 import { getInsightContract, waitForInsightRequest } from './tick-insights-data';
 import type { TInsightRun, TInsightStrategyOption, TInsightTrade } from './tick-insights-data';
 import './auto-trading.scss';
@@ -352,6 +355,9 @@ type PendingStart = {
 const AutoTrading = observer(
     ({ is_market_closed, onPurchaseSuccess }: { is_market_closed?: boolean; onPurchaseSuccess?: () => void }) => {
         const store = useTraderStore();
+        const fancyTrading = React.useContext(FancyTradingDialogContext);
+        const [openingSignal, setOpeningSignal] = React.useState(false);
+        const [signalError, setSignalError] = React.useState('');
         const { client, common, ui, portfolio } = useStore();
         const ws = useWS();
         const [mode, setMode] = React.useState<'manual' | 'automatic'>('manual');
@@ -1166,6 +1172,70 @@ const AutoTrading = observer(
                 </div>
             </dialog>
         );
+        const signalTypesByTradeType: Record<string, readonly string[]> = {
+            rise_fall: signalContracts.direction,
+            even_odd: signalContracts.parity,
+            match_diff: signalContracts.match,
+            over_under: signalContracts.barrier,
+        };
+        const signalTypes = signalTypesByTradeType[store.contract_type.toLowerCase()];
+        const signalContract = signalTypes?.find(type => type === contract) ?? signalTypes?.[0];
+        const signalContractSupported = !!signalContract;
+        const openSignal = async () => {
+            if (!fancyTrading || openingSignal || !client.is_logged_in) return;
+            setSignalError('');
+            setOpeningSignal(true);
+            try {
+                if (!signalContractSupported || store.is_market_closed || is_market_closed) {
+                    const fallback = store.active_symbols.find(
+                        market => market.underlying_symbol === '1HZ100V' && market.exchange_is_open === 1
+                    );
+                    if (!fallback) throw new Error('Default market unavailable');
+                    if (store.symbol !== fallback.underlying_symbol) {
+                        await store.onChange({ target: { name: 'symbol', value: fallback.underlying_symbol } });
+                    }
+                    await store.onChange({ target: { name: 'contract_type', value: 'rise_fall' } });
+                }
+                fancyTrading.setOpen(false);
+                fancyTrading.setSignalOpen(true);
+            } catch {
+                setSignalError(localize('The default signal market is unavailable. Choose an open Rise / Fall or Digits market.'));
+            } finally {
+                setOpeningSignal(false);
+            }
+        };
+
+        const signalOpen = !!client.is_logged_in && !!fancyTrading?.signalOpen;
+        const stake = store.basis === 'stake' && Number(store.amount) > 0 ? Number(store.amount) : 10;
+        const ticks = store.duration_unit === 't' && store.duration >= 1 && store.duration <= 20 ? store.duration : 5;
+
+        if (signalOpen && !fancyTrading?.open) {
+            return (
+                <section className='tick-insights tick-insights__signal-panel'>
+                    <header className='tick-insights__actions'>
+                        <button type='button' onClick={() => fancyTrading?.setSignalOpen(false)}>
+                            {localize('Back to normal trading')}
+                        </button>
+                    </header>
+                    {signalContract && !is_market_closed && !store.is_market_closed ? (
+                        <SignalStrategy
+                            key={String(account_id) + ':' + store.symbol + ':' + store.currency + ':' + signalContract}
+                            symbol={store.symbol}
+                            currency={store.currency}
+                            account={account_id ? { id: account_id, demo: !!client.is_virtual } : undefined}
+                            initialStake={stake}
+                            initialTicks={ticks}
+                            contract={signalContract}
+                            block={trade_block || (unconfirmed_buy ? unconfirmed_message : insight_block)}
+                            buy={buyFromInsights}
+                        />
+                    ) : (
+                        <p role='status'>{localize('Choose an open Rise / Fall or Digits market to use Signal Strategy.')}</p>
+                    )}
+                </section>
+            );
+        }
+
         return (
             <section className='auto-trading' aria-label={localize('Trade execution')}>
                 <div className='auto-trading__modes' role='group' aria-label={localize('Trading mode')}>
@@ -1183,7 +1253,19 @@ const AutoTrading = observer(
                         {localize('Automatic')}
                     </button>
                 </div>
-                <TickInsights
+                {!!client.is_logged_in && (
+                        <button
+                            type='button'
+                            className='auto-trading__settings'
+                            aria-haspopup='dialog'
+                            aria-expanded={menu_open}
+                            onClick={() => setMenuOpen(true)}
+                        >
+                            <span>⚙ {localize('Automatic settings')}</span>
+                            <span aria-hidden='true'>›</span>
+                        </button>
+                )}
+                {!!client.is_logged_in && <TickInsights
                     key={String(account_id) + ':' + store.currency + ':' + store.symbol}
                     preset_key={
                         client.is_logged_in && account_id
@@ -1192,32 +1274,27 @@ const AutoTrading = observer(
                     }
                     symbol={store.symbol}
                     initial_candidate={
-                        contract === 'ACCU'
-                            ? String(Math.round(store.growth_rate * 100))
-                            : ['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'].includes(contract)
-                              ? `${contract}:${store.last_digit}`
-                              : ['CALL', 'PUT', 'DIGITEVEN', 'DIGITODD'].includes(contract)
-                                ? contract
-                                : undefined
+                        ['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'].includes(contract)
+                            ? `${contract}:${store.last_digit}`
+                            : ['CALL', 'PUT', 'DIGITEVEN', 'DIGITODD'].includes(contract)
+                              ? contract
+                              : undefined
                     }
                     currency={/^[A-Z]{3}$/.test(store.currency) ? store.currency : 'USD'}
-                    initial_stake={store.basis === 'stake' && Number(store.amount) > 0 ? Number(store.amount) : 10}
-                    initial_ticks={
-                        store.duration_unit === 't' && store.duration >= 1 && store.duration <= 20 ? store.duration : 5
-                    }
-                    is_accumulator={contract === 'ACCU'}
+                    initial_stake={stake}
+                    initial_ticks={ticks}
                     account_label={
                         account_id ? (client.is_virtual ? localize('Demo') : localize('Real')) + ' · ' + account_id : ''
                     }
                     execution_block={insight_block}
                     purchase_block={trade_block || (unconfirmed_buy ? unconfirmed_message : '')}
                     onBuy={buyFromInsights}
-                    onRuleBuy={buyFromInsights}
-                    ruleAccount={account_id ? { id: account_id, demo: !!client.is_virtual } : undefined}
+                    onOpenSignal={!openingSignal ? () => void openSignal() : undefined}
+                    signalError={signalError}
                     getStrategies={getInsightStrategyOptions}
                     onRefreshAutomation={eligible && !state.busy ? () => { void controller.current?.refresh(); } : undefined}
                     onStart={startFromInsights}
-                />
+                />}
                 {mode === 'manual' ? (
                     <>
                         {active_run && (
@@ -1229,17 +1306,6 @@ const AutoTrading = observer(
                     </>
                 ) : (
                     <div className='auto-trading__compact'>
-                        <button
-                            type='button'
-                            className='auto-trading__settings'
-                            aria-haspopup='dialog'
-                            aria-expanded={menu_open}
-                            onClick={() => setMenuOpen(true)}
-                        >
-                            <span>⚙ {localize('Automatic settings')}</span>
-                            <span aria-hidden='true'>›</span>
-                        </button>
-                        <small>{localize('Using your selected market and contract settings')}</small>
                         {strategy && (
                             <p>
                                 <strong>{fixed_stake ? localize('No martingale') : strategy.display_name}</strong>

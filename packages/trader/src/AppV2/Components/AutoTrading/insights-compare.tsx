@@ -24,11 +24,6 @@ const contracts = [
     'DIGITUNDER',
     'DIGITMATCH',
     'DIGITDIFF',
-    '1',
-    '2',
-    '3',
-    '4',
-    '5',
 ];
 
 export const candidateLabel = (candidate: string) => {

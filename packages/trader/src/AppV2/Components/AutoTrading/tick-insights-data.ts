@@ -179,6 +179,30 @@ const sendInsightRequest = async (
     throw new InsightRateLimitError();
 };
 
+export const getLiveInsightQuote = async (
+    send: (payload: Record<string, unknown>) => Promise<TMarketData>,
+    { symbol, currency, stake, ticks, candidate }: {
+        symbol: string; currency: string; stake: number; ticks: number; candidate: string;
+    },
+    signal: AbortSignal
+) => {
+    const response = await waitForInsightRequest(
+        sendInsightRequest(send, {
+            proposal: 1,
+            amount: stake,
+            basis: 'stake',
+            currency,
+            underlying_symbol: symbol,
+            ...getInsightContract('digital', candidate, ticks),
+        }, signal),
+        'Trade quote timed out'
+    );
+    if (signal.aborted || response.error || !response.proposal) return null;
+    const ask = Number(response.proposal.ask_price);
+    const payout = Number(response.proposal.payout);
+    return ask > 0 && Number.isFinite(payout) && payout > ask ? { stake: ask, payout } : null;
+};
+
 export const getInsightMarkets = async (
     send: (payload: Record<string, unknown>) => Promise<TMarketData>,
     signal: AbortSignal
@@ -189,44 +213,6 @@ export const getInsightMarkets = async (
         symbol: item.underlying_symbol,
         label: item.name || item.display_name || item.underlying_symbol,
     }));
-};
-
-export const compareInsightMarkets = async (
-    send: Parameters<typeof compareRecentTicks>[0],
-    options: Parameters<typeof compareRecentTicks>[1],
-    markets: string[],
-    signal: AbortSignal,
-    onProgress: (scanned: number) => void
-): Promise<TTickInsights | null> => {
-    const reports: TTickInsights[] = [];
-    let next = 0;
-    let scanned = 0;
-    let locked = false;
-    await Promise.all(
-        Array.from({ length: Math.min(4, markets.length) }, async () => {
-            while (!signal.aborted && !locked && next < markets.length) {
-                const symbol = markets[next++];
-                try {
-                    const report = await waitForInsightRequest(
-                        compareRecentTicks(send, { ...options, symbol }, signal),
-                        'Instrument comparison timed out'
-                    );
-                    if (!report) locked = true;
-                    else reports.push({ ...report, rows: report.rows.map(row => ({ ...row, symbol })) });
-                } catch (error) {
-                    if (error instanceof InsightRateLimitError || markets.length === 1) throw error;
-                }
-                if (!signal.aborted) onProgress(++scanned);
-            }
-        })
-    );
-    if (locked || signal.aborted) return null;
-    const latest = reports.reduce<TTickInsights | undefined>(
-        (result, report) => (!result || report.lastTick > result.lastTick ? report : result),
-        undefined
-    );
-    if (!latest) throw new Error('No instrument history could be loaded');
-    return { ...latest, marketsScanned: markets.length, rows: reports.flatMap(report => report.rows) };
 };
 
 export const compareRecentTicks = async (

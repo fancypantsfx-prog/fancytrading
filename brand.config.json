@@ -16,7 +16,8 @@
     },
     "signup_url": {
         "production": "https://home.deriv.com/dashboard/signup",
-        "staging": "https://staging-home.deriv.com/dashboard/signup"
+        "staging": "https://staging-home.deriv.com/dashboard/signup",
+        "production_referral_token": "Z6DHZVA754JP"
     },
     "deposit_url": {
         "staging": "https://staging.fancytrading.org/transfer",

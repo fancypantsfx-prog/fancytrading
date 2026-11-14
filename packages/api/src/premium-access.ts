@@ -29,3 +29,10 @@ export const fetchTickInsights = async <T>(input: object, signal: AbortSignal): 
     if (!response.ok) throw new Error('Unable to analyze ticks');
     return response.json();
 };
+
+export const fetchStrategyFinder = async <T>(settings: URLSearchParams, signal: AbortSignal): Promise<T | null> => {
+    const response = await requestPremium(`tick-insights/scan?${settings}`, signal);
+    if (response.status === 403) return null;
+    if (!response.ok) throw new Error('Cached market data is unavailable');
+    return response.json();
+};

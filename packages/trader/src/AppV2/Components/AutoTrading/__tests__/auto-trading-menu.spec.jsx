@@ -1,6 +1,6 @@
 import React from 'react';
 import { configure, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { fetchPremiumAccess, fetchTickInsights } from '@deriv/api';
+import { fetchPremiumAccess, fetchStrategyFinder } from '@deriv/api';
 import { processPurchase } from 'Stores/Modules/Trading/Actions/purchase';
 import AutoTrading from '../auto-trading';
 import { FancyTradingDialogContext } from '../fancy-trading-dialog-context';
@@ -72,7 +72,7 @@ const mockHost = {
     ui: { is_switching_account: false },
 };
 jest.mock('mobx-react-lite', () => ({ observer: (component) => component }));
-jest.mock('@deriv/api', () => ({ fetchPremiumAccess: jest.fn(), fetchTickInsights: jest.fn() }));
+jest.mock('@deriv/api', () => ({ fetchPremiumAccess: jest.fn(), fetchStrategyFinder: jest.fn() }));
 jest.mock('@deriv/shared', () => ({
     getPlatformLogo: () => 'brand/platform-logo.svg',
     useWS: () => mockWS,
@@ -138,7 +138,7 @@ beforeEach(() => {
     processPurchase.mockReset().mockResolvedValue({ buy: { contract_id: 12345 } });
     localStorage.clear();
     fetchPremiumAccess.mockReset().mockResolvedValue({ access: 'free' });
-    fetchTickInsights.mockReset();
+    fetchStrategyFinder.mockReset();
     mockQuotePayout = 18;
     mockStrategyListError = undefined;
     mockHost.client.loginid = 'VRTC123';
@@ -446,24 +446,12 @@ it('requires positive TP and SL with the actual live strategy schema', async () 
 });
 
 const reviewFancyTrade = async (candidate = 'CALL', automatic = true, recoverStatus = false) => {
-    const sample = { hits: 30, count: 39 };
-    fetchTickInsights.mockResolvedValue({
+    fetchStrategyFinder.mockResolvedValue({
         access: { access: 'free' },
-        currency: 'USD',
         ticks: 5,
-        firstTick: 1800000000,
-        lastTick: 1800000399,
-        rows: [
-            {
-                candidate,
-                stake: 10,
-                payout: candidate === 'CALL' ? 18 : 11.592740743,
-                estimated: candidate !== 'CALL',
-                older: sample,
-                recent: sample,
-                historical: { hits: 60, count: 78 },
-            },
-        ],
+        updatedAt: Date.now(),
+        marketsScanned: 1,
+        rows: [{ candidate, symbol: 'R_100', historical: { hits: 60, count: 78 } }],
     });
     render(
         <FancyTradingDialogContext.Provider value={{ open: true, setOpen: jest.fn() }}>
@@ -471,9 +459,13 @@ const reviewFancyTrade = async (candidate = 'CALL', automatic = true, recoverSta
         </FancyTradingDialogContext.Provider>
     );
     await waitReady();
-    if (candidate !== 'CALL')
-        fireEvent.change(await screen.findByLabelText('Contract group'), { target: { value: 'accumulator' } });
-    if (automatic) fireEvent.change(await screen.findByLabelText(/Run stop loss/), { target: { value: '25' } });
+    const panel = within(await screen.findByRole('dialog', { name: 'FancyTrading' }));
+    if (automatic) {
+        fireEvent.click(await panel.findByRole('button', { name: 'Automatic settings' }));
+        const settings = within(screen.getByRole('dialog', { name: 'Automatic settings' }));
+        fireEvent.change(settings.getByLabelText(/Run stop loss/), { target: { value: '25' } });
+        fireEvent.click(settings.getByRole('button', { name: 'Done' }));
+    }
     fireEvent.click(screen.getByRole('button', { name: 'Scan instruments' }));
     if (recoverStatus) {
         await screen.findByText('Strategy list temporarily unavailable');
@@ -481,39 +473,22 @@ const reviewFancyTrade = async (candidate = 'CALL', automatic = true, recoverSta
         fireEvent.click(await screen.findByRole('button', { name: 'Refresh automatic status' }));
     }
     const review = await screen.findByRole('button', {
-        name: automatic ? (candidate === 'CALL' ? 'Review Rise' : 'Review 3% growth') : 'Buy Rise once',
+        name: automatic ? 'Review automatic' : 'Get live quote',
     });
     await waitFor(() => expect(review).toBeEnabled());
     fireEvent.click(review);
+    await screen.findByRole('region', { name: automatic ? 'Review automatic run' : 'Review one contract' });
     expect(mockSend.mock.calls.some(([request]) => request.auto_start)).toBe(false);
 };
 
-it('starts the reviewed accumulator on confirmation with a fixed stake and separate contract and run limits', async () => {
-    mockStrategy.supported_contract_types.push('ACCU');
-    await reviewFancyTrade('3');
-    const confirm = screen.getByRole('button', { name: 'Confirm and start run' });
-    fireEvent.click(confirm);
-    fireEvent.click(confirm);
-    await screen.findByText(/Automatic run new-run started/);
-
-    expect(mockSend.mock.calls.filter(([request]) => request.auto_start)).toEqual([
-        [
-            {
-                auto_start: 1,
-                strategy_id: 'martingale',
-                contract_template: {
-                    contract_type: 'ACCU',
-                    currency: 'USD',
-                    underlying_symbol: 'R_100',
-                    amount: 10,
-                    basis: 'stake',
-                    growth_rate: 0.03,
-                    limit_order: { take_profit: 1.59 },
-                },
-                strategy_parameters: { multiplier: 1, stop_loss: 25 },
-            },
-        ],
-    ]);
+it('omits accumulators from the FancyTrading contract menu', async () => {
+    render(
+        <FancyTradingDialogContext.Provider value={{ open: true, setOpen: jest.fn() }}>
+            <AutoTrading />
+        </FancyTradingDialogContext.Provider>
+    );
+    expect(await screen.findByRole('option', { name: 'Rise / Fall' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /Accumulator/ })).toBeNull();
 });
 
 it.each([

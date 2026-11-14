@@ -1,5 +1,6 @@
 const DerivAPIBasic = require('@deriv/deriv-api/dist/DerivAPIBasic');
 const { getAccountType, cloneObject, State, getApiV4BaseUrl } = require('@deriv/shared');
+const { fetchOTP } = require('../../Services/accounts-api');
 const SocketCache = require('./socket_cache');
 const APIMiddleware = require('./api_middleware');
 
@@ -26,9 +27,13 @@ const BinarySocketBase = (() => {
         return `${base.replace(/^https?:\/\//, 'wss://')}/trading/v1/options/ws/public`;
     };
     let configured_ws_url = null;
+    let needs_fresh_otp = false;
+    let pending_otp_request;
 
     const setWSUrl = url => {
         configured_ws_url = url;
+        needs_fresh_otp = false;
+        pending_otp_request = undefined;
         // Switching to an authenticated URL — treat the next onOpen as an initial connection
         // so setIsAuthorize(false) is called correctly regardless of prior public socket state.
         if (url) is_connected_before = false;
@@ -60,7 +65,7 @@ const BinarySocketBase = (() => {
     };
 
     const closeAndOpenNewConnection = () => {
-        if (binary_socket) {
+        if (hasReadyState(0, 1, 2)) {
             close();
             is_switching_socket = true;
         }
@@ -95,7 +100,49 @@ const BinarySocketBase = (() => {
               };
     };
 
+    const handleConnectionError = error => {
+        // eslint-disable-next-line no-console
+        console.error('WebSocket connection failed:', error);
+        reconnect_attempt_count++;
+        if (reconnect_attempt_count >= 3 && typeof config.onConnectionError === 'function') {
+            config.onConnectionError(error);
+            reconnect_attempt_count = 0;
+        }
+    };
+
     const openNewConnection = () => {
+        if (!isClose() || pending_otp_request) return;
+
+        if (!needs_fresh_otp) {
+            connect();
+            return;
+        }
+
+        const account_id = sessionStorage.getItem('active_loginid');
+        if (!account_id) return;
+
+        const request = fetchOTP(account_id);
+        pending_otp_request = request;
+        const isCurrentRequest = () =>
+            pending_otp_request === request && sessionStorage.getItem('active_loginid') === account_id;
+
+        request
+            .then(ws_url => {
+                if (!isCurrentRequest() || !config.isOnline()) return;
+                configured_ws_url = ws_url;
+                connect();
+            })
+            .catch(error => {
+                if (!isCurrentRequest() || !config.isOnline()) return;
+                handleConnectionError(error);
+                config.wsEvent('close');
+            })
+            .finally(() => {
+                if (pending_otp_request === request) pending_otp_request = undefined;
+            });
+    };
+
+    const connect = () => {
         const mock_server_config = getMockServerConfig();
         const session_id = mock_server_config?.session_id || '';
 
@@ -103,22 +150,10 @@ const BinarySocketBase = (() => {
 
         if (isClose()) {
             is_disconnect_called = false;
+            needs_fresh_otp = Boolean(configured_ws_url);
             binary_socket = new WebSocket(getSocketUrl(session_id));
 
-            // Add error event listener for connection failures
-            binary_socket.addEventListener('error', error_event => {
-                // eslint-disable-next-line no-console
-                console.error('WebSocket error:', error_event);
-
-                // Increment reconnect attempt counter
-                reconnect_attempt_count++;
-
-                // Throw error after 3 reconnect attempts
-                if (reconnect_attempt_count >= 3 && typeof config.onConnectionError === 'function') {
-                    config.onConnectionError(error_event);
-                    reconnect_attempt_count = 0; // Reset counter after throwing error
-                }
-            });
+            binary_socket.addEventListener('error', handleConnectionError);
 
             deriv_api = new DerivAPIBasic({
                 connection: binary_socket,

@@ -270,6 +270,11 @@ export const getSignupUrl = (): string => {
     return substituteDerivDomain(isProduction() ? signup.production : signup.staging);
 };
 
+export const getSignupReferralToken = (): string => {
+    const signup = config_data.signup_url as { production_referral_token?: string } | undefined;
+    return isProduction() ? signup?.production_referral_token ?? '' : '';
+};
+
 export const isFeatureEnabled = (feature: 'dark_mode' | 'language_switcher'): boolean => {
     const features = (config_data as Record<string, unknown>).features as Record<string, boolean> | undefined;
     return features?.[feature] ?? false;

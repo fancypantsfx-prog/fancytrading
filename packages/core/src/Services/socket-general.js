@@ -14,6 +14,7 @@ const BinarySocketGeneral = (() => {
     // Removed session management variables - not needed for trading app
 
     let responseTimeoutErrorTimer = null;
+    let connection_error;
 
     const onDisconnect = () => {
         clearTimeout(responseTimeoutErrorTimer);
@@ -21,11 +22,10 @@ const BinarySocketGeneral = (() => {
     };
 
     const onConnectionError = () => {
-        localStorage.removeItem('active_loginid');
-
         common_store.setError(true, {
             message: localize('Connection failed. Please refresh this page to continue.'),
         });
+        connection_error = common_store.error;
     };
 
     const onOpen = is_ready => {
@@ -43,6 +43,10 @@ const BinarySocketGeneral = (() => {
         }, 30000);
 
         if (is_ready) {
+            if (connection_error && common_store.error === connection_error) {
+                common_store.setError(false, null);
+            }
+            connection_error = undefined;
             ServerTime.init(() => common_store.setServerTime(ServerTime.get()));
             common_store.setIsSocketOpened(true);
         }

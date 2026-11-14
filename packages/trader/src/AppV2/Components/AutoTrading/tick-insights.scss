@@ -70,6 +70,17 @@
         }
     }
 
+    &__signal-panel {
+        display: grid;
+        gap: 12px;
+        min-width: 0;
+        padding: 12px;
+
+        p {
+            margin-block: 8px;
+        }
+    }
+
     &__review {
         display: grid;
         gap: 12px;

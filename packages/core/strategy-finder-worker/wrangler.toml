@@ -1,0 +1,12 @@
+name = "fancytrading-strategy-finder"
+main = "worker.mjs"
+compatibility_date = "2025-10-01"
+workers_dev = false
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+# Add the same KV namespace as STRATEGY_FINDER_CACHE in the Pages project.
+[[kv_namespaces]]
+binding = "STRATEGY_FINDER_CACHE"
+id = "<strategy-finder-kv-namespace-id>"

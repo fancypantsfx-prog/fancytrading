@@ -25,6 +25,12 @@ it.each([
 ])('waits for a streak and stops at the trade limit for $candidate (demo $demo)', async ({ demo, candidate }) => {
     jest.clearAllMocks();
     localStorage.clear();
+    HTMLDialogElement.prototype.showModal = function () {
+        this.setAttribute('open', '');
+    };
+    HTMLDialogElement.prototype.close = function () {
+        this.removeAttribute('open');
+    };
     Object.defineProperty(navigator, 'locks', {
         configurable: true,
         value: { request: (_key: string, _options: object, callback: (lock: object) => Promise<void>) => callback({}) },
@@ -37,6 +43,7 @@ it.each([
         <SignalStrategy
             symbol='R_100'
             currency='USD'
+            contract={candidate.split(':')[0]}
             account={{ id: 'CR123', demo }}
             initialStake={10}
             initialTicks={1}
@@ -48,11 +55,13 @@ it.each([
     await waitFor(() => expect(mockWS.subscribeTicks).toHaveBeenCalled(), { timeout: 3000 });
     emit(100, 1);
     if (demo) {
-        fireEvent.change(screen.getByLabelText('What to buy'), { target: { value: 'match' } });
-        fireEvent.change(screen.getByLabelText('Which side'), { target: { value: 'second' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Rules' }));
         fireEvent.change(screen.getByLabelText('Digit'), { target: { value: '7' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Done' }));
     }
+    fireEvent.click(screen.getByRole('button', { name: 'Automatic settings' }));
     fireEvent.change(screen.getByLabelText('Maximum trades'), { target: { value: '1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
     const start = screen.getByRole('button', { name: demo ? 'Start on demo' : 'Start on real account' });
     if (!demo) {
         expect(start).toBeDisabled();

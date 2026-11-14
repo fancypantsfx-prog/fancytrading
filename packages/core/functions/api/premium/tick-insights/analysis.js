@@ -37,6 +37,6 @@ export const onRequestPost = async ({ request, env }) => {
     }
     if (access.access === 'locked') return premiumResponse({ error: 'Premium access is required' }, 403);
 
-    const result = analyzeTickInsights(input);
+    const result = analyzeTickInsights({ ...input, historyOnly: false });
     return result ? premiumResponse({ ...result, access }) : premiumResponse({ error: 'Invalid tick sample' }, 400);
 };
