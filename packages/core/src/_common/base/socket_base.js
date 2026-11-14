@@ -256,7 +256,7 @@ const BinarySocketBase = (() => {
         subscribe({ proposal_open_contract: 1, ...(contract_id && { contract_id }), ...(passthrough && { passthrough }) }, cb);
 
     const subscribeTicks = (symbol, cb, passthrough) =>
-        subscribe({ ticks: symbol, ...(passthrough && { passthrough }) }, cb);
+        subscribe({ ticks: symbol, subscribe: 1, ...(passthrough && { passthrough }) }, cb);
 
     const subscribeTicksHistory = (request_object, cb) => subscribe(request_object, cb);
 

@@ -1,5 +1,5 @@
 import { TICK_SAMPLE_SIZE } from '../premium/tick-insights.mjs';
-import { finderContracts, SCAN_CACHE_KEY, SCAN_MAX_AGE_MS } from '../premium/strategy-finder.mjs';
+import { finderContracts, SCAN_CACHE_KEY } from '../premium/strategy-finder.mjs';
 
 const DERIV_PUBLIC_WS = 'https://api.derivws.com/trading/v1/options/ws/public';
 const REQUEST_SPACING_MS = 500;
@@ -57,7 +57,7 @@ export const warmStrategyFinder = async (cache, connect = openMarketData) => {
             if (!Array.isArray(list.active_symbols)) throw new Error('Deriv instrument list unavailable');
             for (const item of list.active_symbols) {
                 const symbol = item.underlying_symbol;
-                if (!symbol || item.exchange_is_open === 0 || item.is_trading_suspended === 1) continue;
+                if (!symbol) continue;
                 const market = activeInstruments.get(symbol) ?? { ...item, groups: [] };
                 market.groups.push(group);
                 activeInstruments.set(symbol, market);
@@ -68,11 +68,13 @@ export const warmStrategyFinder = async (cache, connect = openMarketData) => {
         const previous = await cache.get(SCAN_CACHE_KEY, 'json');
         const cachedMarkets = new Map((previous?.markets ?? []).map(market => [market.symbol, market]));
         // Refresh the oldest markets first so a partial refresh cannot starve later symbols.
-        const instruments = [...activeInstruments.values()].sort(
-            (a, b) =>
-                (cachedMarkets.get(a.underlying_symbol)?.collectedAt ?? 0) -
-                (cachedMarkets.get(b.underlying_symbol)?.collectedAt ?? 0)
-        );
+        const instruments = [...activeInstruments.values()]
+            .filter(item => item.exchange_is_open !== 0 && item.is_trading_suspended !== 1)
+            .sort(
+                (a, b) =>
+                    (cachedMarkets.get(a.underlying_symbol)?.collectedAt ?? 0) -
+                    (cachedMarkets.get(b.underlying_symbol)?.collectedAt ?? 0)
+            );
         for (const item of instruments) {
             const symbol = item.underlying_symbol;
             await pause(REQUEST_SPACING_MS);
@@ -107,14 +109,13 @@ export const warmStrategyFinder = async (cache, connect = openMarketData) => {
             cachedMarkets.delete(symbol);
         }
 
-        const now = Date.now();
+        if (!markets.length) throw new Error('No new Deriv tick windows collected');
+        const updatedAt = Date.now();
         for (const market of cachedMarkets.values()) {
             const active = activeInstruments.get(market.symbol);
-            if (active && now - market.collectedAt <= SCAN_MAX_AGE_MS)
-                markets.push({ ...market, groups: active.groups });
+            if (active) markets.push({ ...market, groups: active.groups });
         }
-        if (!markets.length) throw new Error('No recent Deriv tick windows available');
-        await cache.put(SCAN_CACHE_KEY, JSON.stringify({ updatedAt: now, markets }), { expirationTtl: 1800 });
+        await cache.put(SCAN_CACHE_KEY, JSON.stringify({ updatedAt, markets }));
     } finally {
         connection.close();
     }

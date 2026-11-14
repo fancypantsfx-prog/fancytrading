@@ -2,6 +2,7 @@ import React from 'react';
 import { localize } from '@deriv-com/translations';
 import { getDecimalPlaces, useWS } from '@deriv/shared';
 import {
+    InsightRateLimitError,
     isInsightRateLimit,
     noteInsightRateLimit,
     waitForInsightRequest,
@@ -19,10 +20,12 @@ import type {
     TSignalTick,
     TWatch,
 } from './signal-rule';
+import MenuHelp from './menu-help';
 import { candidateLabel } from './insights-compare';
 
 const passthrough = { fancytrading_insights: true };
 class StaleSignal extends Error {}
+class SettlementPending extends Error {}
 type TAfter = 'reset' | 'repeat' | 'once';
 type TSubscription = { unsubscribe: () => void };
 type TRun = {
@@ -51,6 +54,13 @@ type TProps = {
     buy: (trade: TInsightTrade, signal: AbortSignal, beforePurchase: () => void) => Promise<string>;
 };
 
+const watchesByFamily: Record<TSignalFamily, readonly [TWatch, TWatch]> = {
+    parity: ['even', 'odd'],
+    direction: ['rise', 'fall'],
+    match: ['selected', 'different'],
+    barrier: ['over', 'under'],
+};
+
 const SignalStrategy = ({ symbol, currency, account, contract, initialStake, initialTicks, block, buy }: TProps) => {
     const ws = useWS();
     const family =
@@ -65,7 +75,8 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
     const [digitChoice, setDigitChoice] = React.useState<TDigitChoice>('fixed');
     const [digit, setDigit] = React.useState(5);
     const [condition, setCondition] = React.useState<TCondition>('streak');
-    const [watch, setWatch] = React.useState<TWatch>('odd');
+    const watchOptions = watchesByFamily[family];
+    const [watch, setWatch] = React.useState<TWatch>(watchOptions[Number(contract === signalContracts[family][1])]);
     const [watchDigit, setWatchDigit] = React.useState(5);
     const [pattern, setPattern] = React.useState('7777');
     const [comparison, setComparison] = React.useState<TComparison>('minimum');
@@ -89,6 +100,9 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
     const starting = React.useRef(false);
     const processTick = React.useRef<(ticks: TSignalTick[]) => void>();
     const latestTicks = React.useRef<TSignalTick[]>([]);
+    const feedVersion = React.useRef(0);
+    const tradeBlock = React.useRef(block);
+    tradeBlock.current = block;
     const marker = account && 'fancytrading-rule-purchase:' + account.id;
     const settings = {
         family,
@@ -96,8 +110,13 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
         digitChoice,
         digit,
         condition,
-        watch,
-        watchDigit,
+        watch:
+            family === 'match' && digitChoice === 'random'
+                ? watch === 'selected'
+                    ? ('digit' as const)
+                    : ('different_digit' as const)
+                : watch,
+        watchDigit: family === 'barrier' ? digit : watchDigit,
         target: Number(target),
         pattern,
         comparison,
@@ -113,17 +132,22 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
     const decision = evaluateSignalRule(history, displayedRule, run.current?.count ?? 0);
     const frequencyTarget =
         comparison === 'range' ? `${target}%–${upper}%` : `${comparison === 'maximum' ? '≤' : '≥'} ${target}%`;
-    const watchLabels = {
+    const watchLabels: Record<TWatch, string> = {
         even: localize('Even digits'),
         odd: localize('Odd digits'),
         rise: localize('Rising prices'),
         fall: localize('Falling prices'),
         digit: localize('A specific digit'),
-        over: localize('Digits above a barrier'),
-        under: localize('Digits below a barrier'),
-        selected: localize('The digit selected for the next trade'),
+        different_digit: localize('Digits differing from the watch digit'),
+        over: localize('Digits above the barrier'),
+        under: localize('Digits below the barrier'),
+        selected: localize('Digits matching the selected digit'),
+        different: localize('Digits differing from the selected digit'),
     };
-    const canWatchSelected = family === 'barrier' || (family === 'match' && digitChoice !== 'random');
+    const contractLabel = candidateLabel(
+        choice === 'first' || choice === 'second' ? signalContracts[family][Number(choice === 'second')] : contract
+    );
+    const rulesTitle = localize('{{contract}} rules', { contract: contractLabel });
     const money = (amount: number) => amount.toLocaleString(undefined, { style: 'currency', currency });
     const stop = React.useCallback((message: string) => {
         const current = run.current;
@@ -135,24 +159,20 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
         setStatus(message);
     }, []);
 
-    React.useEffect(() => {
-        if (block && run.current) stop(block);
-    }, [block, stop]);
-
-    const settle = async (id: string, signal: AbortSignal) => {
+    const checkSettlement = async (id: string, signal: AbortSignal) => {
         await waitForInsightRequestSlot(signal);
         let subscription: TSubscription | undefined;
         let timer: ReturnType<typeof setTimeout> | undefined;
         let cancel: () => void = () => undefined;
+        let reconnect: () => void = () => undefined;
         try {
             return await new Promise<number>((resolve, reject) => {
                 cancel = () => reject(new Error(localize('Run stopped. Check Positions for any open trade.')));
                 if (signal.aborted) return cancel();
                 signal.addEventListener('abort', cancel, { once: true });
-                timer = setTimeout(
-                    () => reject(new Error(localize('Settlement could not be confirmed. Check Positions or Reports.'))),
-                    120000
-                );
+                reconnect = () => reject(new SettlementPending());
+                ws.setOnReconnect?.(reconnect);
+                timer = setTimeout(reconnect, 30000);
                 subscription = ws.subscribeProposalOpenContract(
                     Number(id),
                     (response: {
@@ -164,8 +184,7 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                         };
                     }) => {
                         if (isInsightRateLimit(response)) noteInsightRateLimit();
-                        if (response.error)
-                            return reject(new Error(response.error.message || localize('Could not check settlement.')));
+                        if (response.error) return reconnect();
                         const trade = response.proposal_open_contract;
                         if (!trade?.is_sold || Number(trade.contract_id) !== Number(id)) return;
                         const profit = trade.profit;
@@ -180,14 +199,46 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
             });
         } finally {
             signal.removeEventListener('abort', cancel);
+            ws.removeOnReconnect?.(reconnect);
             clearTimeout(timer);
-            subscription?.unsubscribe();
+            try {
+                subscription?.unsubscribe();
+            } catch {
+                // A disconnected subscription can no longer deliver settlement.
+            }
         }
+    };
+
+    const settle = async (id: string, signal: AbortSignal) => {
+        while (!signal.aborted) {
+            try {
+                if (ws.hasReadyState && !ws.hasReadyState(1)) throw new SettlementPending();
+                return await checkSettlement(id, signal);
+            } catch (error) {
+                if (signal.aborted || !(error instanceof SettlementPending || error instanceof InsightRateLimitError))
+                    throw error;
+                setStatus(localize('Run paused. Checking the open trade before continuing�'));
+                await new Promise<void>(resolve => {
+                    const finish = () => {
+                        clearTimeout(timer);
+                        signal.removeEventListener('abort', finish);
+                        resolve();
+                    };
+                    const timer = setTimeout(finish, error instanceof InsightRateLimitError ? 60000 : 5000);
+                    signal.addEventListener('abort', finish, { once: true });
+                });
+            }
+        }
+        throw new SettlementPending();
     };
 
     processTick.current = nextTicks => {
         const current = run.current;
         if (!current || !marker) return;
+        if (tradeBlock.current) {
+            if (!current.pending) setStatus(localize('Run paused. {{reason}}', { reason: tradeBlock.current }));
+            return;
+        }
         const rule = ruleFor(current);
         const next = evaluateSignalRule(nextTicks, rule, current.count);
         if (!next.ready) {
@@ -208,6 +259,8 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
         current.pending = true;
         current.armed = false;
         const deadline = performance.now() + 4000;
+        const quoteFeedVersion = feedVersion.current;
+        let purchaseSent = false;
         const candidate = next.candidates[Math.floor(Math.random() * next.candidates.length)];
         const signal = current.controller.signal;
         setStatus(localize('Requesting a quote for {{contract}}…', { contract: candidateLabel(candidate) }));
@@ -230,6 +283,8 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                         if (
                             signal.aborted ||
                             document.hidden ||
+                            tradeBlock.current ||
+                            feedVersion.current !== quoteFeedVersion ||
                             performance.now() > deadline ||
                             !latest.ready ||
                             !latest.candidates.includes(candidate)
@@ -238,6 +293,7 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                         if (localStorage.getItem(marker))
                             throw new Error(localize('Check the previous trade in Positions or Reports first.'));
                         localStorage.setItem(marker, 'pending');
+                        purchaseSent = true;
                     }
                 );
                 if (signal.aborted) return;
@@ -262,7 +318,15 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                     stop(localize('Run finished. One of your limits was reached.'));
                 else setStatus(localize('Waiting for the next tick.'));
             } catch (error) {
-                if (error instanceof StaleSignal && !signal.aborted) {
+                if (
+                    !signal.aborted &&
+                    !purchaseSent &&
+                    (error instanceof StaleSignal ||
+                        error instanceof InsightRateLimitError ||
+                        tradeBlock.current ||
+                        feedVersion.current !== quoteFeedVersion ||
+                        (ws.hasReadyState && !ws.hasReadyState(1)))
+                ) {
                     current.pending = false;
                     current.armed = true;
                     setStatus(localize('The signal changed before purchase. Waiting for a fresh signal.'));
@@ -286,79 +350,131 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
         let lastTick = '';
         let lastTickAt = performance.now();
         let ticks: TSignalTick[] = [];
+        let generation = 0;
+        let retry: ReturnType<typeof setTimeout> | undefined;
+
+        const reconnect = (message?: string, delay = 0) => {
+            generation++;
+            feedVersion.current++;
+            clearTimeout(retry);
+            try {
+                subscription?.unsubscribe();
+            } catch {
+                // The old subscription may already be closed.
+            }
+            subscription = undefined;
+            if (run.current) setStatus(localize('Run paused. Waiting for fresh ticks�'));
+            else if (message) setStatus(message);
+            lastTick = '';
+            lastTickAt = performance.now();
+            ticks = [];
+            latestTicks.current = [];
+            setHistory([]);
+            retry = setTimeout(() => void subscribe(), delay);
+        };
+
+        const subscribe = async () => {
+            const attempt = generation;
+            const isCurrent = () => !controller.signal.aborted && attempt === generation;
+            try {
+                if (ws.hasReadyState && !ws.hasReadyState(1)) {
+                    reconnect(undefined, 5000);
+                    return;
+                }
+                if (precision === undefined) {
+                    await waitForInsightRequestSlot(controller.signal);
+                    if (!isCurrent()) return;
+                    const response = await waitForInsightRequest(
+                        ws.send({ ticks_history: symbol, end: 'latest', count: 1, style: 'ticks', passthrough }),
+                        localize('Could not load market precision.')
+                    );
+                    if (!isCurrent()) return;
+                    if (isInsightRateLimit(response)) {
+                        noteInsightRateLimit();
+                        reconnect(localize('Deriv is limiting requests. Retrying the live feed in a minute.'), 60000);
+                        return;
+                    }
+                    precision = response.pip_size;
+                }
+                await waitForInsightRequestSlot(controller.signal);
+                if (!isCurrent()) return;
+                const next = ws.subscribeTicks(
+                    symbol,
+                    (message: {
+                        error?: { message?: string };
+                        tick?: {
+                            quote: number | string;
+                            pip_size?: number;
+                            epoch: number;
+                            symbol?: string;
+                            underlying_symbol?: string;
+                        };
+                    }) => {
+                        if (!isCurrent()) return;
+                        if (message.error) {
+                            const limited = isInsightRateLimit(message);
+                            if (limited) noteInsightRateLimit();
+                            reconnect(localize('The tick stream stopped. Reconnecting�'), limited ? 60000 : 5000);
+                            return;
+                        }
+                        const tick = message.tick;
+                        const market = tick?.symbol ?? tick?.underlying_symbol;
+                        if (!tick || (market && market !== symbol)) return;
+                        const decimals = tick.pip_size ?? precision;
+                        const price = Number(tick.quote);
+                        if (
+                            decimals === undefined ||
+                            !Number.isInteger(decimals) ||
+                            decimals < 0 ||
+                            decimals > 10 ||
+                            !Number.isFinite(price)
+                        )
+                            return;
+                        const key = tick.epoch + ':' + tick.quote;
+                        if (lastTick === key) return;
+                        if (!ticks.length && !run.current) setStatus('');
+                        lastTick = key;
+                        lastTickAt = performance.now();
+                        ticks = [...ticks.slice(-24), { price, digit: Number(price.toFixed(decimals).slice(-1)) }];
+                        latestTicks.current = ticks;
+                        setHistory(ticks);
+                        processTick.current?.(ticks);
+                    },
+                    passthrough
+                );
+                if (isCurrent()) {
+                    subscription = next;
+                    lastTickAt = performance.now();
+                } else next?.unsubscribe();
+            } catch (error) {
+                if (!isCurrent()) return;
+                const limited = isInsightRateLimit(error) || error instanceof InsightRateLimitError;
+                if (isInsightRateLimit(error)) noteInsightRateLimit();
+                reconnect(localize('The live tick feed is unavailable. Reconnecting�'), limited ? 60000 : 5000);
+            }
+        };
+
         const watchdog = setInterval(() => {
-            if (run.current && performance.now() - lastTickAt > 15000)
-                stop(localize('Live ticks stopped arriving. Check your connection.'));
+            if (subscription && performance.now() - lastTickAt > 15000)
+                reconnect(localize('Live ticks stopped arriving. Reconnecting�'), 1000);
         }, 5000);
+        const onSocketReconnect = () => reconnect(localize('Connection restored. Waiting for fresh ticks�'));
+        ws.setOnReconnect?.(onSocketReconnect);
         const visibility = () => {
             if (document.hidden && run.current)
                 stop(localize('Run stopped when the tab was hidden. Open trades can still settle.'));
         };
         document.addEventListener('visibilitychange', visibility);
-        const watch = async () => {
-            await waitForInsightRequestSlot(controller.signal);
-            const response = (await waitForInsightRequest(
-                ws.send({ ticks_history: symbol, end: 'latest', count: 1, style: 'ticks', passthrough }),
-                localize('Could not load market precision.')
-            )) as { pip_size?: number };
-            if (isInsightRateLimit(response)) {
-                noteInsightRateLimit();
-                throw new Error(localize('Deriv is limiting requests. Reopen this panel in a minute.'));
-            }
-            precision = response.pip_size;
-            await waitForInsightRequestSlot(controller.signal);
-            if (controller.signal.aborted) return;
-            subscription = ws.subscribeTicks(
-                symbol,
-                (message: {
-                    error?: { message?: string };
-                    tick?: { quote: number | string; pip_size?: number; epoch: number; symbol?: string };
-                }) => {
-                    if (controller.signal.aborted) return;
-                    if (message.error) {
-                        if (isInsightRateLimit(message)) noteInsightRateLimit();
-                        stop(message.error.message || localize('The tick stream stopped.'));
-                        return;
-                    }
-                    const tick = message.tick;
-                    if (!tick || (tick.symbol && tick.symbol !== symbol)) return;
-                    const decimals = tick.pip_size ?? precision;
-                    if (
-                        decimals === undefined ||
-                        !Number.isInteger(decimals) ||
-                        decimals < 0 ||
-                        decimals > 10 ||
-                        !Number.isFinite(Number(tick.quote))
-                    )
-                        return;
-                    const key = tick.epoch + ':' + tick.quote;
-                    if (lastTick === key) return;
-                    lastTick = key;
-                    lastTickAt = performance.now();
-                    const price = Number(tick.quote);
-                    ticks = [...ticks.slice(-24), { price, digit: Number(price.toFixed(decimals).slice(-1)) }];
-                    latestTicks.current = ticks;
-                    setHistory(ticks);
-                    processTick.current?.(ticks);
-                },
-                passthrough
-            );
-        };
-        void watch().catch(error => {
-            if (!controller.signal.aborted)
-                setStatus(
-                    error instanceof Error && error.message
-                        ? error.message
-                        : localize('The live feed is unavailable. Reopen this panel to reconnect.')
-                );
-        });
+        void subscribe();
         return () => {
             live.current = false;
             controller.abort();
             run.current?.controller.abort();
             run.current?.release();
             run.current = undefined;
+            clearTimeout(retry);
             clearInterval(watchdog);
+            ws.removeOnReconnect?.(onSocketReconnect);
             document.removeEventListener('visibilitychange', visibility);
             subscription?.unsubscribe();
         };
@@ -367,6 +483,7 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
     const start = (event: React.FormEvent) => {
         event.preventDefault();
         if (
+            !latestTicks.current.length ||
             !marker ||
             !account ||
             block ||
@@ -409,7 +526,7 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
         starting.current = true;
         void navigator.locks
             .request(marker, { ifAvailable: true }, async lock => {
-                if (!live.current || document.hidden) return;
+                if (!live.current || !latestTicks.current.length || document.hidden) return;
                 if (!lock) {
                     setStatus(localize('A Signal Strategy run is already open for this account in another tab.'));
                     return;
@@ -461,6 +578,9 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
 
     return (
         <section aria-label={localize('Signal Strategy')}>
+            <h2>
+                {localize('Signal Strategy')} � {contractLabel}
+            </h2>
             <p>
                 {localize(
                     'Choose what to buy and when to buy it. Keep this panel open and visible while the rule runs.'
@@ -485,26 +605,40 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                     <button type='button' aria-haspopup='dialog' onClick={() => rules.current?.showModal()}>
                         {localize('Rules')}
                     </button>
+                    <MenuHelp
+                        label={localize('Rules')}
+                        description={localize(
+                            'Choose which tick movement or digit outcome triggers a trade, and how often it must occur.'
+                        )}
+                    />
                     <button type='button' aria-haspopup='dialog' onClick={() => limits.current?.showModal()}>
                         {localize('Automatic settings')}
                     </button>
+                    <MenuHelp
+                        label={localize('Automatic settings')}
+                        description={localize(
+                            'Set stake, duration, stop loss, take profit and the maximum trades for this run.'
+                        )}
+                    />
                 </div>
-                <dialog ref={rules} className='tick-insights tick-insights__dialog' aria-label={localize('Rules')}>
+                <dialog ref={rules} className='tick-insights tick-insights__dialog' aria-label={rulesTitle}>
                     <fieldset
                         className='tick-insights__fields tick-insights__preset tick-insights__signal-fields'
                         disabled={active}
                     >
-                        <legend>{localize('Trade rule')}</legend>
+                        <legend>{rulesTitle}</legend>
                         <p>
                             {localize('Signal source')} · {localize('Live ticks from {{market}}', { market: symbol })}
                         </p>
                         <label>
-                            {localize('Which side')}
+                            {localize('Contract side')}
                             <select
                                 value={choice}
                                 onChange={event => {
                                     const next = event.target.value as TSignalChoice;
                                     setChoice(next);
+                                    if (next === 'first' || next === 'second')
+                                        setWatch(watchOptions[Number(next === 'second')]);
                                     if (!signalDigits(family, next).includes(digit)) setDigit(5);
                                 }}
                             >
@@ -527,7 +661,6 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                                     value={digitChoice}
                                     onChange={event => {
                                         setDigitChoice(event.target.value as TDigitChoice);
-                                        if (event.target.value === 'random' && watch === 'selected') setWatch('odd');
                                     }}
                                 >
                                     <option value='fixed'>{localize('Use a digit I choose')}</option>
@@ -564,7 +697,9 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                                 <option value='frequency'>
                                     {localize('When a side reaches a share of the last 20 ticks')}
                                 </option>
-                                <option value='pattern'>{localize('After an exact digit sequence')}</option>
+                                {family === 'match' && (
+                                    <option value='pattern'>{localize('After an exact digit sequence')}</option>
+                                )}
                             </select>
                         </label>
                         {(condition === 'streak' || condition === 'frequency') && (
@@ -572,16 +707,18 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                                 <label>
                                     {localize('Watch for')}
                                     <select value={watch} onChange={event => setWatch(event.target.value as TWatch)}>
-                                        {Object.entries(watchLabels)
-                                            .filter(([value]) => value !== 'selected' || canWatchSelected)
-                                            .map(([value, label]) => (
-                                                <option key={value} value={value}>
-                                                    {label}
-                                                </option>
-                                            ))}
+                                        {watchOptions.map(value => (
+                                            <option key={value} value={value}>
+                                                {family === 'match' && digitChoice === 'random'
+                                                    ? value === 'selected'
+                                                        ? localize('Digits matching the watch digit')
+                                                        : watchLabels.different_digit
+                                                    : watchLabels[value]}
+                                            </option>
+                                        ))}
                                     </select>
                                 </label>
-                                {['digit', 'over', 'under'].includes(watch) && (
+                                {family === 'match' && digitChoice === 'random' && (
                                     <label>
                                         {localize('Digit to watch')}
                                         <select
@@ -777,13 +914,13 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                           ? localize('Collecting observations for the 20-tick window…')
                           : displayedRule.condition === 'streak'
                             ? localize('{{side}} streak {{reading}}/{{target}}', {
-                                  side: watchLabels[watch],
+                                  side: watchLabels[displayedRule.watch],
                                   reading: String(decision.reading),
                                   target,
                               })
                             : displayedRule.condition === 'frequency'
                               ? localize('{{side}} · {{reading}}% · Threshold {{threshold}}', {
-                                    side: watchLabels[watch],
+                                    side: watchLabels[displayedRule.watch],
                                     reading: String(decision.reading),
                                     threshold: frequencyTarget,
                                 })

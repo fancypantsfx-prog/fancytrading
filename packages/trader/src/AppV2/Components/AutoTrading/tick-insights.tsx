@@ -14,6 +14,7 @@ import {
     isInsightPresetValid,
 } from './tick-insights-data';
 import type { TInsightRun, TInsightStrategyOption, TInsightTrade, TTickInsights } from './tick-insights-data';
+import MenuHelp from './menu-help';
 import InsightsCompare, { candidateLabel } from './insights-compare';
 import type { TCompareSetup } from './insights-compare';
 import './tick-insights.scss';
@@ -24,13 +25,14 @@ type TInsightRow = TTickInsights['rows'][number];
 const formatMoney = (value: number, currency: string) =>
     value.toLocaleString(undefined, { style: 'currency', currency });
 
-type TFinderRow = Pick<TInsightRow, 'candidate' | 'historical'> & { symbol: string };
+type TFinderRow = Pick<TInsightRow, 'candidate' | 'historical'> & { symbol: string; collectedAt: number };
 type TFinderReport = {
     access: TPremiumAccess;
     rows: TFinderRow[];
     ticks: number;
     updatedAt: number;
     marketsScanned: number;
+    stale: boolean;
 };
 const finderContracts = {
     rise_fall: ['CALL', 'PUT'],
@@ -567,6 +569,12 @@ const InsightsPanel = ({
                 >
                     {localize('Strategy finder')}
                 </button>
+                <MenuHelp
+                    label={localize('Strategy finder')}
+                    description={localize(
+                        'Rank instruments using historical ticks. Select a result to request a live quote.'
+                    )}
+                />
                 <button
                     type='button'
                     aria-pressed={view === 'compare'}
@@ -575,10 +583,20 @@ const InsightsPanel = ({
                 >
                     {localize('Compare')} ({starred.length + 1})
                 </button>
+                <MenuHelp
+                    label={localize('Compare')}
+                    description={localize('Compare selected contracts, instruments and tick durations side by side.')}
+                />
                 {onOpenSignal && (
-                    <button type='button' disabled={busy} onClick={onOpenSignal}>
-                        {localize('Signal Strategy')}
-                    </button>
+                    <>
+                        <button type='button' disabled={busy} onClick={onOpenSignal}>
+                            {localize('Signal Strategy')}
+                        </button>
+                        <MenuHelp
+                            label={localize('Signal Strategy')}
+                            description={localize('Use live ticks to run a trade rule for the selected contract.')}
+                        />
+                    </>
                 )}
             </nav>
             {signalError && <p role='alert'>{signalError}</p>}
@@ -664,6 +682,12 @@ const InsightsPanel = ({
                 <button type='button' aria-haspopup='dialog' onClick={() => setSettingsOpen(true)}>
                     {localize('Automatic settings')}
                 </button>
+                <MenuHelp
+                    label={localize('Automatic settings')}
+                    description={localize(
+                        'Set and save stop loss and take profit for automatic runs reviewed in FancyTrading.'
+                    )}
+                />
                 {settingsOpen && (
                     <dialog
                         ref={settingsDialog}
@@ -775,9 +799,12 @@ const InsightsPanel = ({
                     <p role='status'>
                         {localize('{{count}} instruments � Snapshot updated {{time}}', {
                             count: String(report.marketsScanned),
-                            time: new Date(report.updatedAt).toLocaleTimeString(),
+                            time: new Date(report.updatedAt).toLocaleString(),
                         })}
                     </p>
+                    {report.stale && (
+                        <p role='status'>{localize('Some historical samples are more than 30 minutes old.')}</p>
+                    )}
                     <div
                         className='tick-insights__table'
                         tabIndex={0}

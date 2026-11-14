@@ -1217,7 +1217,7 @@ const AutoTrading = observer(
                             {localize('Back to normal trading')}
                         </button>
                     </header>
-                    {signalContract && !is_market_closed && !store.is_market_closed ? (
+                    {signalContract ? (
                         <SignalStrategy
                             key={String(account_id) + ':' + store.symbol + ':' + store.currency + ':' + signalContract}
                             symbol={store.symbol}
@@ -1226,7 +1226,11 @@ const AutoTrading = observer(
                             initialStake={stake}
                             initialTicks={ticks}
                             contract={signalContract}
-                            block={trade_block || (unconfirmed_buy ? unconfirmed_message : insight_block)}
+                            block={
+                                store.is_market_closed
+                                    ? localize('The selected market is closed.')
+                                    : trade_block || (unconfirmed_buy ? unconfirmed_message : insight_block)
+                            }
                             buy={buyFromInsights}
                         />
                     ) : (

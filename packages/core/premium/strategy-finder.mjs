@@ -1,5 +1,5 @@
 export const SCAN_CACHE_KEY = 'strategy-finder:history:v1';
-export const SCAN_MAX_AGE_MS = 30 * 60 * 1000;
+export const SCAN_STALE_AFTER_MS = 30 * 60 * 1000;
 
 export const finderContracts = {
     rise_fall: ['CALL', 'PUT'],

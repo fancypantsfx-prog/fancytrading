@@ -3,7 +3,17 @@ export type TSignalFamily = 'parity' | 'direction' | 'match' | 'barrier';
 export type TSignalChoice = 'first' | 'second' | 'same' | 'opposite' | 'alternate' | 'random';
 export type TDigitChoice = 'fixed' | 'rarest' | 'frequent' | 'random';
 export type TCondition = 'always' | 'streak' | 'frequency' | 'pattern';
-export type TWatch = 'even' | 'odd' | 'rise' | 'fall' | 'digit' | 'over' | 'under' | 'selected';
+export type TWatch =
+    | 'even'
+    | 'odd'
+    | 'rise'
+    | 'fall'
+    | 'digit'
+    | 'over'
+    | 'under'
+    | 'selected'
+    | 'different'
+    | 'different_digit';
 export type TComparison = 'minimum' | 'maximum' | 'range';
 
 export type TSignalSettings = {
@@ -53,6 +63,9 @@ const watchMatches = (watch: TWatch, tick: TSignalTick, previous: TSignalTick | 
         case 'digit':
         case 'selected':
             return tick.digit === digit;
+        case 'different_digit':
+        case 'different':
+            return tick.digit !== digit;
         case 'over':
             return tick.digit > digit;
         case 'under':
@@ -95,7 +108,8 @@ export const evaluateSignalRule = (ticks: TSignalTick[], settings: TSignalSettin
 
     const startAt = Number(watch === 'rise' || watch === 'fall');
     const eligible = Math.max(0, ticks.length - startAt);
-    const observedDigit = watch === 'selected' ? Number(candidates[0]?.split(':')[1] ?? NaN) : watchDigit;
+    const observedDigit =
+        watch === 'selected' || watch === 'different' ? Number(candidates[0]?.split(':')[1] ?? NaN) : watchDigit;
     const matches = (index: number) => watchMatches(watch, ticks[index], ticks[index - 1], observedDigit);
     const measure = (end: number) => {
         let reading = 0;

@@ -6,6 +6,8 @@ import type { TInsightTrade } from '../tick-insights-data';
 let mockTick: (value: unknown) => void;
 let mockSettlement: (value: unknown) => void;
 const mockWS = {
+    setOnReconnect: jest.fn(),
+    removeOnReconnect: jest.fn(),
     send: jest.fn(async () => ({ pip_size: 0 })),
     subscribeTicks: jest.fn((_symbol, callback) => {
         mockTick = callback;
@@ -53,7 +55,7 @@ it.each([
     );
     const emit = (quote: number, epoch: number) => act(() => mockTick({ tick: { quote, epoch } }));
     await waitFor(() => expect(mockWS.subscribeTicks).toHaveBeenCalled(), { timeout: 3000 });
-    emit(100, 1);
+    emit(demo ? 107 : 101, 1);
     if (demo) {
         fireEvent.click(screen.getByRole('button', { name: 'Rules' }));
         fireEvent.change(screen.getByLabelText('Digit'), { target: { value: '7' } });
@@ -68,12 +70,20 @@ it.each([
         fireEvent.click(screen.getByRole('checkbox'));
     }
     fireEvent.click(start);
+    if (demo) {
+        expect(screen.getByRole('button', { name: 'Stop run' })).toBeInTheDocument();
+        const [reconnect] = mockWS.setOnReconnect.mock.calls[0];
+        act(() => reconnect());
+        expect(screen.getByText('Run paused. Waiting for fresh ticks…')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Stop run' })).toBeInTheDocument();
+        await waitFor(() => expect(mockWS.subscribeTicks).toHaveBeenCalledTimes(2), { timeout: 3000 });
+    }
     emit(101, 2);
-    emit(103, 3);
-    emit(105, 4);
+    emit(102, 3);
+    emit(104, 4);
     expect(buy).not.toHaveBeenCalled();
-    emit(107, 5);
-    emit(109, 6);
+    emit(106, 5);
+    emit(108, 6);
     await waitFor(() => expect(mockWS.subscribeProposalOpenContract).toHaveBeenCalled(), { timeout: 3000 });
     expect(buy).toHaveBeenCalledTimes(1);
     expect(buy).toHaveBeenCalledWith(
@@ -87,4 +97,42 @@ it.each([
     expect(localStorage.getItem('fancytrading-rule-purchase:CR123')).toBeNull();
     emit(111, 7);
     expect(buy).toHaveBeenCalledTimes(1);
+});
+
+it('shows barrier rules and subscribes again when the trading connection returns', async () => {
+    jest.clearAllMocks();
+    HTMLDialogElement.prototype.showModal = function () {
+        this.setAttribute('open', '');
+    };
+    const buy = jest.fn();
+    render(
+        <SignalStrategy
+            symbol='R_100'
+            currency='USD'
+            contract='DIGITOVER'
+            account={{ id: 'CR123', demo: true }}
+            initialStake={10}
+            initialTicks={1}
+            block=''
+            buy={buy}
+        />
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Rules' }));
+    const watch = screen.getByLabelText('Watch for');
+    expect(watch).toHaveValue('over');
+    expect(watch).toHaveTextContent('Digits above the barrier');
+    expect(watch).not.toHaveTextContent('Even digits');
+    fireEvent.click(screen.getByRole('button', { name: 'Help for Rules' }));
+    expect(screen.getByText(/Choose which tick movement/)).toBeVisible();
+
+    await waitFor(() => expect(mockWS.subscribeTicks).toHaveBeenCalledTimes(1));
+    const previous = mockTick;
+    const [onReconnect] = mockWS.setOnReconnect.mock.calls[0];
+    act(() => onReconnect());
+    await waitFor(() => expect(mockWS.subscribeTicks).toHaveBeenCalledTimes(2));
+    act(() => previous({ tick: { quote: 106, epoch: 1 } }));
+    expect(screen.getByRole('button', { name: 'Start on demo' })).toBeDisabled();
+    act(() => mockTick({ tick: { quote: 106, epoch: 2, underlying_symbol: 'R_100' } }));
+    expect(screen.getByRole('button', { name: 'Start on demo' })).toBeEnabled();
+    expect(buy).not.toHaveBeenCalled();
 });
