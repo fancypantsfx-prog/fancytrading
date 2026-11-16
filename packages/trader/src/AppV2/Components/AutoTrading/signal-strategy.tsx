@@ -406,7 +406,7 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                 if (precision === undefined) {
                     await waitForInsightRequestSlot(controller.signal);
                     if (!isCurrent()) return;
-                    const response = await waitForInsightRequest(
+                    const response = await waitForInsightRequest<{ pip_size?: number }>(
                         ws.send({ ticks_history: symbol, end: 'latest', count: 1, style: 'ticks', passthrough }),
                         localize('Could not load market precision.')
                     );
