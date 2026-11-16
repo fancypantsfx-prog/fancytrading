@@ -181,26 +181,73 @@ const sendInsightRequest = async (
 
 export const getLiveInsightQuote = async (
     send: (payload: Record<string, unknown>) => Promise<TMarketData>,
-    { symbol, currency, stake, ticks, candidate }: {
-        symbol: string; currency: string; stake: number; ticks: number; candidate: string;
+    {
+        symbol,
+        currency,
+        stake,
+        ticks,
+        candidate,
+    }: {
+        symbol: string;
+        currency: string;
+        stake: number;
+        ticks: number;
+        candidate: string;
     },
     signal: AbortSignal
 ) => {
     const response = await waitForInsightRequest(
-        sendInsightRequest(send, {
-            proposal: 1,
-            amount: stake,
-            basis: 'stake',
-            currency,
-            underlying_symbol: symbol,
-            ...getInsightContract('digital', candidate, ticks),
-        }, signal),
+        sendInsightRequest(
+            send,
+            {
+                proposal: 1,
+                amount: stake,
+                basis: 'stake',
+                currency,
+                underlying_symbol: symbol,
+                ...getInsightContract('digital', candidate, ticks),
+            },
+            signal
+        ),
         'Trade quote timed out'
     );
     if (signal.aborted || response.error || !response.proposal) return null;
     const ask = Number(response.proposal.ask_price);
     const payout = Number(response.proposal.payout);
     return ask > 0 && Number.isFinite(payout) && payout > ask ? { stake: ask, payout } : null;
+};
+
+export const rankCurrentMarket = async (
+    send: (payload: Record<string, unknown>) => Promise<TMarketData>,
+    { symbol, currency, ticks, candidates }: { symbol: string; currency: string; ticks: number; candidates: string[] },
+    signal: AbortSignal
+) => {
+    const history = await waitForInsightRequest(
+        sendInsightRequest(send, { ticks_history: symbol, end: 'latest', count: 400, style: 'ticks' }, signal),
+        'Tick history timed out'
+    );
+    if (!history.history || history.error) throw new Error('Tick history unavailable');
+    let precision = history.pip_size;
+    if (!Number.isInteger(precision) && candidates.some(candidate => candidate.startsWith('DIGIT'))) {
+        const spot = await waitForInsightRequest(
+            sendInsightRequest(send, { ticks: symbol }, signal),
+            'Tick request timed out'
+        );
+        precision = spot.tick?.pip_size;
+    }
+    return fetchTickInsights<TTickInsights>(
+        {
+            ...history.history,
+            precision,
+            currency,
+            ticks,
+            candidates,
+            family: 'digital',
+            windowSize: 400,
+            historyOnly: true,
+        },
+        signal
+    );
 };
 
 export const getInsightMarkets = async (

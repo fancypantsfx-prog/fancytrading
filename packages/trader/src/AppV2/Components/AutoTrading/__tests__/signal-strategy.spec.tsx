@@ -8,7 +8,7 @@ let mockSettlement: (value: unknown) => void;
 const mockWS = {
     setOnReconnect: jest.fn(),
     removeOnReconnect: jest.fn(),
-    send: jest.fn(async () => ({ pip_size: 0 })),
+    send: jest.fn<Promise<unknown>, [Record<string, unknown>]>(async () => ({ pip_size: 0 })),
     subscribeTicks: jest.fn((_symbol, callback) => {
         mockTick = callback;
         return { unsubscribe: jest.fn() };
@@ -91,7 +91,7 @@ it.each([
         expect.anything(),
         expect.any(Function)
     );
-    expect(localStorage.getItem('fancytrading-rule-purchase:CR123')).toBe('pending');
+    expect(localStorage.getItem('fancytrading-rule-purchase:CR123')).toBe('123');
     act(() => mockSettlement({ proposal_open_contract: { contract_id: 123, is_sold: 1, profit: '8' } }));
     expect(await screen.findByText('Run finished. One of your limits was reached.')).toBeInTheDocument();
     expect(localStorage.getItem('fancytrading-rule-purchase:CR123')).toBeNull();
@@ -178,4 +178,63 @@ it('stops new orders on command and can restart after the last purchase settles'
     fireEvent.click(screen.getByRole('button', { name: 'Start on demo' }));
     expect(await screen.findByRole('button', { name: 'Stop run' })).toBeEnabled();
     expect(buy).toHaveBeenCalledTimes(1);
+});
+
+it('checks a saved contract before restarting a run', async () => {
+    jest.clearAllMocks();
+    localStorage.setItem('fancytrading-rule-purchase:RECOVERY', '456');
+    const buy = jest.fn();
+    render(
+        <SignalStrategy
+            symbol='R_100'
+            currency='USD'
+            contract='DIGITEVEN'
+            account={{ id: 'RECOVERY', demo: true }}
+            initialStake={10}
+            initialTicks={1}
+            block=''
+            buy={buy}
+        />
+    );
+    await waitFor(() => expect(mockWS.subscribeTicks).toHaveBeenCalled());
+    act(() => mockTick({ tick: { quote: 102, epoch: 1 } }));
+    fireEvent.click(screen.getByRole('button', { name: 'Start on demo' }));
+    await waitFor(() =>
+        expect(mockWS.subscribeProposalOpenContract).toHaveBeenCalledWith(456, expect.any(Function), expect.anything())
+    );
+    expect(buy).not.toHaveBeenCalled();
+    act(() => mockSettlement({ proposal_open_contract: { contract_id: 456, is_sold: 1, profit: '8' } }));
+    expect(await screen.findByRole('button', { name: 'Stop run' })).toBeEnabled();
+    expect(localStorage.getItem('fancytrading-rule-purchase:RECOVERY')).toBeNull();
+});
+
+it('checks open positions automatically for a legacy purchase marker', async () => {
+    jest.clearAllMocks();
+    const marker = 'fancytrading-rule-purchase:LEGACY';
+    localStorage.setItem(marker, 'pending');
+    const buy = jest.fn();
+    render(
+        <SignalStrategy
+            symbol='R_100'
+            currency='USD'
+            contract='DIGITEVEN'
+            account={{ id: 'LEGACY', demo: true }}
+            initialStake={10}
+            initialTicks={1}
+            block=''
+            buy={buy}
+        />
+    );
+    await waitFor(() => expect(mockWS.subscribeTicks).toHaveBeenCalled());
+    act(() => mockTick({ tick: { quote: 102, epoch: 1 } }));
+    mockWS.send.mockResolvedValueOnce({ portfolio: { contracts: [{ contract_id: 456 }] } });
+    fireEvent.click(screen.getByRole('button', { name: 'Start on demo' }));
+    expect(await screen.findByText(/Deriv reports open positions/)).toBeInTheDocument();
+    expect(localStorage.getItem(marker)).toBe('pending');
+
+    mockWS.send.mockResolvedValueOnce({ portfolio: { contracts: [] } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Start on demo' }));
+    expect(await screen.findByRole('button', { name: 'Stop run' })).toBeEnabled();
+    expect(localStorage.getItem(marker)).toBeNull();
+    expect(buy).not.toHaveBeenCalled();
 });

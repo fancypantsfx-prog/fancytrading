@@ -12,6 +12,7 @@ import {
     getInsightPreset,
     InsightRateLimitError,
     isInsightPresetValid,
+    rankCurrentMarket,
 } from './tick-insights-data';
 import type { TInsightRun, TInsightStrategyOption, TInsightTrade, TTickInsights } from './tick-insights-data';
 import MenuHelp from './menu-help';
@@ -33,6 +34,7 @@ type TFinderReport = {
     updatedAt: number;
     marketsScanned: number;
     stale: boolean;
+    currentMarketOnly?: boolean;
 };
 const finderContracts = {
     rise_fall: ['CALL', 'PUT'],
@@ -89,6 +91,8 @@ const InsightsPanel = ({
     setDurations,
 }: TPanelProps) => {
     const ws = useWS();
+    const finderSocket = React.useRef(ws);
+    finderSocket.current = ws;
     const [finderGroup, setFinderGroup] = React.useState<TFinderContract>(
         () =>
             (Object.keys(finderContracts) as TFinderContract[]).find(group =>
@@ -118,6 +122,8 @@ const InsightsPanel = ({
     const [access, setAccess] = React.useState<TPremiumAccess | 'checking' | 'error'>('checking');
     const [check, setCheck] = React.useState(0);
     const [report, setReport] = React.useState<TFinderReport>();
+    const [scanVersion, refreshScan] = React.useReducer(value => value + 1, 0);
+    const [loadingScan, setLoadingScan] = React.useState(false);
     const [error, setError] = React.useState('');
     const [busy, setBusy] = React.useState(false);
     const [view, setView] = React.useState<'finder' | 'compare'>('finder');
@@ -127,7 +133,7 @@ const InsightsPanel = ({
     });
     const [markets, setMarkets] = React.useState<{ symbol: string; label: string }[]>([]);
     const request = React.useRef<AbortController>();
-    const prefetched = React.useRef<{ settings: string; result: TFinderReport }>();
+    const lastReport = React.useRef<{ settings: string; result: TFinderReport }>();
 
     React.useEffect(() => {
         if (view !== 'compare' || markets.length || typeof access === 'string' || access.access === 'locked') return;
@@ -162,7 +168,7 @@ const InsightsPanel = ({
                 setBusy(false);
                 setReport(undefined);
                 setDraft(undefined);
-                prefetched.current = undefined;
+                lastReport.current = undefined;
                 setAccess('checking');
                 setCheck(value => value + 1);
             },
@@ -176,45 +182,102 @@ const InsightsPanel = ({
     const scanSettings = new URLSearchParams({ contract: finderGroup, ticks, barrier: finderBarrier }).toString();
     const hasScanAccess = typeof access !== 'string' && access.access !== 'locked';
 
+    const scanPaused = !!draft || busy;
     React.useEffect(() => {
-        if (view !== 'finder' || !hasScanAccess || !/^([1-9]|1[0-9]|20)$/.test(ticks)) return;
+        if (view !== 'finder' || scanPaused || !hasScanAccess || !/^([1-9]|1[0-9]|20)$/.test(ticks)) return;
         const controller = new AbortController();
-        const timer = window.setTimeout(() => {
-            void fetchStrategyFinder<TFinderReport>(new URLSearchParams(scanSettings), controller.signal)
-                .then(result => {
-                    if (result && !controller.signal.aborted) prefetched.current = { settings: scanSettings, result };
-                })
-                .catch(() => undefined);
-        }, 250);
-        return () => {
-            window.clearTimeout(timer);
-            controller.abort();
-        };
-    }, [view, hasScanAccess, ticks, scanSettings]);
-
-    const compare = async (event: React.FormEvent<HTMLFormElement>) => {
-        event.preventDefault();
-        if (busy) return;
-        const controller = new AbortController();
-        request.current = controller;
-        setBusy(true);
-        setError('');
-        try {
-            const ready = prefetched.current;
-            const result =
-                !report && ready?.settings === scanSettings && Date.now() - ready.result.updatedAt < 5 * 60 * 1000
-                    ? ready.result
-                    : await fetchStrategyFinder<TFinderReport>(new URLSearchParams(scanSettings), controller.signal);
-            if (controller.signal.aborted) return;
-            setAccess(result?.access ?? { access: 'locked' });
-            setReport(result ?? undefined);
-        } catch {
-            if (!controller.signal.aborted) {
-                setError(localize('Cached market data is temporarily unavailable. Try scanning again shortly.'));
+        let timer: number;
+        let serverRetryAt = 0;
+        const types = finderContracts[finderGroup];
+        const candidates =
+            finderGroup === 'over_under' || finderGroup === 'match_diff'
+                ? types
+                      .filter(
+                          type =>
+                              !(type === 'DIGITOVER' && finderBarrier === '9') &&
+                              !(type === 'DIGITUNDER' && finderBarrier === '0')
+                      )
+                      .map(type => type + ':' + finderBarrier)
+                : [...types];
+        const refresh = async () => {
+            const previous = lastReport.current?.settings === scanSettings ? lastReport.current.result : undefined;
+            if (!previous) setLoadingScan(true);
+            try {
+                let next: TFinderReport | null | undefined;
+                if (Date.now() >= serverRetryAt) {
+                    try {
+                        next = await fetchStrategyFinder<TFinderReport>(
+                            new URLSearchParams(scanSettings),
+                            controller.signal
+                        );
+                    } catch {
+                        serverRetryAt = Date.now() + 60000;
+                    }
+                }
+                if (controller.signal.aborted) return;
+                if (next !== null && !next?.rows.length && !(previous?.rows.length && !previous.currentMarketOnly)) {
+                    const local = await rankCurrentMarket(
+                        payload => finderSocket.current.send(payload),
+                        { symbol, currency, ticks: Number(ticks), candidates },
+                        controller.signal
+                    );
+                    if (controller.signal.aborted) return;
+                    next = local && {
+                        access: local.access,
+                        rows: local.rows.map(row => ({ ...row, symbol, collectedAt: local.lastTick * 1000 })),
+                        ticks: local.ticks,
+                        updatedAt: local.lastTick * 1000,
+                        marketsScanned: 1,
+                        stale: false,
+                        currentMarketOnly: true,
+                    };
+                }
+                if (next === null) {
+                    lastReport.current = undefined;
+                    setReport(undefined);
+                    setAccess({ access: 'locked' });
+                    return;
+                }
+                if (next) {
+                    lastReport.current = { settings: scanSettings, result: next };
+                    setReport(next);
+                    setError('');
+                } else if (previous) {
+                    setReport({ ...previous, stale: true });
+                }
+            } catch {
+                if (controller.signal.aborted) return;
+                if (previous) setReport({ ...previous, stale: true });
+                else setError(localize('Waiting for market data. Strategy Finder will retry automatically.'));
+            } finally {
+                if (!controller.signal.aborted) {
+                    setLoadingScan(false);
+                    timer = window.setTimeout(refresh, 15000);
+                }
             }
-        } finally {
-            if (!controller.signal.aborted) setBusy(false);
-        }
+        };
+        timer = window.setTimeout(refresh, 250);
+        return () => {
+            controller.abort();
+            window.clearTimeout(timer);
+        };
+    }, [
+        view,
+        scanPaused,
+        hasScanAccess,
+        ticks,
+        scanSettings,
+        finderGroup,
+        finderBarrier,
+        currency,
+        symbol,
+        scanVersion,
+    ]);
+
+    const compare = (event: React.FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+        setError('');
+        refreshScan();
     };
 
     const is_reviewing = !!draft;
@@ -599,6 +662,7 @@ const InsightsPanel = ({
                     </>
                 )}
             </nav>
+            {view === 'finder' && loadingScan && !report && <p role='status'>{localize('Loading market rankings�')}</p>}
             {signalError && <p role='alert'>{signalError}</p>}
             {view === 'finder' && (
                 <form onSubmit={compare} className='tick-insights__fields'>
@@ -663,7 +727,6 @@ const InsightsPanel = ({
                                 onChange={e => {
                                     setStake(e.target.value);
                                     setPresetSaved(false);
-                                    setReport(undefined);
                                 }}
                             />
                         </label>
@@ -688,7 +751,6 @@ const InsightsPanel = ({
                                 onChange={e => {
                                     setTicks(e.target.value);
                                     setPresetSaved(false);
-                                    setReport(undefined);
                                 }}
                             />
                         </label>
@@ -838,6 +900,11 @@ const InsightsPanel = ({
                             time: new Date(report.updatedAt).toLocaleString(),
                         })}
                     </p>
+                    {report.currentMarketOnly && (
+                        <p role='status'>
+                            {localize('Showing the chart market while the full instrument scan is unavailable.')}
+                        </p>
+                    )}
                     {report.stale && (
                         <p role='status'>{localize('Some historical samples are more than 30 minutes old.')}</p>
                     )}

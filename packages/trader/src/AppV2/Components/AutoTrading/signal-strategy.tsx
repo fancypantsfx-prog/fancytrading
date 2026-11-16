@@ -108,6 +108,7 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
     const tradeBlock = React.useRef(block);
     tradeBlock.current = block;
     const marker = account && 'fancytrading-rule-purchase:' + account.id;
+    const recovery = React.useRef<AbortController>();
     const settings = {
         family,
         choice,
@@ -277,6 +278,8 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
         current.armed = false;
         const deadline = performance.now() + 4000;
         const quoteFeedVersion = feedVersion.current;
+        const purchaseNonce = crypto.getRandomValues(new Uint32Array(4)).join('-');
+        let pendingPurchase: string | undefined;
 
         const candidate = next.candidates[Math.floor(Math.random() * next.candidates.length)];
         const signal = current.controller.signal;
@@ -308,11 +311,14 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                         )
                             throw new StaleSignal();
                         if (localStorage.getItem(marker))
-                            throw new Error(localize('Check the previous trade in Positions or Reports first.'));
-                        localStorage.setItem(marker, 'pending');
+                            throw new Error(localize('Start again to check the previous trade.'));
+                        pendingPurchase = `pending:${Date.now()}:${purchaseNonce}`;
+                        localStorage.setItem(marker, pendingPurchase);
                         current.purchaseSent = true;
                     }
                 );
+                if (pendingPurchase && localStorage.getItem(marker) === pendingPurchase)
+                    localStorage.setItem(marker, id);
                 if (signal.aborted) return;
                 setStatus(
                     localize('{{contract}} opened ({{id}}). Waiting for settlement.', {
@@ -490,6 +496,7 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
         return () => {
             live.current = false;
             controller.abort();
+            recovery.current?.abort();
             run.current?.controller.abort();
             run.current?.release();
             run.current = undefined;
@@ -557,12 +564,64 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                     setStatus(localize('A Signal Strategy run is already open for this account in another tab.'));
                     return;
                 }
-                if (localStorage.getItem(marker)) {
-                    setStatus(
-                        localize('A previous purchase may still be open. Check Positions or Reports before restarting.')
-                    );
-                    return;
+                const previous = localStorage.getItem(marker);
+                if (previous) {
+                    const controller = new AbortController();
+                    recovery.current = controller;
+                    setStatus(localize('Checking the previous purchase with Deriv�'));
+                    const connection = feedVersion.current;
+                    try {
+                        if (/^\d+$/.test(previous)) {
+                            await checkSettlement(previous, controller.signal);
+                        } else {
+                            const submittedAt = Number(/^pending:(\d+):/.exec(previous)?.[1]);
+                            if (Date.now() - submittedAt < 30000) {
+                                setStatus(
+                                    localize(
+                                        'Deriv may still be processing the last purchase. Try Start again shortly.'
+                                    )
+                                );
+                                return;
+                            }
+                            const response = await waitForInsightRequest<{
+                                portfolio?: { contracts?: unknown[] };
+                                error?: unknown;
+                            }>(
+                                ws.send({ portfolio: 1, passthrough }),
+                                localize('Deriv did not respond to the open positions check.')
+                            );
+                            if (response.error || !Array.isArray(response.portfolio?.contracts))
+                                throw new Error('Open positions could not be verified');
+                            if (response.portfolio.contracts.length) {
+                                setStatus(localize('Deriv reports open positions. Try Start again after they close.'));
+                                return;
+                            }
+                        }
+                        if (controller.signal.aborted || !live.current) return;
+                        if (feedVersion.current !== connection || tradeBlock.current) {
+                            setStatus(localize('The connection changed during the check. Press Start to check again.'));
+                            return;
+                        }
+                        if (localStorage.getItem(marker) !== previous) {
+                            setStatus(
+                                localize('The previous purchase updated during the check. Press Start to check again.')
+                            );
+                            return;
+                        }
+                        localStorage.removeItem(marker);
+                    } catch {
+                        if (!controller.signal.aborted)
+                            setStatus(
+                                localize(
+                                    'Deriv could not confirm the previous trade is closed. Press Start to check again.'
+                                )
+                            );
+                        return;
+                    } finally {
+                        recovery.current = undefined;
+                    }
                 }
+                if (!live.current || !latestTicks.current.length || document.hidden || tradeBlock.current) return;
                 await new Promise<void>(release => {
                     run.current = {
                         ...values,
@@ -591,23 +650,6 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                 starting.current = false;
                 if (live.current) setStartPending(false);
             });
-    };
-
-    const clearPrevious = async () => {
-        if (!marker || !navigator.locks) return;
-        try {
-            await navigator.locks.request(marker, { ifAvailable: true }, lock => {
-                if (!live.current) return;
-                if (!lock) {
-                    setStatus(localize('Another tab is still checking this trade. Wait and try again.'));
-                    return;
-                }
-                localStorage.removeItem(marker);
-                setStatus(localize('Previous purchase acknowledged. You can start a new run.'));
-            });
-        } catch {
-            setStatus(localize('Could not clear the previous purchase.'));
-        }
     };
 
     return (
@@ -1127,19 +1169,6 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
             <p>
                 {localize('Settled trades')} {totals.count} · {localize('Net result')} {money(totals.net)}
             </p>
-            {!active && marker && (
-                <details>
-                    <summary>{localize('Resolve a previous purchase')}</summary>
-                    <p>
-                        {localize(
-                            'Check Positions and Reports. Continue after any trade from the previous run has settled.'
-                        )}
-                    </p>
-                    <button type='button' onClick={() => void clearPrevious()}>
-                        {localize('I checked the previous purchase')}
-                    </button>
-                </details>
-            )}
         </section>
     );
 };

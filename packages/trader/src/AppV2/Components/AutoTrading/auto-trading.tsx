@@ -773,6 +773,9 @@ const AutoTrading = observer(
                 }
 
                 const markUnconfirmed = () => {
+                    if (beforeRuleBuy) {
+                        return new Error(localize('Deriv did not confirm the purchase. Press Start to check its status before trading again.'));
+                    }
                     setUnconfirmedPurchases(previous => [...previous, purchase_account_id]);
                     return new Error(unconfirmed_message);
                 };

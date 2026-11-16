@@ -5,10 +5,17 @@ const DERIV_PUBLIC_WS = 'https://api.derivws.com/trading/v1/options/ws/public';
 const REQUEST_SPACING_MS = 500;
 
 const openMarketData = async () => {
-    const response = await fetch(DERIV_PUBLIC_WS, {
-        headers: { Upgrade: 'websocket' },
-        signal: AbortSignal.timeout(10000),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    let response;
+    try {
+        response = await fetch(DERIV_PUBLIC_WS, {
+            headers: { Upgrade: 'websocket' },
+            signal: controller.signal,
+        });
+    } finally {
+        clearTimeout(timeout);
+    }
     const socket = response.webSocket;
     if (!socket) throw new Error('Deriv market connection unavailable');
 
@@ -75,7 +82,10 @@ export const warmStrategyFinder = async (cache, connect = openMarketData) => {
                     (cachedMarkets.get(a.underlying_symbol)?.collectedAt ?? 0) -
                     (cachedMarkets.get(b.underlying_symbol)?.collectedAt ?? 0)
             );
+        // Publish a partial refresh before the next five-minute invocation can begin.
+        const deadline = Date.now() + 180000;
         for (const item of instruments) {
+            if (Date.now() >= deadline) break;
             const symbol = item.underlying_symbol;
             await pause(REQUEST_SPACING_MS);
             const { history, pip_size, error } = await connection.send({
@@ -116,6 +126,7 @@ export const warmStrategyFinder = async (cache, connect = openMarketData) => {
             if (active) markets.push({ ...market, groups: active.groups });
         }
         await cache.put(SCAN_CACHE_KEY, JSON.stringify({ updatedAt, markets }));
+        console.info('Strategy Finder snapshot written', { markets: markets.length });
     } finally {
         connection.close();
     }
