@@ -12,7 +12,8 @@ import {
     getInsightPreset,
     InsightRateLimitError,
     isInsightPresetValid,
-    rankCurrentMarket,
+    getFinderInstruments,
+    rankFinderInstrument,
 } from './tick-insights-data';
 import type { TInsightRun, TInsightStrategyOption, TInsightTrade, TTickInsights } from './tick-insights-data';
 import MenuHelp from './menu-help';
@@ -26,7 +27,11 @@ type TInsightRow = TTickInsights['rows'][number];
 const formatMoney = (value: number, currency: string) =>
     value.toLocaleString(undefined, { style: 'currency', currency });
 
-type TFinderRow = Pick<TInsightRow, 'candidate' | 'historical'> & { symbol: string; collectedAt: number };
+type TFinderRow = Pick<TInsightRow, 'candidate' | 'historical'> & {
+    symbol: string;
+    collectedAt: number;
+    label?: string;
+};
 type TFinderReport = {
     access: TPremiumAccess;
     rows: TFinderRow[];
@@ -34,7 +39,8 @@ type TFinderReport = {
     updatedAt: number;
     marketsScanned: number;
     stale: boolean;
-    currentMarketOnly?: boolean;
+    instrumentsTotal?: number;
+    fromLiveScan?: boolean;
 };
 const finderContracts = {
     rise_fall: ['CALL', 'PUT'],
@@ -215,22 +221,57 @@ const InsightsPanel = ({
                     }
                 }
                 if (controller.signal.aborted) return;
-                if (next !== null && !next?.rows.length && !(previous?.rows.length && !previous.currentMarketOnly)) {
-                    const local = await rankCurrentMarket(
-                        payload => finderSocket.current.send(payload),
-                        { symbol, currency, ticks: Number(ticks), candidates },
-                        controller.signal
-                    );
-                    if (controller.signal.aborted) return;
-                    next = local && {
-                        access: local.access,
-                        rows: local.rows.map(row => ({ ...row, symbol, collectedAt: local.lastTick * 1000 })),
-                        ticks: local.ticks,
-                        updatedAt: local.lastTick * 1000,
-                        marketsScanned: 1,
+                if (next !== null && !next?.rows.length && (!previous?.rows.length || previous.fromLiveScan)) {
+                    const send = (payload: Record<string, unknown>) => finderSocket.current.send(payload);
+                    const instruments = await getFinderInstruments(send, types, controller.signal);
+                    const liveReport: TFinderReport = {
+                        access: previous?.access ?? { access: 'free' },
+                        rows: [],
+                        ticks: Number(ticks),
+                        updatedAt: 0,
+                        marketsScanned: 0,
+                        instrumentsTotal: instruments.length,
                         stale: false,
-                        currentMarketOnly: true,
+                        fromLiveScan: true,
                     };
+                    for (const [instrument, label] of instruments) {
+                        if (controller.signal.aborted) return;
+                        try {
+                            const local = await rankFinderInstrument(
+                                send,
+                                { symbol: instrument, currency, ticks: Number(ticks), candidates },
+                                controller.signal
+                            );
+                            if (controller.signal.aborted) return;
+                            if (!local) {
+                                next = null;
+                                break;
+                            }
+                            liveReport.access = local.access;
+                            if (!local.rows.length) continue;
+                            liveReport.marketsScanned++;
+                            liveReport.updatedAt = Math.max(liveReport.updatedAt, local.lastTick * 1000);
+                            liveReport.rows.push(
+                                ...local.rows.map(row => ({
+                                    ...row,
+                                    symbol: instrument,
+                                    collectedAt: local.lastTick * 1000,
+                                }))
+                            );
+                        } catch (failure) {
+                            if (controller.signal.aborted) return;
+                            if (failure instanceof InsightRateLimitError) {
+                                if (!liveReport.rows.length) throw failure;
+                                break;
+                            }
+                        }
+                    }
+                    if (next !== null && liveReport.rows.length) {
+                        liveReport.rows.sort(
+                            (a, b) => b.historical.hits / b.historical.count - a.historical.hits / a.historical.count
+                        );
+                        if (!previous || liveReport.marketsScanned >= previous.marketsScanned) next = liveReport;
+                    }
                 }
                 if (next === null) {
                     lastReport.current = undefined;
@@ -900,11 +941,19 @@ const InsightsPanel = ({
                             time: new Date(report.updatedAt).toLocaleString(),
                         })}
                     </p>
-                    {report.currentMarketOnly && (
+                    {report.instrumentsTotal !== undefined && report.marketsScanned < report.instrumentsTotal && (
                         <p role='status'>
-                            {localize('Showing the chart market while the full instrument scan is unavailable.')}
+                            {localize('Ranked {{loaded}} of {{total}} eligible instruments with available tick data.', {
+                                loaded: String(report.marketsScanned),
+                                total: String(report.instrumentsTotal),
+                            })}
                         </p>
                     )}
+                    <p>
+                        {localize(
+                            'Top results won most often in the historical sample for your settings. Check the live payout before choosing a trade.'
+                        )}
+                    </p>
                     {report.stale && (
                         <p role='status'>{localize('Some historical samples are more than 30 minutes old.')}</p>
                     )}

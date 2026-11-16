@@ -9,6 +9,8 @@ jest.setTimeout(15000);
 
 let mockRateLimitProposal = false;
 const mockSend = jest.fn(async (request: Record<string, unknown>) => {
+    if (request.active_symbols)
+        return { active_symbols: [{ underlying_symbol: 'R_50' }, { underlying_symbol: '1HZ100V' }] };
     if (request.proposal && mockRateLimitProposal) return { error: { code: 'RateLimit' } };
     if (request.ticks_history) {
         const count = Number(request.count);
@@ -163,7 +165,7 @@ it('keeps market requests behind the access check', async () => {
     expect(fetchStrategyFinder).not.toHaveBeenCalled();
 });
 
-it('starts automatically from the chart market when the shared snapshot is unavailable', async () => {
+it('ranks all eligible instruments by hit rate when the shared snapshot is unavailable', async () => {
     (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
     (fetchStrategyFinder as jest.Mock).mockRejectedValueOnce(new Error('Cache unavailable'));
     (fetchTickInsights as jest.Mock).mockResolvedValueOnce({
@@ -171,6 +173,12 @@ it('starts automatically from the chart market when the shared snapshot is unava
         ticks: 5,
         lastTick: 1800000399,
         rows: [{ candidate: 'CALL', historical: { hits: 8, count: 10 } }],
+    });
+    (fetchTickInsights as jest.Mock).mockResolvedValueOnce({
+        access: { access: 'free' },
+        ticks: 5,
+        lastTick: 1800000399,
+        rows: [{ candidate: 'PUT', historical: { hits: 9, count: 10 } }],
     });
     render(
         <FancyTradingDialogContext.Provider
@@ -180,7 +188,8 @@ it('starts automatically from the chart market when the shared snapshot is unava
         </FancyTradingDialogContext.Provider>
     );
     expect(await screen.findByRole('rowheader', { name: /Rise/ })).toBeInTheDocument();
-    expect(screen.getByText(/Showing the chart market/)).toBeInTheDocument();
+    expect(screen.getAllByRole('rowheader').map(row => row.textContent)).toEqual(['1HZ100V � Fall', 'R_50 � Rise']);
+    expect(mockSend).toHaveBeenCalledWith(expect.objectContaining({ ticks_history: 'R_50', count: 400 }));
     expect(mockSend).toHaveBeenCalledWith(expect.objectContaining({ ticks_history: props.symbol, count: 400 }));
     expect(mockSend.mock.calls.some(([request]) => request.proposal)).toBe(false);
     expect(fetchTickInsights).toHaveBeenCalledWith(

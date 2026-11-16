@@ -113,7 +113,12 @@ export const getInsightContract = (family: TFamily, candidate: string, ticks: nu
 };
 
 type TMarketData = {
-    active_symbols?: { underlying_symbol: string; name?: string; display_name?: string }[];
+    active_symbols?: {
+        underlying_symbol: string;
+        underlying_symbol_name?: string;
+        name?: string;
+        display_name?: string;
+    }[];
     history?: { prices: (number | string)[]; times: number[] };
     pip_size?: number;
     tick?: { pip_size?: number };
@@ -217,7 +222,26 @@ export const getLiveInsightQuote = async (
     return ask > 0 && Number.isFinite(payout) && payout > ask ? { stake: ask, payout } : null;
 };
 
-export const rankCurrentMarket = async (
+export const getFinderInstruments = async (
+    send: (payload: Record<string, unknown>) => Promise<TMarketData>,
+    contractTypes: readonly string[],
+    signal: AbortSignal
+) => {
+    const response = await waitForInsightRequest(
+        sendInsightRequest(send, { active_symbols: 'brief', contract_type: contractTypes }, signal),
+        'Instrument list timed out'
+    );
+    if (!Array.isArray(response.active_symbols) || response.error) throw new Error('Instrument list unavailable');
+    return [
+        ...new Map(
+            response.active_symbols
+                .filter(instrument => instrument.underlying_symbol)
+                .map(instrument => [instrument.underlying_symbol, instrument.underlying_symbol_name])
+        ).entries(),
+    ];
+};
+
+export const rankFinderInstrument = async (
     send: (payload: Record<string, unknown>) => Promise<TMarketData>,
     { symbol, currency, ticks, candidates }: { symbol: string; currency: string; ticks: number; candidates: string[] },
     signal: AbortSignal

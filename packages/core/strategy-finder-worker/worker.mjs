@@ -110,6 +110,7 @@ export const warmStrategyFinder = async (cache, connect = openMarketData) => {
             }
             markets.push({
                 symbol,
+                label: item.underlying_symbol_name,
                 precision,
                 groups: item.groups,
                 prices: history.prices,
@@ -125,7 +126,13 @@ export const warmStrategyFinder = async (cache, connect = openMarketData) => {
             const active = activeInstruments.get(market.symbol);
             if (active) markets.push({ ...market, groups: active.groups });
         }
-        await cache.put(SCAN_CACHE_KEY, JSON.stringify({ updatedAt, markets }));
+        const instrumentsByGroup = Object.fromEntries(
+            Object.keys(finderContracts).map(group => [
+                group,
+                [...activeInstruments.values()].filter(item => item.groups.includes(group)).length,
+            ])
+        );
+        await cache.put(SCAN_CACHE_KEY, JSON.stringify({ updatedAt, markets, instrumentsByGroup }));
         console.info('Strategy Finder snapshot written', { markets: markets.length });
     } finally {
         connection.close();

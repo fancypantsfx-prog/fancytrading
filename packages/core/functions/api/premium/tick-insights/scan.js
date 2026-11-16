@@ -36,6 +36,7 @@ export const onRequestGet = async ({ request, env }) => {
                 ...report.rows.map(row => ({
                     ...row,
                     symbol: market.symbol,
+                    label: market.label,
                     lastTick: report.lastTick,
                     collectedAt: market.collectedAt,
                 }))
@@ -47,7 +48,8 @@ export const onRequestGet = async ({ request, env }) => {
             rows,
             ticks,
             updatedAt: snapshot.updatedAt,
-            marketsScanned: markets.length,
+            marketsScanned: new Set(rows.map(row => row.symbol)).size,
+            instrumentsTotal: snapshot.instrumentsByGroup?.[contract] ?? markets.length,
             stale: rows.some(row => now - row.collectedAt > SCAN_STALE_AFTER_MS),
         });
     } catch {
