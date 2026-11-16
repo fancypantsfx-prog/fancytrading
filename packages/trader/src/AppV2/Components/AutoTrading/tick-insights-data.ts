@@ -39,6 +39,15 @@ export type TInsightTrade = {
     contractTakeProfit?: number;
 };
 
+export class InsightQuoteChanged extends Error {
+    constructor(
+        message: string,
+        readonly payout: number
+    ) {
+        super(message);
+    }
+}
+
 export type TInsightRun = TInsightTrade & {
     stopLoss: number;
     takeProfit?: number;

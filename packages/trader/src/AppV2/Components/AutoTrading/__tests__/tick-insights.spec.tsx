@@ -55,7 +55,6 @@ it('stars a finder result and applies multiple durations to both comparison setu
             <TickInsights {...props} initial_candidate='DIGITOVER:4' />
         </FancyTradingDialogContext.Provider>
     );
-    fireEvent.click(await screen.findByRole('button', { name: 'Scan instruments' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Add to Compare' }));
     fireEvent.click(screen.getByRole('button', { name: 'Compare (2)' }));
     fireEvent.change(screen.getByLabelText('Duration in ticks'), { target: { value: '1' } });
@@ -117,7 +116,6 @@ it('scans the cached snapshot without Deriv requests and quotes only the selecte
             <TickInsights {...props} />
         </FancyTradingDialogContext.Provider>
     );
-    fireEvent.click(await screen.findByRole('button', { name: 'Scan instruments' }));
     expect(await screen.findByRole('rowheader', { name: /Fall/ })).toBeInTheDocument();
     expect(fetchStrategyFinder).toHaveBeenCalledWith(
         new URLSearchParams({ contract: 'rise_fall', ticks: '5', barrier: '5' }),
@@ -190,7 +188,6 @@ it('stops queued quotes and reports the broker rate limit inside FancyTrading', 
             <TickInsights {...props} />
         </FancyTradingDialogContext.Provider>
     );
-    fireEvent.click(await screen.findByRole('button', { name: 'Scan instruments' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Get live quote' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Deriv is limiting requests.');
     expect(mockSend.mock.calls.filter(([payload]) => payload.proposal)).toHaveLength(1);

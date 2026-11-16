@@ -11,6 +11,7 @@ import {
     getInsightMarkets,
     getInsightPreset,
     InsightRateLimitError,
+    InsightQuoteChanged,
     isInsightPresetValid,
 } from './tick-insights-data';
 import type { TInsightRun, TInsightStrategyOption, TInsightTrade, TTickInsights } from './tick-insights-data';
@@ -57,6 +58,7 @@ type TProps = {
     execution_block: string;
     purchase_block: string;
     preset_key?: string;
+    onShowTrade?: (trade: TInsightTrade) => Promise<void>;
     onBuy: (trade: TInsightTrade, signal: AbortSignal) => Promise<string>;
     onOpenSignal?: () => void;
     signalError?: string;
@@ -83,6 +85,7 @@ const InsightsPanel = ({
     purchase_block,
     preset_key,
     onBuy,
+    onShowTrade,
     onOpenSignal,
     signalError,
     getStrategies,
@@ -123,7 +126,6 @@ const InsightsPanel = ({
     const [access, setAccess] = React.useState<TPremiumAccess | 'checking' | 'error'>('checking');
     const [check, setCheck] = React.useState(0);
     const [report, setReport] = React.useState<TFinderReport>();
-    const [scanVersion, refreshScan] = React.useReducer(value => value + 1, 0);
     const [loadingScan, setLoadingScan] = React.useState(false);
     const [error, setError] = React.useState('');
     const [busy, setBusy] = React.useState(false);
@@ -238,13 +240,7 @@ const InsightsPanel = ({
             controller.abort();
             window.clearTimeout(timer);
         };
-    }, [view, scanPaused, hasScanAccess, ticks, scanSettings, scanVersion]);
-
-    const compare = (event: React.FormEvent<HTMLFormElement>) => {
-        event.preventDefault();
-        setError('');
-        refreshScan();
-    };
+    }, [view, scanPaused, hasScanAccess, ticks, scanSettings]);
 
     const is_reviewing = !!draft;
     React.useEffect(() => {
@@ -288,6 +284,7 @@ const InsightsPanel = ({
             setError(localize('The quoted stake differs from the entered stake. Adjust the stake and compare again.'));
             return;
         }
+        const strategy = automatic ? optionsFor(row.candidate, duration)[0] : undefined;
         const stopLoss = Number(stop_loss);
         const takeProfit = take_profit === '' ? undefined : Number(take_profit);
         setError('');
@@ -305,8 +302,8 @@ const InsightsPanel = ({
                 ? {
                       stopLoss,
                       takeProfit,
-                      strategyId:
-                          optionsFor(row.candidate, duration).find(option => option.id === '__fixed_stake__')?.id ?? '',
+                      strategyId: strategy?.id ?? '',
+                      multiplier: strategy?.multiplier?.defaultValue,
                   }
                 : undefined,
         });
@@ -354,9 +351,17 @@ const InsightsPanel = ({
                 setResult({ id, automatic: !!draft.run });
                 setDraft(undefined);
                 setReport(undefined);
+                try {
+                    await onShowTrade?.(draft.trade);
+                } catch {
+                    setError(localize('The trade was confirmed. The chart could not be switched.'));
+                }
             }
         } catch (error) {
             if (!controller.signal.aborted) {
+                if (error instanceof InsightQuoteChanged) {
+                    setDraft({ ...draft, trade: { ...draft.trade, payout: error.payout } });
+                }
                 setError(error instanceof Error ? error.message : localize('Could not confirm the trade.'));
             }
         } finally {
@@ -631,7 +636,7 @@ const InsightsPanel = ({
             {view === 'finder' && loadingScan && !report && <p role='status'>{localize('Loading market rankings�')}</p>}
             {signalError && <p role='alert'>{signalError}</p>}
             {view === 'finder' && (
-                <form onSubmit={compare} className='tick-insights__fields'>
+                <div className='tick-insights__fields'>
                     <div className='tick-insights__field-help'>
                         <label>
                             {localize('Contract group')}
@@ -725,22 +730,7 @@ const InsightsPanel = ({
                             description={localize('How many market price updates each simulated contract lasts.')}
                         />
                     </div>
-                    <div className='tick-insights__action-help'>
-                        <button type='submit' disabled={busy}>
-                            {busy
-                                ? localize('Comparing…')
-                                : report
-                                  ? localize('Refresh rankings')
-                                  : localize('Scan instruments')}
-                        </button>
-                        <MenuHelp
-                            label={localize('Scan instruments')}
-                            description={localize(
-                                'Show the latest prepared rankings for these settings. Select a result to check a live quote.'
-                            )}
-                        />
-                    </div>
-                </form>
+                </div>
             )}
             <>
                 <button type='button' aria-haspopup='dialog' onClick={() => setSettingsOpen(true)}>
@@ -759,7 +749,13 @@ const InsightsPanel = ({
                         aria-label={localize('Automatic settings')}
                         onClose={() => setSettingsOpen(false)}
                     >
-                        <button type='button' onClick={() => settingsDialog.current?.close()}>
+                        <button
+                            type='button'
+                            onClick={() => {
+                                settingsDialog.current?.close();
+                                setSettingsOpen(false);
+                            }}
+                        >
                             {localize('Done')}
                         </button>
                         <fieldset className='tick-insights__fields tick-insights__preset'>

@@ -20,6 +20,7 @@
         font-weight: 700;
     }
     &__modes button,
+    &__settings,
     &__compact button,
     &--menu button,
     &--menu input,
@@ -37,6 +38,7 @@
         max-width: 100%;
     }
     &__modes button,
+    &__settings,
     &__compact button,
     &--menu button {
         cursor: pointer;
@@ -427,5 +429,5 @@
     bottom: 0;
     z-index: 1;
     padding: 8px 0;
-    background: var(--general-main-1, #fff);
+    background: transparent;
 }

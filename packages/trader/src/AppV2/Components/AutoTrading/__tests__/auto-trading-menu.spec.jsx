@@ -26,6 +26,8 @@ const mockTrade = {
     trade_type_tab: 'CALL',
     proposal_info: {},
     is_trade_enabled_v2: true,
+    onChange: jest.fn().mockResolvedValue(undefined),
+    setTradeTypeTab: jest.fn(),
 };
 let mockRuns = [];
 let mockQuotePayout = 18;
@@ -445,13 +447,13 @@ it('requires positive TP and SL with the actual live strategy schema', async () 
  expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
 });
 
-const reviewFancyTrade = async (candidate = 'CALL', automatic = true, recoverStatus = false) => {
+const reviewFancyTrade = async (candidate = 'CALL', automatic = true, recoverStatus = false, symbol = 'R_100') => {
     fetchStrategyFinder.mockResolvedValue({
         access: { access: 'free' },
         ticks: 5,
         updatedAt: Date.now(),
         marketsScanned: 1,
-        rows: [{ candidate, symbol: 'R_100', historical: { hits: 60, count: 78 } }],
+        rows: [{ candidate, symbol, historical: { hits: 60, count: 78 } }],
     });
     render(
         <FancyTradingDialogContext.Provider value={{ open: true, setOpen: jest.fn() }}>
@@ -465,8 +467,8 @@ const reviewFancyTrade = async (candidate = 'CALL', automatic = true, recoverSta
         const settings = within(screen.getByRole('dialog', { name: 'Automatic settings' }));
         fireEvent.change(settings.getByLabelText(/Run stop loss/), { target: { value: '25' } });
         fireEvent.click(settings.getByRole('button', { name: 'Done' }));
+        expect(screen.queryByRole('dialog', { name: 'Automatic settings' })).toBeNull();
     }
-    fireEvent.click(screen.getByRole('button', { name: 'Scan instruments' }));
     if (recoverStatus) {
         await screen.findByText('Strategy list temporarily unavailable');
         mockStrategyListError = undefined;
@@ -527,7 +529,7 @@ it.each([
 
 it('buys exactly one contract from a fresh streaming proposal with the reviewed stake', async () => {
     mockStrategy.supported_contract_types = [];
-    await reviewFancyTrade('CALL', false);
+    await reviewFancyTrade('CALL', false, false, 'R_50');
     expect(screen.getByRole('region', { name: 'Review one contract' })).toHaveTextContent('The full stake is at risk.');
     expect(processPurchase).not.toHaveBeenCalled();
 
@@ -535,11 +537,14 @@ it('buys exactly one contract from a fresh streaming proposal with the reviewed 
     fireEvent.click(confirm);
     fireEvent.click(confirm);
     await screen.findByText(/Contract 12345 purchased/);
+    await waitFor(() => expect(mockTrade.onChange).toHaveBeenCalledWith({ target: { name: 'duration', value: 5 } }));
+    expect(mockTrade.onChange).toHaveBeenCalledWith({ target: { name: 'symbol', value: 'R_50' } });
+    expect(mockTrade.setTradeTypeTab).toHaveBeenCalledWith('CALL');
     expect(mockWS.subscribeProposal).toHaveBeenCalledWith(
         {
             contract_type: 'CALL',
             currency: 'USD',
-            underlying_symbol: 'R_100',
+            underlying_symbol: 'R_50',
             amount: 10,
             basis: 'stake',
             duration: 5,
@@ -554,7 +559,7 @@ it('buys exactly one contract from a fresh streaming proposal with the reviewed 
     expect(mockSend.mock.calls.some(([request]) => request.auto_start)).toBe(false);
 });
 
-it('blocks a one-off purchase when the streaming payout changes', async () => {
+it('requires a fresh confirmation when the streaming payout changes', async () => {
     await reviewFancyTrade('CALL', false);
     mockQuotePayout = 17;
     fireEvent.click(screen.getByRole('button', { name: 'Confirm and buy once' }));
@@ -563,6 +568,9 @@ it('blocks a one-off purchase when the streaming payout changes', async () => {
     );
     expect(processPurchase).not.toHaveBeenCalled();
     expect(mockUnsubscribe).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm and buy once' }));
+    await screen.findByText(/Contract 12345 purchased/);
+    expect(processPurchase).toHaveBeenCalledTimes(1);
 });
 
 it('blocks a second one-off purchase after an unconfirmed broker response', async () => {
@@ -604,6 +612,7 @@ it('recovers automatic status and starts the explicitly selected strategy with D
     fireEvent.change(review.getByLabelText(/Required run take profit/), { target: { value: '15' } });
     fireEvent.click(confirm);
     await screen.findByText(/Automatic run new-run started/);
+    await waitFor(() => expect(mockTrade.onChange).toHaveBeenCalledWith({ target: { name: 'amount', value: 10 } }));
 
     expect(mockSend.mock.calls.filter(([request]) => request.auto_start)).toEqual([
         [expect.objectContaining({

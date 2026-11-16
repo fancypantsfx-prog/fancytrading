@@ -9,4 +9,4 @@ crons = ["*/5 * * * *"]
 # Add the same KV namespace as STRATEGY_FINDER_CACHE in the Pages project.
 [[kv_namespaces]]
 binding = "STRATEGY_FINDER_CACHE"
-id = "<strategy-finder-kv-namespace-id>"
+id = "63a41858bfa34eb1b3a921c5f1c4243d"

@@ -39,7 +39,7 @@ import TickInsights from './tick-insights';
 import SignalStrategy from './signal-strategy';
 import { FancyTradingDialogContext } from './fancy-trading-dialog-context';
 import { signalContracts } from './signal-rule';
-import { getInsightContract, waitForInsightRequest } from './tick-insights-data';
+import { getInsightContract, InsightQuoteChanged, waitForInsightRequest } from './tick-insights-data';
 import type { TInsightRun, TInsightStrategyOption, TInsightTrade } from './tick-insights-data';
 import './auto-trading.scss';
 
@@ -606,14 +606,15 @@ const AutoTrading = observer(
                 !client.is_authorize ||
                 ui.is_switching_account ||
                 !common.is_socket_opened ||
-                store.currency !== draft.currency ||
-                store.is_market_closed ||
-                is_market_closed ||
-                !store.is_trade_enabled_v2
+                store.currency !== draft.currency
             ) {
                 throw new Error(
                     localize('The account or market changed. Reopen FancyTrading and review the trade again.')
                 );
+            }
+            const market = store.active_symbols?.find(item => item.underlying_symbol === draft.symbol);
+            if (market?.exchange_is_open === 0 || (draft.symbol === store.symbol && (is_market_closed || store.is_market_closed))) {
+                throw new Error(localize('The selected trade market is closed.'));
             }
             return account_id;
         };
@@ -628,11 +629,15 @@ const AutoTrading = observer(
             draft: TInsightTrade,
             quote: { ask_price?: string | number; payout?: string | number }
         ) => {
-            if (
-                Number(quote.ask_price) !== draft.stake ||
-                (draft.family === 'digital' && Number(quote.payout) !== draft.payout)
-            ) {
-                throw new Error(localize('The quote changed. Refresh the comparison to review the latest payout.'));
+            if (Number(quote.ask_price) !== draft.stake) {
+                throw new Error(localize('Deriv quoted a different stake. Go back and request a new quote.'));
+            }
+            const payout = Number(quote.payout);
+            if (!Number.isFinite(payout) || payout <= draft.stake) {
+                throw new Error(localize('Deriv did not return a valid payout for this trade.'));
+            }
+            if (draft.family === 'digital' && payout !== draft.payout) {
+                throw new InsightQuoteChanged(localize('The quote changed. Review the updated payout and confirm again.'), payout);
             }
         };
 
@@ -811,6 +816,9 @@ const AutoTrading = observer(
                 }
             }
         };
+        const connection_block = !eligible || !account_id
+            ? localize('Sign in and connect your Deriv account to trade.')
+            : '';
         const trade_block =
             !eligible || !account_id
                 ? localize('Sign in and connect your Deriv account to trade.')
@@ -818,7 +826,7 @@ const AutoTrading = observer(
                   ? localize('Trading is unavailable on this market.')
                   : '';
         const insight_block =
-            trade_block ||
+            connection_block ||
             (active_run || state.uncertain
                 ? localize('Check Automatic settings for an active or unconfirmed run.')
                 : !state.ready || state.busy
@@ -1243,6 +1251,24 @@ const AutoTrading = observer(
             );
         }
 
+        const showInsightTrade = async (trade: TInsightTrade) => {
+            const [type, barrier] = trade.candidate.split(':');
+            const tradeTypes: Record<string, string> = {
+                CALL: 'rise_fall', PUT: 'rise_fall', DIGITEVEN: 'even_odd', DIGITODD: 'even_odd',
+                DIGITOVER: 'over_under', DIGITUNDER: 'over_under', DIGITMATCH: 'match_diff', DIGITDIFF: 'match_diff',
+            };
+            if (!tradeTypes[type]) return;
+            if (store.symbol !== trade.symbol) await store.onChange({ target: { name: 'symbol', value: trade.symbol } });
+            await store.onChange({ target: { name: 'contract_type', value: tradeTypes[type] } });
+            store.setTradeTypeTab(type);
+            await store.onChange({ target: { name: 'duration_unit', value: 't' } });
+            await store.onChange({ target: { name: 'duration', value: trade.ticks } });
+            await store.onChange({ target: { name: 'basis', value: 'stake' } });
+            await store.onChange({ target: { name: 'amount', value: trade.stake } });
+            if (barrier !== undefined) await store.onChange({ target: { name: 'last_digit', value: Number(barrier) } });
+            fancyTrading?.setOpen(false);
+        };
+
         return (
             <section className='auto-trading' aria-label={localize('Trade execution')}>
                 <div className='auto-trading__modes' role='group' aria-label={localize('Trading mode')}>
@@ -1294,7 +1320,8 @@ const AutoTrading = observer(
                         account_id ? (client.is_virtual ? localize('Demo') : localize('Real')) + ' · ' + account_id : ''
                     }
                     execution_block={insight_block}
-                    purchase_block={trade_block || (unconfirmed_buy ? unconfirmed_message : '')}
+                    purchase_block={connection_block || (unconfirmed_buy ? unconfirmed_message : '')}
+                    onShowTrade={showInsightTrade}
                     onBuy={buyFromInsights}
                     onOpenSignal={!openingSignal ? () => void openSignal() : undefined}
                     signalError={signalError}
@@ -1313,18 +1340,18 @@ const AutoTrading = observer(
                     </>
                 ) : (
                     <div className='auto-trading__compact'>
-                        {strategy && (
+                        {!active_run && strategy && (
                             <p>
                                 <strong>{fixed_stake ? localize('No martingale') : strategy.display_name}</strong>
                                 {template ? ' · ' + String(template.amount) + ' ' + template.currency : ''}
                             </p>
                         )}
-                        {template_error && (
+                        {!active_run && template_error && (
                             <p role='alert' className='auto-trading__error'>
                                 {template_error}
                             </p>
                         )}
-                        {parameters_error && (
+                        {!active_run && parameters_error && (
                             <p role='alert' className='auto-trading__error'>
                                 {parameters_error}
                             </p>
@@ -1332,8 +1359,8 @@ const AutoTrading = observer(
                         {!eligible && (
                             <p role='status'>{localize('Connect your account to start automatic trading.')}</p>
                         )}
-                        {is_market_closed && <p role='status'>{localize('The selected market is closed.')}</p>}
-                        {proposal_error && (
+                        {!active_run && is_market_closed && <p role='status'>{localize('The selected market is closed.')}</p>}
+                        {!active_run && proposal_error && (
                             <p role='alert'>{localize('Correct the trade settings before starting.')}</p>
                         )}
                         {errors}
