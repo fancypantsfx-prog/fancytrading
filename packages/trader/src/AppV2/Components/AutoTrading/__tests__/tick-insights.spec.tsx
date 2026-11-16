@@ -165,21 +165,9 @@ it('keeps market requests behind the access check', async () => {
     expect(fetchStrategyFinder).not.toHaveBeenCalled();
 });
 
-it('ranks all eligible instruments by hit rate when the shared snapshot is unavailable', async () => {
+it('does not start a browser market scan when the prepared rankings are unavailable', async () => {
     (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
     (fetchStrategyFinder as jest.Mock).mockRejectedValueOnce(new Error('Cache unavailable'));
-    (fetchTickInsights as jest.Mock).mockResolvedValueOnce({
-        access: { access: 'free' },
-        ticks: 5,
-        lastTick: 1800000399,
-        rows: [{ candidate: 'CALL', historical: { hits: 8, count: 10 } }],
-    });
-    (fetchTickInsights as jest.Mock).mockResolvedValueOnce({
-        access: { access: 'free' },
-        ticks: 5,
-        lastTick: 1800000399,
-        rows: [{ candidate: 'PUT', historical: { hits: 9, count: 10 } }],
-    });
     render(
         <FancyTradingDialogContext.Provider
             value={{ open: true, setOpen: jest.fn(), signalOpen: false, setSignalOpen: jest.fn() }}
@@ -187,15 +175,9 @@ it('ranks all eligible instruments by hit rate when the shared snapshot is unava
             <TickInsights {...props} />
         </FancyTradingDialogContext.Provider>
     );
-    expect(await screen.findByRole('rowheader', { name: /Rise/ })).toBeInTheDocument();
-    expect(screen.getAllByRole('rowheader').map(row => row.textContent)).toEqual(['1HZ100V � Fall', 'R_50 � Rise']);
-    expect(mockSend).toHaveBeenCalledWith(expect.objectContaining({ ticks_history: 'R_50', count: 400 }));
-    expect(mockSend).toHaveBeenCalledWith(expect.objectContaining({ ticks_history: props.symbol, count: 400 }));
-    expect(mockSend.mock.calls.some(([request]) => request.proposal)).toBe(false);
-    expect(fetchTickInsights).toHaveBeenCalledWith(
-        expect.objectContaining({ historyOnly: true, candidates: ['CALL', 'PUT'] }),
-        expect.any(AbortSignal)
-    );
+    expect(await screen.findByRole('alert')).toHaveTextContent('Rankings are temporarily unavailable');
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(fetchTickInsights).not.toHaveBeenCalled();
 });
 
 it('stops queued quotes and reports the broker rate limit inside FancyTrading', async () => {

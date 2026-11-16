@@ -1,5 +1,5 @@
 import { TICK_SAMPLE_SIZE } from '../premium/tick-insights.mjs';
-import { finderContracts, SCAN_CACHE_KEY } from '../premium/strategy-finder.mjs';
+import { finderContracts, SCAN_CACHE_KEY, summarizeFinderMarket } from '../premium/strategy-finder.mjs';
 
 const DERIV_PUBLIC_WS = 'https://api.derivws.com/trading/v1/options/ws/public';
 const REQUEST_SPACING_MS = 500;
@@ -108,13 +108,14 @@ export const warmStrategyFinder = async (cache, connect = openMarketData) => {
                 if (spot.error?.code === 'RateLimit') break;
                 precision = spot.tick?.pip_size;
             }
+            const summaries = summarizeFinderMarket({ ...history, precision });
+            if (!summaries) continue;
             markets.push({
                 symbol,
                 label: item.underlying_symbol_name,
-                precision,
+                summaries,
                 groups: item.groups,
-                prices: history.prices,
-                times: history.times,
+                lastTick: Number(history.times.at(-1)),
                 collectedAt: Date.now(),
             });
             cachedMarkets.delete(symbol);

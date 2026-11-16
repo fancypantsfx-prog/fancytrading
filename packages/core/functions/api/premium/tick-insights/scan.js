@@ -1,6 +1,11 @@
 import { getPremiumAccess, premiumResponse } from '../../../../premium/access.mjs';
 import { analyzeTickInsights, TICK_INSIGHTS_FEATURE, TICK_SAMPLE_SIZE } from '../../../../premium/tick-insights.mjs';
-import { finderCandidates, SCAN_CACHE_KEY, SCAN_STALE_AFTER_MS } from '../../../../premium/strategy-finder.mjs';
+import {
+    finderCandidates,
+    finderHistorical,
+    SCAN_CACHE_KEY,
+    SCAN_STALE_AFTER_MS,
+} from '../../../../premium/strategy-finder.mjs';
 
 export const onRequestGet = async ({ request, env }) => {
     const params = new URL(request.url).searchParams;
@@ -22,6 +27,24 @@ export const onRequestGet = async ({ request, env }) => {
         const now = Date.now();
         const rows = [];
         for (const market of markets) {
+            const summary = market.summaries?.[ticks - 1];
+            if (summary) {
+                for (const candidate of candidates) {
+                    const historical = finderHistorical(summary, candidate);
+                    if (!historical) continue;
+                    rows.push({
+                        candidate,
+                        historical,
+                        symbol: market.symbol,
+                        label: market.label,
+                        lastTick: market.lastTick,
+                        collectedAt: market.collectedAt,
+                    });
+                }
+                continue;
+            }
+            // Read older snapshots while the deployed Worker replaces them.
+
             const report = analyzeTickInsights({
                 ...market,
                 currency: 'USD',

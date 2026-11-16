@@ -12,8 +12,6 @@ import {
     getInsightPreset,
     InsightRateLimitError,
     isInsightPresetValid,
-    getFinderInstruments,
-    rankFinderInstrument,
 } from './tick-insights-data';
 import type { TInsightRun, TInsightStrategyOption, TInsightTrade, TTickInsights } from './tick-insights-data';
 import MenuHelp from './menu-help';
@@ -40,7 +38,6 @@ type TFinderReport = {
     marketsScanned: number;
     stale: boolean;
     instrumentsTotal?: number;
-    fromLiveScan?: boolean;
 };
 const finderContracts = {
     rise_fall: ['CALL', 'PUT'],
@@ -97,8 +94,6 @@ const InsightsPanel = ({
     setDurations,
 }: TPanelProps) => {
     const ws = useWS();
-    const finderSocket = React.useRef(ws);
-    finderSocket.current = ws;
     const [finderGroup, setFinderGroup] = React.useState<TFinderContract>(
         () =>
             (Object.keys(finderContracts) as TFinderContract[]).find(group =>
@@ -139,7 +134,7 @@ const InsightsPanel = ({
     });
     const [markets, setMarkets] = React.useState<{ symbol: string; label: string }[]>([]);
     const request = React.useRef<AbortController>();
-    const lastReport = React.useRef<{ settings: string; result: TFinderReport }>();
+    const savedRankings = React.useRef(new Map<string, TFinderReport>());
 
     React.useEffect(() => {
         if (view !== 'compare' || markets.length || typeof access === 'string' || access.access === 'locked') return;
@@ -174,7 +169,7 @@ const InsightsPanel = ({
                 setBusy(false);
                 setReport(undefined);
                 setDraft(undefined);
-                lastReport.current = undefined;
+                savedRankings.current.clear();
                 setAccess('checking');
                 setCheck(value => value + 1);
             },
@@ -193,94 +188,32 @@ const InsightsPanel = ({
         if (view !== 'finder' || scanPaused || !hasScanAccess || !/^([1-9]|1[0-9]|20)$/.test(ticks)) return;
         const controller = new AbortController();
         let timer: number;
-        let serverRetryAt = 0;
-        const types = finderContracts[finderGroup];
-        const candidates =
-            finderGroup === 'over_under' || finderGroup === 'match_diff'
-                ? types
-                      .filter(
-                          type =>
-                              !(type === 'DIGITOVER' && finderBarrier === '9') &&
-                              !(type === 'DIGITUNDER' && finderBarrier === '0')
-                      )
-                      .map(type => type + ':' + finderBarrier)
-                : [...types];
+        const saved = savedRankings.current.get(scanSettings);
+        setReport(saved);
         const refresh = async () => {
-            const previous = lastReport.current?.settings === scanSettings ? lastReport.current.result : undefined;
+            const previous = savedRankings.current.get(scanSettings);
             if (!previous) setLoadingScan(true);
             try {
-                let next: TFinderReport | null | undefined;
-                if (Date.now() >= serverRetryAt) {
-                    try {
-                        next = await fetchStrategyFinder<TFinderReport>(
-                            new URLSearchParams(scanSettings),
-                            controller.signal
-                        );
-                    } catch {
-                        serverRetryAt = Date.now() + 60000;
-                    }
-                }
+                const fetchController = new AbortController();
+                const abortFetch = () => fetchController.abort();
+                controller.signal.addEventListener('abort', abortFetch, { once: true });
+                const timeout = window.setTimeout(abortFetch, 6000);
+                const next = await fetchStrategyFinder<TFinderReport>(
+                    new URLSearchParams(scanSettings),
+                    fetchController.signal
+                ).finally(() => {
+                    window.clearTimeout(timeout);
+                    controller.signal.removeEventListener('abort', abortFetch);
+                });
                 if (controller.signal.aborted) return;
-                if (next !== null && !next?.rows.length && (!previous?.rows.length || previous.fromLiveScan)) {
-                    const send = (payload: Record<string, unknown>) => finderSocket.current.send(payload);
-                    const instruments = await getFinderInstruments(send, types, controller.signal);
-                    const liveReport: TFinderReport = {
-                        access: previous?.access ?? { access: 'free' },
-                        rows: [],
-                        ticks: Number(ticks),
-                        updatedAt: 0,
-                        marketsScanned: 0,
-                        instrumentsTotal: instruments.length,
-                        stale: false,
-                        fromLiveScan: true,
-                    };
-                    for (const [instrument, label] of instruments) {
-                        if (controller.signal.aborted) return;
-                        try {
-                            const local = await rankFinderInstrument(
-                                send,
-                                { symbol: instrument, currency, ticks: Number(ticks), candidates },
-                                controller.signal
-                            );
-                            if (controller.signal.aborted) return;
-                            if (!local) {
-                                next = null;
-                                break;
-                            }
-                            liveReport.access = local.access;
-                            if (!local.rows.length) continue;
-                            liveReport.marketsScanned++;
-                            liveReport.updatedAt = Math.max(liveReport.updatedAt, local.lastTick * 1000);
-                            liveReport.rows.push(
-                                ...local.rows.map(row => ({
-                                    ...row,
-                                    symbol: instrument,
-                                    collectedAt: local.lastTick * 1000,
-                                }))
-                            );
-                        } catch (failure) {
-                            if (controller.signal.aborted) return;
-                            if (failure instanceof InsightRateLimitError) {
-                                if (!liveReport.rows.length) throw failure;
-                                break;
-                            }
-                        }
-                    }
-                    if (next !== null && liveReport.rows.length) {
-                        liveReport.rows.sort(
-                            (a, b) => b.historical.hits / b.historical.count - a.historical.hits / a.historical.count
-                        );
-                        if (!previous || liveReport.marketsScanned >= previous.marketsScanned) next = liveReport;
-                    }
-                }
                 if (next === null) {
-                    lastReport.current = undefined;
+                    savedRankings.current.clear();
                     setReport(undefined);
                     setAccess({ access: 'locked' });
                     return;
                 }
                 if (next) {
-                    lastReport.current = { settings: scanSettings, result: next };
+                    savedRankings.current.set(scanSettings, next);
                     setReport(next);
                     setError('');
                 } else if (previous) {
@@ -289,7 +222,10 @@ const InsightsPanel = ({
             } catch {
                 if (controller.signal.aborted) return;
                 if (previous) setReport({ ...previous, stale: true });
-                else setError(localize('Waiting for market data. Strategy Finder will retry automatically.'));
+                else
+                    setError(
+                        localize('Rankings are temporarily unavailable. Strategy Finder will retry automatically.')
+                    );
             } finally {
                 if (!controller.signal.aborted) {
                     setLoadingScan(false);
@@ -302,18 +238,7 @@ const InsightsPanel = ({
             controller.abort();
             window.clearTimeout(timer);
         };
-    }, [
-        view,
-        scanPaused,
-        hasScanAccess,
-        ticks,
-        scanSettings,
-        finderGroup,
-        finderBarrier,
-        currency,
-        symbol,
-        scanVersion,
-    ]);
+    }, [view, scanPaused, hasScanAccess, ticks, scanSettings, scanVersion]);
 
     const compare = (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
@@ -805,13 +730,13 @@ const InsightsPanel = ({
                             {busy
                                 ? localize('Comparing…')
                                 : report
-                                  ? localize('Refresh comparison')
+                                  ? localize('Refresh rankings')
                                   : localize('Scan instruments')}
                         </button>
                         <MenuHelp
                             label={localize('Scan instruments')}
                             description={localize(
-                                'Rank the available markets using past ticks. You can review a live quote after selecting a result.'
+                                'Show the latest prepared rankings for these settings. Select a result to check a live quote.'
                             )}
                         />
                     </div>

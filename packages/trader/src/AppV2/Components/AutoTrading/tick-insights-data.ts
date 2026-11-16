@@ -222,58 +222,6 @@ export const getLiveInsightQuote = async (
     return ask > 0 && Number.isFinite(payout) && payout > ask ? { stake: ask, payout } : null;
 };
 
-export const getFinderInstruments = async (
-    send: (payload: Record<string, unknown>) => Promise<TMarketData>,
-    contractTypes: readonly string[],
-    signal: AbortSignal
-) => {
-    const response = await waitForInsightRequest(
-        sendInsightRequest(send, { active_symbols: 'brief', contract_type: contractTypes }, signal),
-        'Instrument list timed out'
-    );
-    if (!Array.isArray(response.active_symbols) || response.error) throw new Error('Instrument list unavailable');
-    return [
-        ...new Map(
-            response.active_symbols
-                .filter(instrument => instrument.underlying_symbol)
-                .map(instrument => [instrument.underlying_symbol, instrument.underlying_symbol_name])
-        ).entries(),
-    ];
-};
-
-export const rankFinderInstrument = async (
-    send: (payload: Record<string, unknown>) => Promise<TMarketData>,
-    { symbol, currency, ticks, candidates }: { symbol: string; currency: string; ticks: number; candidates: string[] },
-    signal: AbortSignal
-) => {
-    const history = await waitForInsightRequest(
-        sendInsightRequest(send, { ticks_history: symbol, end: 'latest', count: 400, style: 'ticks' }, signal),
-        'Tick history timed out'
-    );
-    if (!history.history || history.error) throw new Error('Tick history unavailable');
-    let precision = history.pip_size;
-    if (!Number.isInteger(precision) && candidates.some(candidate => candidate.startsWith('DIGIT'))) {
-        const spot = await waitForInsightRequest(
-            sendInsightRequest(send, { ticks: symbol }, signal),
-            'Tick request timed out'
-        );
-        precision = spot.tick?.pip_size;
-    }
-    return fetchTickInsights<TTickInsights>(
-        {
-            ...history.history,
-            precision,
-            currency,
-            ticks,
-            candidates,
-            family: 'digital',
-            windowSize: 400,
-            historyOnly: true,
-        },
-        signal
-    );
-};
-
 export const getInsightMarkets = async (
     send: (payload: Record<string, unknown>) => Promise<TMarketData>,
     signal: AbortSignal
