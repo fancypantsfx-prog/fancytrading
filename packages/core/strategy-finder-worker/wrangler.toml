@@ -3,8 +3,11 @@ main = "worker.mjs"
 compatibility_date = "2025-10-01"
 workers_dev = false
 
+[observability]
+enabled = true
+
 [triggers]
-crons = ["*/5 * * * *"]
+crons = ["*/2 * * * *"]
 
 # Add the same KV namespace as STRATEGY_FINDER_CACHE in the Pages project.
 [[kv_namespaces]]

@@ -2,7 +2,10 @@ import { TICK_SAMPLE_SIZE } from '../premium/tick-insights.mjs';
 import { finderContracts, SCAN_CACHE_KEY, summarizeFinderMarket } from '../premium/strategy-finder.mjs';
 
 const DERIV_PUBLIC_WS = 'https://api.derivws.com/trading/v1/options/ws/public';
-const REQUEST_SPACING_MS = 500;
+const REQUEST_SPACING_MS = 1000;
+const RATE_LIMIT_RETRY_MS = 10000;
+const CATALOG_MAX_AGE_MS = 30 * 60 * 1000;
+const REFRESH_BUDGET_MS = 85000;
 
 const openMarketData = async () => {
     const controller = new AbortController();
@@ -56,23 +59,56 @@ const openMarketData = async () => {
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 export const warmStrategyFinder = async (cache, connect = openMarketData) => {
+    const previous = await cache.get(SCAN_CACHE_KEY, 'json');
     const connection = await connect();
-    try {
-        const activeInstruments = new Map();
-        for (const [group, contracts] of Object.entries(finderContracts)) {
-            const list = await connection.send({ active_symbols: 'full', contract_type: contracts });
-            if (!Array.isArray(list.active_symbols)) throw new Error('Deriv instrument list unavailable');
-            for (const item of list.active_symbols) {
-                const symbol = item.underlying_symbol;
-                if (!symbol) continue;
-                const market = activeInstruments.get(symbol) ?? { ...item, groups: [] };
-                market.groups.push(group);
-                activeInstruments.set(symbol, market);
-            }
-            await pause(REQUEST_SPACING_MS);
+    const deadline = Date.now() + REFRESH_BUDGET_MS;
+    let retriedRateLimit = false;
+    const send = async payload => {
+        await pause(REQUEST_SPACING_MS);
+        let response = await connection.send(payload);
+        if (response.error?.code === 'RateLimit' && !retriedRateLimit && Date.now() + RATE_LIMIT_RETRY_MS < deadline) {
+            retriedRateLimit = true;
+            await pause(RATE_LIMIT_RETRY_MS);
+            response = await connection.send(payload);
         }
+        return response;
+    };
+
+    try {
+        let catalog = previous?.catalog;
+        if (!catalog || Date.now() - catalog.updatedAt >= CATALOG_MAX_AGE_MS) {
+            const instruments = new Map();
+            try {
+                for (const [group, contracts] of Object.entries(finderContracts)) {
+                    const list = await send({ active_symbols: 'full', contract_type: contracts });
+                    if (!Array.isArray(list.active_symbols)) {
+                        throw new Error(list.error?.code || 'Deriv instrument list unavailable');
+                    }
+                    for (const item of list.active_symbols) {
+                        const symbol = item.underlying_symbol;
+                        if (!symbol) continue;
+                        const market = instruments.get(symbol) ?? {
+                            underlying_symbol: symbol,
+                            underlying_symbol_name: item.underlying_symbol_name,
+                            exchange_is_open: item.exchange_is_open,
+                            is_trading_suspended: item.is_trading_suspended,
+                            pip_size: item.pip_size,
+                            groups: [],
+                        };
+                        market.groups.push(group);
+                        instruments.set(symbol, market);
+                    }
+                }
+                if (!instruments.size) throw new Error('Deriv returned an empty instrument list');
+                catalog = { updatedAt: Date.now(), instruments: [...instruments.values()] };
+            } catch (error) {
+                if (!catalog) throw error;
+                console.warn('Strategy Finder reusing its instrument list', String(error));
+            }
+        }
+
+        const activeInstruments = new Map(catalog.instruments.map(item => [item.underlying_symbol, item]));
         const markets = [];
-        const previous = await cache.get(SCAN_CACHE_KEY, 'json');
         const cachedMarkets = new Map((previous?.markets ?? []).map(market => [market.symbol, market]));
         // Refresh the oldest markets first so a partial refresh cannot starve later symbols.
         const instruments = [...activeInstruments.values()]
@@ -82,19 +118,20 @@ export const warmStrategyFinder = async (cache, connect = openMarketData) => {
                     (cachedMarkets.get(a.underlying_symbol)?.collectedAt ?? 0) -
                     (cachedMarkets.get(b.underlying_symbol)?.collectedAt ?? 0)
             );
-        // Publish a partial refresh before the next five-minute invocation can begin.
-        const deadline = Date.now() + 180000;
+        // Leave time to publish before the next two-minute invocation.
         for (const item of instruments) {
             if (Date.now() >= deadline) break;
             const symbol = item.underlying_symbol;
-            await pause(REQUEST_SPACING_MS);
-            const { history, pip_size, error } = await connection.send({
+            const { history, pip_size, error } = await send({
                 ticks_history: symbol,
                 end: 'latest',
                 count: TICK_SAMPLE_SIZE,
                 style: 'ticks',
             });
-            if (error?.code === 'RateLimit') break;
+            if (error?.code === 'RateLimit') {
+                console.warn('Strategy Finder history rate limited', { refreshed: markets.length });
+                break;
+            }
             if (history?.prices?.length !== TICK_SAMPLE_SIZE || history.times?.length !== TICK_SAMPLE_SIZE) continue;
             const tickSize = Number(item.pip_size);
             let precision = Number.isInteger(pip_size) ? pip_size : undefined;
@@ -103,10 +140,12 @@ export const warmStrategyFinder = async (cache, connect = openMarketData) => {
                 if (Math.abs(decimals - Math.round(decimals)) < 1e-8) precision = Math.round(decimals);
             }
             if (precision === undefined) {
-                await pause(REQUEST_SPACING_MS);
-                const spot = await connection.send({ ticks: symbol });
-                if (spot.error?.code === 'RateLimit') break;
-                precision = spot.tick?.pip_size;
+                const spot = await send({ ticks: symbol });
+                precision = spot.tick?.pip_size ?? cachedMarkets.get(symbol)?.precision;
+                if (spot.error?.code === 'RateLimit') {
+                    console.warn('Strategy Finder precision rate limited', { refreshed: markets.length });
+                    break;
+                }
             }
             const summaries = summarizeFinderMarket({ ...history, precision });
             if (!summaries) continue;
@@ -114,6 +153,7 @@ export const warmStrategyFinder = async (cache, connect = openMarketData) => {
                 symbol,
                 label: item.underlying_symbol_name,
                 summaries,
+                precision,
                 groups: item.groups,
                 lastTick: Number(history.times.at(-1)),
                 collectedAt: Date.now(),
@@ -123,6 +163,7 @@ export const warmStrategyFinder = async (cache, connect = openMarketData) => {
 
         if (!markets.length) throw new Error('No new Deriv tick windows collected');
         const updatedAt = Date.now();
+        const refreshed = markets.length;
         for (const market of cachedMarkets.values()) {
             const active = activeInstruments.get(market.symbol);
             if (active) markets.push({ ...market, groups: active.groups });
@@ -133,8 +174,12 @@ export const warmStrategyFinder = async (cache, connect = openMarketData) => {
                 [...activeInstruments.values()].filter(item => item.groups.includes(group)).length,
             ])
         );
-        await cache.put(SCAN_CACHE_KEY, JSON.stringify({ updatedAt, markets, instrumentsByGroup }));
-        console.info('Strategy Finder snapshot written', { markets: markets.length });
+        await cache.put(SCAN_CACHE_KEY, JSON.stringify({ updatedAt, markets, instrumentsByGroup, catalog }));
+        console.info('Strategy Finder snapshot written', {
+            refreshed,
+            markets: markets.length,
+            eligible: activeInstruments.size,
+        });
     } finally {
         connection.close();
     }

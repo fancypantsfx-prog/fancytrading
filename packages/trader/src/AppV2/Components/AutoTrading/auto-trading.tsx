@@ -1286,7 +1286,7 @@ const AutoTrading = observer(
                         {localize('Automatic')}
                     </button>
                 </div>
-                {!!client.is_logged_in && (
+                {mode === 'automatic' && !!client.is_logged_in && (
                         <button
                             type='button'
                             className='auto-trading__settings'

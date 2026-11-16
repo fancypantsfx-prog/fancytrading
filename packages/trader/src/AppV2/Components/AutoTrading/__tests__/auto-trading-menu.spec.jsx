@@ -163,6 +163,16 @@ it('preserves the manual purchase component and success callback', async () => {
     fireEvent.click(screen.getByRole('button', { name: 'Manual purchase' }));
     expect(success).toHaveBeenCalledTimes(1);
 });
+it('shows automatic settings only while Automatic mode is selected', async () => {
+    render(<AutoTrading />);
+    await waitReady();
+    expect(screen.queryByRole('button', { name: /Automatic settings/ })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Automatic', exact: true }));
+    expect(screen.getByRole('button', { name: /Automatic settings/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Manual', exact: true }));
+    expect(screen.queryByRole('button', { name: /Automatic settings/ })).toBeNull();
+});
+
 it('opens a dialog menu and closes with Done without placing a trade', async () => {
     render(<AutoTrading />);
     await waitReady();
