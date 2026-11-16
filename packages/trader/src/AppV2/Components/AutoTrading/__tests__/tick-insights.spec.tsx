@@ -121,6 +121,10 @@ it('scans the cached snapshot without Deriv requests and quotes only the selecte
         new URLSearchParams({ contract: 'rise_fall', ticks: '5', barrier: '5' }),
         expect.any(AbortSignal)
     );
+    const initialRequests = (fetchStrategyFinder as jest.Mock).mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh rankings' }));
+    await waitFor(() => expect(fetchStrategyFinder).toHaveBeenCalledTimes(initialRequests + 1));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh rankings' })).toBeEnabled());
     expect(mockSend).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: 'Review automatic' }));

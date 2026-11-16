@@ -127,6 +127,7 @@ const InsightsPanel = ({
     const [check, setCheck] = React.useState(0);
     const [report, setReport] = React.useState<TFinderReport>();
     const [loadingScan, setLoadingScan] = React.useState(false);
+    const [refreshVersion, refreshRankings] = React.useReducer(version => version + 1, 0);
     const [error, setError] = React.useState('');
     const [busy, setBusy] = React.useState(false);
     const [view, setView] = React.useState<'finder' | 'compare'>('finder');
@@ -194,7 +195,7 @@ const InsightsPanel = ({
         setReport(saved);
         const refresh = async () => {
             const previous = savedRankings.current.get(scanSettings);
-            if (!previous) setLoadingScan(true);
+            setLoadingScan(true);
             try {
                 const fetchController = new AbortController();
                 const abortFetch = () => fetchController.abort();
@@ -240,7 +241,7 @@ const InsightsPanel = ({
             controller.abort();
             window.clearTimeout(timer);
         };
-    }, [view, scanPaused, hasScanAccess, ticks, scanSettings]);
+    }, [view, scanPaused, hasScanAccess, ticks, scanSettings, refreshVersion]);
 
     const is_reviewing = !!draft;
     React.useEffect(() => {
@@ -730,6 +731,13 @@ const InsightsPanel = ({
                             description={localize('How many market price updates each simulated contract lasts.')}
                         />
                     </div>
+                    <button
+                        type='button'
+                        disabled={busy || loadingScan || !/^([1-9]|1[0-9]|20)$/.test(ticks)}
+                        onClick={refreshRankings}
+                    >
+                        {loadingScan ? localize('Refreshing rankings…') : localize('Refresh rankings')}
+                    </button>
                 </div>
             )}
             <>
