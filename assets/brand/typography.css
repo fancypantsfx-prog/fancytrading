@@ -1,0 +1,9 @@
+@font-face {
+    font-family: 'Rubik Bubbles';
+    src: url('./rubik-bubbles.ttf') format('truetype');
+    font-display: swap;
+}
+
+.theme--dark .tick-insights__brand img {
+    content: url('./brand-logo-dark.svg');
+}
