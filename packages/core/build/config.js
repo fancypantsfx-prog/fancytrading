@@ -299,6 +299,14 @@ const htmlInjectConfig = () => ({
                 sizes: `${size}x${size}`,
             },
         })),
+        {
+            path: brandConfig.platform.logo,
+            attributes: {
+                rel: 'icon',
+                type: 'image/svg+xml',
+                sizes: 'any',
+            },
+        },
     ],
     append: false,
 });
