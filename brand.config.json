@@ -1,7 +1,7 @@
 {
     "brand_name": "Fancy Trading",
-    "brand_logo": "brand/platform-logo.svg",
-    "brand_logo_dark": "brand/platform-logo.svg",
+    "brand_logo": "brand/brand-logo.svg",
+    "brand_logo_dark": "brand/brand-logo-dark.svg",
     "brand_domain": "fancytrading.org",
     "brand_hostname": {
         "staging": "staging.fancytrading.org",
@@ -47,11 +47,11 @@
         "production": "api.deriv.com"
     },
 "colors": {
-    "primary": "#0054A6",
-    "secondary": "#0072CE",
-    "tertiary": "#00AEEF",
+    "primary": "#087943",
+    "secondary": "#097648",
+    "tertiary": "#248322",
     "danger": "#D32F2F",
-    "success": "#0072CE",
+    "success": "#097648",
     "warning": "#F9A825",
     "info": "#2196F3",
     "neutral": "#6B7280",

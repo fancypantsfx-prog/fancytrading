@@ -994,7 +994,7 @@ const TickInsights = (props: TProps) => {
                     <img src={'/' + getPlatformLogo()} alt='' width={40} height={40} />
                     <div>
                         <h2 id={title}>FancyTrading</h2>
-                        <p>{localize('Insights by FancyPants')}</p>
+                        <p>{localize('by FancyPants')}</p>
                     </div>
                 </div>
                 <button

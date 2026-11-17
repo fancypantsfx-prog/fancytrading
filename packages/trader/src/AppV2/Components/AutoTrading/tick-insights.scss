@@ -1,3 +1,9 @@
+@font-face {
+    font-family: 'Rubik Bubbles';
+    src: url('../../../../../../assets/brand/rubik-bubbles.ttf') format('truetype');
+    font-display: swap;
+}
+
 .tick-insights {
     button,
     select,
@@ -17,7 +23,7 @@
     }
 
     :is(button, input, select, [tabindex]):focus-visible {
-        outline: 2px solid var(--brand-red-coral, #0054a6);
+        outline: 2px solid var(--brand-red-coral, #087943);
         outline-offset: 2px;
     }
 
@@ -57,12 +63,34 @@
     }
 
     &__brand {
+        h2 {
+            font-family: 'Rubik Bubbles', system-ui, sans-serif;
+            font-size: clamp(1.8rem, 5vw, 2.8rem);
+            font-weight: 400;
+            line-height: 1.25;
+            color: #92f969;
+            -webkit-text-stroke: 1.5px #101e16;
+            paint-order: stroke fill;
+            text-shadow: 0 -1.5px #efffdb, 1px 2px #28994b, 2px 4px #101e16, 3px 5px #101e16;
+            transform: rotate(-3deg);
+            transform-origin: left center;
+
+            .theme--dark & {
+                color: #adff78;
+
+            }
+        }
+
         display: flex;
         align-items: center;
         gap: 12px;
 
         img {
             border-radius: 8px;
+
+            .theme--dark & {
+                content: url('../../../../../../assets/brand/brand-logo-dark.svg');
+            }
         }
 
         p {
@@ -175,7 +203,7 @@
         }
 
         button[type='submit'] {
-            background: var(--brand-red-coral, #0054a6);
+            background: var(--brand-red-coral, #087943);
             color: #fff;
             font-weight: 600;
         }
