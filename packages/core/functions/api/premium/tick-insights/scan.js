@@ -4,7 +4,7 @@ import {
     finderCandidates,
     finderHistorical,
     SCAN_CACHE_KEY,
-    SCAN_STALE_AFTER_MS,
+    finderSampleExpiry,
 } from '../../../../premium/strategy-finder.mjs';
 
 export const onRequestGet = async ({ request, env }) => {
@@ -27,6 +27,8 @@ export const onRequestGet = async ({ request, env }) => {
         const now = Date.now();
         const rows = [];
         for (const market of markets) {
+            const expiresAt = finderSampleExpiry(market);
+            if (!(expiresAt > now)) continue;
             const summary = market.summaries?.[ticks - 1];
             if (summary) {
                 for (const candidate of candidates) {
@@ -37,8 +39,7 @@ export const onRequestGet = async ({ request, env }) => {
                         historical,
                         symbol: market.symbol,
                         label: market.label,
-                        lastTick: market.lastTick,
-                        collectedAt: market.collectedAt,
+                        expiresAt,
                     });
                 }
                 continue;
@@ -60,8 +61,7 @@ export const onRequestGet = async ({ request, env }) => {
                     ...row,
                     symbol: market.symbol,
                     label: market.label,
-                    lastTick: report.lastTick,
-                    collectedAt: market.collectedAt,
+                    expiresAt,
                 }))
             );
         }
@@ -73,7 +73,6 @@ export const onRequestGet = async ({ request, env }) => {
             updatedAt: snapshot.updatedAt,
             marketsScanned: new Set(rows.map(row => row.symbol)).size,
             instrumentsTotal: snapshot.instrumentsByGroup?.[contract] ?? markets.length,
-            stale: rows.some(row => now - row.collectedAt > SCAN_STALE_AFTER_MS),
         });
     } catch {
         return premiumResponse({ error: 'Market data is unavailable' }, 503);

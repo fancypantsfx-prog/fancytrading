@@ -121,3 +121,36 @@ test('serves free launch and timed preview, and enforces paid access on the anal
     assert.equal((await preview.json()).access.access, 'preview');
     assert.equal((await check({ TICK_INSIGHTS_ACCESS: 'paid' })).status, 503);
 });
+
+
+test('the finder drops expired ticks and expired collections even with a fresh snapshot timestamp', async () => {
+    const { onRequestGet } = await import('../functions/api/premium/tick-insights/scan.js');
+    const now = Date.now();
+    const market = {
+        symbol: 'FRESH',
+        groups: ['rise_fall'],
+        lastTick: Math.floor(now / 1000) - 10,
+        collectedAt: now - 5000,
+        summaries: [{ count: 399, rise: 200, fall: 199 }],
+    };
+    const response = await onRequestGet({
+        request: new Request('https://fancytrading.org/api/premium/tick-insights/scan?contract=rise_fall&ticks=1'),
+        env: {
+            STRATEGY_FINDER_CACHE: {
+                get: async () => ({
+                    updatedAt: now,
+                    markets: [
+                        market,
+                        { ...market, symbol: 'OLD_TICK', lastTick: Math.floor(now / 1000) - 180 },
+                        { ...market, symbol: 'OLD_COLLECTION', collectedAt: now - 180000 },
+                        { ...market, symbol: 'UNKNOWN_TICK', lastTick: undefined },
+                    ],
+                }),
+            },
+        },
+    });
+    assert.equal(response.status, 200);
+    const { rows } = await response.json();
+    assert.deepEqual(rows.map(row => row.symbol), ['FRESH', 'FRESH']);
+    assert.equal(rows[0].expiresAt, market.lastTick * 1000 + 180000);
+});

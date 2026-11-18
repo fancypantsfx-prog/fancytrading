@@ -463,7 +463,7 @@ const reviewFancyTrade = async (candidate = 'CALL', automatic = true, recoverSta
         ticks: 5,
         updatedAt: Date.now(),
         marketsScanned: 1,
-        rows: [{ candidate, symbol, historical: { hits: 60, count: 78 } }],
+        rows: [{ expiresAt: Date.now() + 180000, candidate, symbol, historical: { hits: 60, count: 78 } }],
     });
     render(
         <FancyTradingDialogContext.Provider value={{ open: true, setOpen: jest.fn() }}>
@@ -537,9 +537,9 @@ it.each([
     expect(mockSend.mock.calls.some(([request]) => request.auto_start)).toBe(false);
 });
 
-it('buys exactly one contract from a fresh streaming proposal with the reviewed stake', async () => {
+it.each(['CALL', 'PUT', 'DIGITEVEN'])('buys one %s from a fresh streaming proposal at the reviewed stake', async candidate => {
     mockStrategy.supported_contract_types = [];
-    await reviewFancyTrade('CALL', false, false, 'R_50');
+    await reviewFancyTrade(candidate, false, false, 'R_50');
     expect(screen.getByRole('region', { name: 'Review one contract' })).toHaveTextContent('The full stake is at risk.');
     expect(processPurchase).not.toHaveBeenCalled();
 
@@ -549,10 +549,10 @@ it('buys exactly one contract from a fresh streaming proposal with the reviewed 
     await screen.findByText(/Contract 12345 purchased/);
     await waitFor(() => expect(mockTrade.onChange).toHaveBeenCalledWith({ target: { name: 'duration', value: 5 } }));
     expect(mockTrade.onChange).toHaveBeenCalledWith({ target: { name: 'symbol', value: 'R_50' } });
-    expect(mockTrade.setTradeTypeTab).toHaveBeenCalledWith('CALL');
+    expect(mockTrade.setTradeTypeTab).toHaveBeenCalledWith(candidate);
     expect(mockWS.subscribeProposal).toHaveBeenCalledWith(
         {
-            contract_type: 'CALL',
+            contract_type: candidate,
             currency: 'USD',
             underlying_symbol: 'R_50',
             amount: 10,

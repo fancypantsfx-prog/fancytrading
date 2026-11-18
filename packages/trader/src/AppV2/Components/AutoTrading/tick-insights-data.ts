@@ -37,6 +37,7 @@ export type TInsightTrade = {
     stake: number;
     payout: number;
     contractTakeProfit?: number;
+    finderExpiresAt?: number;
 };
 
 export class InsightQuoteChanged extends Error {

@@ -8,7 +8,7 @@
         "production": "fancytrading.org"
     },
     "platform": {
-        "name": "Fancy Trading",
+        "name": "FancyTrading",
         "description": "A FANCIER trading platform.",
         "logo": "brand/platform-logo.svg",
         "home_url": "https://fancytrading.org",

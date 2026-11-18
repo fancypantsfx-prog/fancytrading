@@ -1,11 +1,13 @@
 import { TICK_SAMPLE_SIZE } from '../premium/tick-insights.mjs';
-import { finderContracts, SCAN_CACHE_KEY, summarizeFinderMarket } from '../premium/strategy-finder.mjs';
+import { finderContracts, finderSampleExpiry, SCAN_CACHE_KEY, summarizeFinderMarket } from '../premium/strategy-finder.mjs';
 
 const DERIV_PUBLIC_WS = 'https://api.derivws.com/trading/v1/options/ws/public';
 const REQUEST_SPACING_MS = 1000;
 const RATE_LIMIT_RETRY_MS = 10000;
-const CATALOG_MAX_AGE_MS = 30 * 60 * 1000;
-const REFRESH_BUDGET_MS = 85000;
+const CATALOG_MAX_AGE_MS = 3 * 60 * 1000;
+const REFRESH_BUDGET_MS = 45000;
+
+const isOpen = item => ![0, false].includes(item.exchange_is_open) && ![1, true].includes(item.is_trading_suspended);
 
 const openMarketData = async () => {
     const controller = new AbortController();
@@ -112,13 +114,13 @@ export const warmStrategyFinder = async (cache, connect = openMarketData) => {
         const cachedMarkets = new Map((previous?.markets ?? []).map(market => [market.symbol, market]));
         // Refresh the oldest markets first so a partial refresh cannot starve later symbols.
         const instruments = [...activeInstruments.values()]
-            .filter(item => item.exchange_is_open !== 0 && item.is_trading_suspended !== 1)
+            .filter(isOpen)
             .sort(
                 (a, b) =>
                     (cachedMarkets.get(a.underlying_symbol)?.collectedAt ?? 0) -
                     (cachedMarkets.get(b.underlying_symbol)?.collectedAt ?? 0)
             );
-        // Leave time to publish before the next two-minute invocation.
+        // Leave time to publish before the next scheduled invocation.
         for (const item of instruments) {
             if (Date.now() >= deadline) break;
             const symbol = item.underlying_symbol;
@@ -133,6 +135,8 @@ export const warmStrategyFinder = async (cache, connect = openMarketData) => {
                 break;
             }
             if (history?.prices?.length !== TICK_SAMPLE_SIZE || history.times?.length !== TICK_SAMPLE_SIZE) continue;
+            const lastTick = Number(history.times.at(-1));
+            if (!(finderSampleExpiry({ collectedAt: Date.now(), lastTick }) > Date.now())) continue;
             const tickSize = Number(item.pip_size);
             let precision = Number.isInteger(pip_size) ? pip_size : undefined;
             if (precision === undefined && tickSize > 0 && tickSize <= 1) {
@@ -155,7 +159,7 @@ export const warmStrategyFinder = async (cache, connect = openMarketData) => {
                 summaries,
                 precision,
                 groups: item.groups,
-                lastTick: Number(history.times.at(-1)),
+                lastTick,
                 collectedAt: Date.now(),
             });
             cachedMarkets.delete(symbol);
@@ -166,12 +170,13 @@ export const warmStrategyFinder = async (cache, connect = openMarketData) => {
         const refreshed = markets.length;
         for (const market of cachedMarkets.values()) {
             const active = activeInstruments.get(market.symbol);
-            if (active) markets.push({ ...market, groups: active.groups });
+            if (active && isOpen(active) && finderSampleExpiry(market) > updatedAt)
+                markets.push({ ...market, groups: active.groups });
         }
         const instrumentsByGroup = Object.fromEntries(
             Object.keys(finderContracts).map(group => [
                 group,
-                [...activeInstruments.values()].filter(item => item.groups.includes(group)).length,
+                [...activeInstruments.values()].filter(item => isOpen(item) && item.groups.includes(group)).length,
             ])
         );
         await cache.put(SCAN_CACHE_KEY, JSON.stringify({ updatedAt, markets, instrumentsByGroup, catalog }));

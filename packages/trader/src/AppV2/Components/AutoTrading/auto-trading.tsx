@@ -599,6 +599,8 @@ const AutoTrading = observer(
 
         const ensureInsightTrade = (draft: TInsightTrade, signal: AbortSignal) => {
             if (signal.aborted) throw new Error(localize('The trade review was closed.'));
+            if (draft.finderExpiresAt !== undefined && draft.finderExpiresAt <= Date.now())
+                throw new Error(localize('This ranking expired. Return to Fancy Strategy Finder for current trades.'));
             if (
                 !account_id ||
                 client.loginid !== account_id ||
@@ -1245,7 +1247,7 @@ const AutoTrading = observer(
                             buy={buyFromInsights}
                         />
                     ) : (
-                        <p role='status'>{localize('Choose an open Rise / Fall or Digits market to use Signal Strategy.')}</p>
+                        <p role='status'>{localize('Choose an open Rise / Fall or Digits market to use Fancy Probs.')}</p>
                     )}
                 </section>
             );

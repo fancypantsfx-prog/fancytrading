@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, configure, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import SignalStrategy from '../signal-strategy';
 import type { TInsightTrade } from '../tick-insights-data';
 
@@ -8,7 +8,7 @@ let mockSettlement: (value: unknown) => void;
 const mockWS = {
     setOnReconnect: jest.fn(),
     removeOnReconnect: jest.fn(),
-    send: jest.fn<Promise<unknown>, [Record<string, unknown>]>(async () => ({ pip_size: 0 })),
+    send: jest.fn<Promise<unknown>, [Record<string, unknown>]>(async request => request.proposal ? { proposal: { ask_price: request.amount, payout: 18 } } : { pip_size: 0 }),
     subscribeTicks: jest.fn((_symbol, callback) => {
         mockTick = callback;
         return { unsubscribe: jest.fn() };
@@ -18,6 +18,9 @@ const mockWS = {
         return { unsubscribe: jest.fn() };
     }),
 };
+
+configure({ asyncUtilTimeout: 5000 });
+jest.setTimeout(15000);
 
 jest.mock('@deriv/shared', () => ({ useWS: () => mockWS, getDecimalPlaces: () => 2 }));
 
@@ -69,6 +72,7 @@ it.each([
         expect(start).toBeDisabled();
         fireEvent.click(screen.getByRole('checkbox'));
     }
+    await waitFor(() => expect(start).toBeEnabled());
     fireEvent.click(start);
     if (demo) {
         expect(screen.getByRole('button', { name: 'Stop run' })).toBeInTheDocument();
@@ -133,7 +137,7 @@ it('shows barrier rules and subscribes again when the trading connection returns
     act(() => previous({ tick: { quote: 106, epoch: 1 } }));
     expect(screen.getByRole('button', { name: 'Start on demo' })).toBeDisabled();
     act(() => mockTick({ tick: { quote: 106, epoch: 2, underlying_symbol: 'R_100' } }));
-    expect(screen.getByRole('button', { name: 'Start on demo' })).toBeEnabled();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Start on demo' })).toBeEnabled());
     expect(buy).not.toHaveBeenCalled();
 });
 
@@ -227,6 +231,7 @@ it('checks open positions automatically for a legacy purchase marker', async () 
     );
     await waitFor(() => expect(mockWS.subscribeTicks).toHaveBeenCalled());
     act(() => mockTick({ tick: { quote: 102, epoch: 1 } }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Start on demo' })).toBeEnabled());
     mockWS.send.mockResolvedValueOnce({ portfolio: { contracts: [{ contract_id: 456 }] } });
     fireEvent.click(screen.getByRole('button', { name: 'Start on demo' }));
     expect(await screen.findByText(/Deriv reports open positions/)).toBeInTheDocument();

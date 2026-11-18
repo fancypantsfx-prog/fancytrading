@@ -1,6 +1,7 @@
 import React from 'react';
 
 import { useLocalStorageData } from '@deriv/api';
+import { getPlatformName } from '@deriv/shared';
 import { Modal } from '@deriv-com/quill-ui';
 import { Localize } from '@deriv-com/translations';
 import { useDevice } from '@deriv-com/ui';
@@ -86,7 +87,9 @@ const OnboardingGuide = ({ type = 'trade_page', is_dark_mode_on, callback }: TOn
         primaryButtonCallback: onGuideSkip,
         ...(is_trade_page_guide
             ? {
-                  title: <Localize i18n_default_text='Welcome to Deriv Trader' />,
+                  title: (
+                      <Localize i18n_default_text='Welcome to {{platform}}' values={{ platform: getPlatformName() }} />
+                  ),
                   content: (
                       <Localize i18n_default_text='Enjoy a smooth, intuitive trading experience. Here’s a quick tour to get you started.' />
                   ),

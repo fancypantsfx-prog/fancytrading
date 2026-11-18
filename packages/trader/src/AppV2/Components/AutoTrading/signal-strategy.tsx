@@ -2,6 +2,7 @@ import React from 'react';
 import { localize } from '@deriv-com/translations';
 import { getDecimalPlaces, useWS } from '@deriv/shared';
 import {
+    getLiveInsightQuote,
     InsightRateLimitError,
     isInsightRateLimit,
     noteInsightRateLimit,
@@ -109,6 +110,43 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
     tradeBlock.current = block;
     const marker = account && 'fancytrading-rule-purchase:' + account.id;
     const recovery = React.useRef<AbortController>();
+    const availabilityKey = JSON.stringify([symbol, currency, family, digit, ticks, stake]);
+    const [availability, setAvailability] = React.useState<{ key: string; sides: boolean[] }>();
+    const [hasFirst, hasSecond] = !block && availability?.key === availabilityKey ? availability.sides : [];
+    const availableChoice = choice === 'first' ? hasFirst : choice === 'second' ? hasSecond : hasFirst && hasSecond;
+    const send = ws.send;
+    React.useEffect(() => {
+        const amount = Number(stake);
+        const duration = Number(ticks);
+        if (block || active || !Number.isFinite(amount) || amount <= 0 ||
+            !Number.isInteger(duration) || duration < 1 || duration > 10) return;
+
+        const controller = new AbortController();
+        let timer: ReturnType<typeof setTimeout>;
+        const refresh = async () => {
+            const sides = await Promise.all(signalContracts[family].map(async (type, index) => {
+                if ((family === 'match' || family === 'barrier') && !signalDigits(family, index === 0 ? 'first' : 'second').includes(digit)) return false;
+                const candidate = family === 'match' || family === 'barrier' ? type + ':' + digit : type;
+                try {
+                    const quote = await getLiveInsightQuote(send, {
+                        symbol, currency, stake: amount, ticks: duration, candidate,
+                    }, controller.signal);
+                    return quote?.stake === amount;
+                } catch {
+                    return false;
+                }
+            }));
+            if (controller.signal.aborted) return;
+            setAvailability({ key: availabilityKey, sides });
+            timer = setTimeout(refresh, 15000);
+        };
+        void refresh();
+        return () => {
+            controller.abort();
+            clearTimeout(timer);
+        };
+    }, [availabilityKey, block, active, currency, digit, family, send, stake, symbol, ticks]);
+
     const settings = {
         family,
         choice,
@@ -511,6 +549,7 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
     const start = (event: React.FormEvent) => {
         event.preventDefault();
         if (
+            !availableChoice ||
             !latestTicks.current.length ||
             !marker ||
             !account ||
@@ -561,7 +600,7 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                     return;
                 }
                 if (!lock) {
-                    setStatus(localize('A Signal Strategy run is already open for this account in another tab.'));
+                    setStatus(localize('A Fancy Probs run is already open for this account in another tab.'));
                     return;
                 }
                 const previous = localStorage.getItem(marker);
@@ -653,9 +692,9 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
     };
 
     return (
-        <section aria-label={localize('Signal Strategy')}>
+        <section aria-label={localize('Fancy Probs')}>
             <h2>
-                {localize('Signal Strategy')} � {contractLabel}
+                {localize('Fancy Probs')} � {contractLabel}
             </h2>
             <p>
                 {localize(
@@ -738,16 +777,19 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                                         if (!signalDigits(family, next).includes(digit)) setDigit(5);
                                     }}
                                 >
-                                    <option value='first'>{candidateLabel(signalContracts[family][0])}</option>
-                                    <option value='second'>{candidateLabel(signalContracts[family][1])}</option>
-                                    <option value='alternate'>{localize('Alternate between both')}</option>
-                                    <option value='random'>{localize('Pick either side at random')}</option>
-                                    {(family === 'parity' || family === 'direction') && (
+                                    {!availableChoice && <option value={choice}>{localize('No available contract selected')}</option>}
+                                    {hasFirst && <option value='first'>{candidateLabel(signalContracts[family][0])}</option>}
+                                    {hasSecond && <option value='second'>{candidateLabel(signalContracts[family][1])}</option>}
+                                    {hasFirst && hasSecond && (
                                         <>
-                                            <option value='same'>{localize('Follow the latest tick')}</option>
-                                            <option value='opposite'>
-                                                {localize('Go opposite to the latest tick')}
-                                            </option>
+                                            <option value='alternate'>{localize('Alternate between both')}</option>
+                                            <option value='random'>{localize('Pick either side at random')}</option>
+                                            {(family === 'parity' || family === 'direction') && (
+                                                <>
+                                                    <option value='same'>{localize('Follow the latest tick')}</option>
+                                                    <option value='opposite'>{localize('Go opposite to the latest tick')}</option>
+                                                </>
+                                            )}
                                         </>
                                     )}
                                 </select>
@@ -1148,6 +1190,7 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                         <button
                             type='submit'
                             disabled={
+                                !availableChoice ||
                                 startPending ||
                                 !!block ||
                                 !account ||
@@ -1165,6 +1208,13 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
                 </div>
             </form>
             {block && <p>{block}</p>}
+            {!block && !active && !availableChoice && (
+                <p role='status'>{availability?.key === availabilityKey
+                    ? hasFirst || hasSecond
+                        ? localize('Choose an available contract side in Rules.')
+                        : localize('No contracts are available for these settings.')
+                    : localize('Checking contract availability...')}</p>
+            )}
             {status && <p role='status'>{status}</p>}
             <p>
                 {localize('Settled trades')} {totals.count} · {localize('Net result')} {money(totals.net)}

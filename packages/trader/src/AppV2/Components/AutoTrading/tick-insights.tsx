@@ -28,7 +28,8 @@ const formatMoney = (value: number, currency: string) =>
 
 type TFinderRow = Pick<TInsightRow, 'candidate' | 'historical'> & {
     symbol: string;
-    collectedAt: number;
+    expiresAt: number;
+    quoteExpiresAt?: number;
     label?: string;
 };
 type TFinderReport = {
@@ -37,7 +38,7 @@ type TFinderReport = {
     ticks: number;
     updatedAt: number;
     marketsScanned: number;
-    stale: boolean;
+    settings?: string;
     instrumentsTotal?: number;
 };
 const finderContracts = {
@@ -125,7 +126,8 @@ const InsightsPanel = ({
     const [ticks, setTicks] = React.useState(String(preset?.ticks ?? initial_ticks));
     const [access, setAccess] = React.useState<TPremiumAccess | 'checking' | 'error'>('checking');
     const [check, setCheck] = React.useState(0);
-    const [report, setReport] = React.useState<TFinderReport>();
+    const [quotedReport, setReport] = React.useState<TFinderReport>();
+    const [, checkExpiry] = React.useReducer(version => version + 1, 0);
     const [loadingScan, setLoadingScan] = React.useState(false);
     const [refreshVersion, refreshRankings] = React.useReducer(version => version + 1, 0);
     const [error, setError] = React.useState('');
@@ -137,7 +139,6 @@ const InsightsPanel = ({
     });
     const [markets, setMarkets] = React.useState<{ symbol: string; label: string }[]>([]);
     const request = React.useRef<AbortController>();
-    const savedRankings = React.useRef(new Map<string, TFinderReport>());
 
     React.useEffect(() => {
         if (view !== 'compare' || markets.length || typeof access === 'string' || access.access === 'locked') return;
@@ -172,7 +173,6 @@ const InsightsPanel = ({
                 setBusy(false);
                 setReport(undefined);
                 setDraft(undefined);
-                savedRankings.current.clear();
                 setAccess('checking');
                 setCheck(value => value + 1);
             },
@@ -186,15 +186,38 @@ const InsightsPanel = ({
     const scanSettings = new URLSearchParams({ contract: finderGroup, ticks, barrier: finderBarrier }).toString();
     const hasScanAccess = typeof access !== 'string' && access.access !== 'locked';
 
-    const scanPaused = !!draft || busy;
+    const settings = JSON.stringify([scanSettings, stake, currency]);
+    const report = quotedReport?.settings === settings && !purchase_block && quotedReport
+        ? { ...quotedReport, rows: quotedReport.rows.filter(row => (row.quoteExpiresAt ?? 0) > Date.now()) }
+        : undefined;
+
+    const finderExpiry = draft?.trade.finderExpiresAt;
+    const nextExpiry = Math.min(
+        ...(report?.rows.map(row => row.quoteExpiresAt ?? Infinity) ?? []),
+        finderExpiry !== undefined && finderExpiry > Date.now() ? finderExpiry : Infinity
+    );
     React.useEffect(() => {
-        if (view !== 'finder' || scanPaused || !hasScanAccess || !/^([1-9]|1[0-9]|20)$/.test(ticks)) return;
+        if (!Number.isFinite(nextExpiry)) return;
+        const timer = window.setTimeout(checkExpiry, Math.max(1, nextExpiry - Date.now()));
+        return () => window.clearTimeout(timer);
+    }, [nextExpiry]);
+    const finderExpired = finderExpiry !== undefined && finderExpiry <= Date.now();
+
+    const scanPaused = !!draft || busy;
+    const send = ws.send;
+    React.useEffect(() => {
+        const amount = Number(stake);
+        if (
+            view !== 'finder' || scanPaused || !hasScanAccess || purchase_block ||
+            !/^([1-9]|1[0-9]|20)$/.test(ticks) || !Number.isFinite(amount) || amount < 0.01 || amount > 1000000
+        ) {
+            setLoadingScan(false);
+            if (purchase_block) setReport(undefined);
+            return;
+        }
         const controller = new AbortController();
         let timer: number;
-        const saved = savedRankings.current.get(scanSettings);
-        setReport(saved);
         const refresh = async () => {
-            const previous = savedRankings.current.get(scanSettings);
             setLoadingScan(true);
             try {
                 const fetchController = new AbortController();
@@ -210,25 +233,43 @@ const InsightsPanel = ({
                 });
                 if (controller.signal.aborted) return;
                 if (next === null) {
-                    savedRankings.current.clear();
                     setReport(undefined);
                     setAccess({ access: 'locked' });
                     return;
                 }
-                if (next) {
-                    savedRankings.current.set(scanSettings, next);
-                    setReport(next);
-                    setError('');
-                } else if (previous) {
-                    setReport({ ...previous, stale: true });
-                }
-            } catch {
+
+                // Bound proposal traffic per refresh, including during manual refreshes.
+                const candidates = next.rows.filter(row => row.expiresAt > Date.now()).slice(0, 12);
+                const rows = await Promise.all(candidates.map(async row => {
+                    try {
+                        const quote = await getLiveInsightQuote(send, {
+                            symbol: row.symbol,
+                            currency,
+                            stake: amount,
+                            ticks: next.ticks,
+                            candidate: row.candidate,
+                        }, controller.signal);
+                        return quote?.stake === amount
+                            ? { ...row, quoteExpiresAt: Math.min(row.expiresAt, Date.now() + 30000) }
+                            : null;
+                    } catch (failure) {
+                        if (failure instanceof InsightRateLimitError) throw failure;
+                        return null;
+                    }
+                }));
                 if (controller.signal.aborted) return;
-                if (previous) setReport({ ...previous, stale: true });
-                else
-                    setError(
-                        localize('Rankings are temporarily unavailable. Strategy Finder will retry automatically.')
-                    );
+                setReport({
+                    ...next,
+                    settings,
+                    rows: rows.filter((row): row is NonNullable<typeof row> => !!row && row.quoteExpiresAt > Date.now()),
+                });
+                setError('');
+            } catch (failure) {
+                if (controller.signal.aborted) return;
+                setReport(undefined);
+                setError(failure instanceof InsightRateLimitError
+                    ? localize('Deriv is limiting requests. Fancy Strategy Finder will retry automatically.')
+                    : localize('Rankings are temporarily unavailable. Fancy Strategy Finder will retry automatically.'));
             } finally {
                 if (!controller.signal.aborted) {
                     setLoadingScan(false);
@@ -241,7 +282,7 @@ const InsightsPanel = ({
             controller.abort();
             window.clearTimeout(timer);
         };
-    }, [view, scanPaused, hasScanAccess, ticks, scanSettings, refreshVersion]);
+    }, [view, scanPaused, hasScanAccess, ticks, scanSettings, refreshVersion, settings, currency, stake, purchase_block, send]);
 
     const is_reviewing = !!draft;
     React.useEffect(() => {
@@ -279,7 +320,8 @@ const InsightsPanel = ({
     const review = (
         row: Pick<TInsightRow, 'candidate' | 'symbol' | 'stake' | 'payout'>,
         automatic: boolean,
-        duration = report?.ticks ?? Number(ticks)
+        duration = report?.ticks ?? Number(ticks),
+        finderExpiresAt?: number
     ) => {
         if (row.stake !== Number(stake)) {
             setError(localize('The quoted stake differs from the entered stake. Adjust the stake and compare again.'));
@@ -298,6 +340,7 @@ const InsightsPanel = ({
                 currency,
                 stake: row.stake,
                 payout: row.payout,
+                finderExpiresAt,
             },
             run: automatic
                 ? {
@@ -311,7 +354,7 @@ const InsightsPanel = ({
     };
 
     const quoteFinderRow = async (row: TFinderRow, automatic: boolean) => {
-        if (!report || busy) return;
+        if (!report || busy || (row.quoteExpiresAt ?? 0) <= Date.now()) return;
         const controller = new AbortController();
         request.current = controller;
         setBusy(true);
@@ -323,10 +366,14 @@ const InsightsPanel = ({
                 controller.signal
             );
             if (controller.signal.aborted) return;
-            if (!quote) throw new Error(localize('Deriv has no live quote for this selection.'));
-            review({ ...row, ...quote }, automatic, report.ticks);
+            if (!quote || row.expiresAt <= Date.now()) throw new Error(localize('Deriv has no live quote for this selection.'));
+            review({ ...row, ...quote }, automatic, report.ticks, row.expiresAt);
         } catch (failure) {
             if (!controller.signal.aborted) {
+                setReport(previous => previous && {
+                    ...previous,
+                    rows: previous.rows.filter(candidate => candidate !== row),
+                });
                 setError(
                     failure instanceof InsightRateLimitError
                         ? localize('Deriv is limiting requests. Wait a minute before requesting another quote.')
@@ -339,7 +386,7 @@ const InsightsPanel = ({
     };
 
     const confirm = async () => {
-        if (!draft || busy || (draft.run ? execution_block : purchase_block)) return;
+        if (!draft || busy || finderExpired || (draft.run ? execution_block : purchase_block)) return;
         const controller = new AbortController();
         request.current = controller;
         setBusy(true);
@@ -397,7 +444,9 @@ const InsightsPanel = ({
     if (draft) {
         const { trade, run } = draft;
         const title = run ? localize('Review automatic run') : localize('Review one contract');
-        const block = run ? execution_block : purchase_block;
+        const block = finderExpired
+            ? localize('This ranking expired. Return to Fancy Strategy Finder for current trades.')
+            : run ? execution_block : purchase_block;
         const money = (value: number) => formatMoney(value, trade.currency);
         const strategies = run ? optionsFor(trade.candidate, trade.ticks) : [];
         const selected_strategy = strategies.find(option => option.id === run?.strategyId);
@@ -602,10 +651,10 @@ const InsightsPanel = ({
                     disabled={busy}
                     onClick={() => setView('finder')}
                 >
-                    {localize('Strategy finder')}
+                    {localize('Fancy Strategy Finder')}
                 </button>
                 <MenuHelp
-                    label={localize('Strategy finder')}
+                    label={localize('Fancy Strategy Finder')}
                     description={localize(
                         'Rank instruments using historical ticks. Select a result to request a live quote.'
                     )}
@@ -625,10 +674,10 @@ const InsightsPanel = ({
                 {onOpenSignal && (
                     <>
                         <button type='button' disabled={busy} onClick={onOpenSignal}>
-                            {localize('Signal Strategy')}
+                            {localize('Fancy Probs')}
                         </button>
                         <MenuHelp
-                            label={localize('Signal Strategy')}
+                            label={localize('Fancy Probs')}
                             description={localize('Use live ticks to run a trade rule for the selected contract.')}
                         />
                     </>
@@ -848,9 +897,9 @@ const InsightsPanel = ({
                     />
                 </>
             )}
+            {view === 'finder' && purchase_block && <p role='status'>{purchase_block}</p>}
             {view === 'finder' && report && (
                 <>
-                    {purchase_block && <p role='status'>{purchase_block}</p>}
                     {execution_block && execution_block !== purchase_block && <p role='status'>{execution_block}</p>}
                     {execution_block && onRefreshAutomation && (
                         <button type='button' disabled={busy} onClick={onRefreshAutomation}>
@@ -883,9 +932,6 @@ const InsightsPanel = ({
                             'Top results won most often in the historical sample for your settings. Check the live payout before choosing a trade.'
                         )}
                     </p>
-                    {report.stale && (
-                        <p role='status'>{localize('Some historical samples are more than 30 minutes old.')}</p>
-                    )}
                     <div
                         className='tick-insights__table'
                         tabIndex={0}
@@ -953,7 +999,7 @@ const InsightsPanel = ({
                             </tbody>
                         </table>
                     </div>
-                    {!report.rows.length && <p role='status'>{localize('No matching tick history is available.')}</p>}
+                    {!report.rows.length && <p role='status'>{localize('No fresh, immediately available contracts were found for these settings.')}</p>}
                 </>
             )}
             <p className='tick-insights__note'>
@@ -1006,6 +1052,7 @@ const TickInsights = (props: TProps) => {
                 </button>
             </header>
             <InsightsPanel
+                key={JSON.stringify([props.account_label, props.currency])}
                 {...props}
                 starred={starred}
                 setStarred={setStarred}

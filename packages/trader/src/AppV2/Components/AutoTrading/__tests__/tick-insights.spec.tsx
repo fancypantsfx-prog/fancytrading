@@ -94,12 +94,13 @@ const props = {
 
 beforeEach(() => {
     jest.clearAllMocks();
+    mockRateLimitProposal = false;
     (fetchStrategyFinder as jest.Mock).mockResolvedValue({
         access: { access: 'free' },
         ticks: 5,
         updatedAt: Date.now(),
         marketsScanned: 1,
-        rows: [{ candidate: 'PUT', symbol: '1HZ100V', historical: { hits: 6, count: 10 } }],
+        rows: [{ expiresAt: Date.now() + 180000, candidate: 'PUT', symbol: '1HZ100V', historical: { hits: 6, count: 10 } }],
     });
     localStorage.clear();
     HTMLDialogElement.prototype.showModal = function () {
@@ -107,7 +108,7 @@ beforeEach(() => {
     };
 });
 
-it('scans the cached snapshot without Deriv requests and quotes only the selected trade', async () => {
+it('checks cached rankings against Deriv and re-quotes before review', async () => {
     (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
     render(
         <FancyTradingDialogContext.Provider
@@ -125,11 +126,11 @@ it('scans the cached snapshot without Deriv requests and quotes only the selecte
     fireEvent.click(screen.getByRole('button', { name: 'Refresh rankings' }));
     await waitFor(() => expect(fetchStrategyFinder).toHaveBeenCalledTimes(initialRequests + 1));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh rankings' })).toBeEnabled());
-    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledTimes(2);
 
     fireEvent.click(screen.getByRole('button', { name: 'Review automatic' }));
     expect(await screen.findByRole('region', { name: 'Review automatic run' })).toBeInTheDocument();
-    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend).toHaveBeenCalledTimes(3);
     expect(mockSend).toHaveBeenCalledWith(expect.objectContaining({ proposal: 1, contract_type: 'PUT' }));
     expect(screen.getByRole('button', { name: 'Confirm and start run' })).toBeDisabled();
     expect(props.onBuy).not.toHaveBeenCalled();
@@ -192,8 +193,8 @@ it('stops queued quotes and reports the broker rate limit inside FancyTrading', 
             <TickInsights {...props} />
         </FancyTradingDialogContext.Provider>
     );
-    fireEvent.click(await screen.findByRole('button', { name: 'Get live quote' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Deriv is limiting requests.');
+    expect(screen.queryByRole('button', { name: 'Get live quote' })).toBeNull();
     expect(mockSend.mock.calls.filter(([payload]) => payload.proposal)).toHaveLength(1);
     expect(mockSend).toHaveBeenCalledWith(
         expect.objectContaining({
