@@ -1,8 +1,10 @@
 import { getPremiumAccess, premiumResponse } from '../../../../premium/access.mjs';
 import { analyzeTickInsights, TICK_INSIGHTS_FEATURE, TICK_SAMPLE_SIZE } from '../../../../premium/tick-insights.mjs';
 import {
+    CONTRACT_LIST_MAX_AGE_MS,
     finderCandidates,
     finderHistorical,
+    finderSupportsDuration,
     SCAN_CACHE_KEY,
     finderSampleExpiry,
 } from '../../../../premium/strategy-finder.mjs';
@@ -25,11 +27,14 @@ export const onRequestGet = async ({ request, env }) => {
         const now = Date.now();
         const rows = [];
         for (const market of markets) {
-            const expiresAt = finderSampleExpiry(market);
+            const listing = snapshot.contractLists?.[market.symbol];
+            const expiresAt = Math.min(finderSampleExpiry(market), (listing?.checkedAt ?? 0) + CONTRACT_LIST_MAX_AGE_MS);
             if (!(expiresAt > now)) continue;
+            const availableCandidates = candidates.filter(candidate => finderSupportsDuration(listing.contracts, candidate, ticks));
+            if (!availableCandidates.length) continue;
             const summary = market.summaries?.[ticks - 1];
             if (summary) {
-                for (const candidate of candidates) {
+                for (const candidate of availableCandidates) {
                     const historical = finderHistorical(summary, candidate);
                     if (!historical) continue;
                     rows.push({
@@ -50,7 +55,7 @@ export const onRequestGet = async ({ request, env }) => {
                 family: 'digital',
                 ticks,
                 windowSize: TICK_SAMPLE_SIZE,
-                candidates,
+                candidates: availableCandidates,
                 historyOnly: true,
             });
             if (!report) continue;

@@ -39,6 +39,13 @@ export const signalContracts = {
     barrier: ['DIGITOVER', 'DIGITUNDER'],
 } as const;
 
+export const signalTradeTypes: Record<string, readonly string[]> = {
+    rise_fall: signalContracts.direction,
+    even_odd: signalContracts.parity,
+    match_diff: signalContracts.match,
+    over_under: signalContracts.barrier,
+};
+
 const digits = Array.from({ length: 10 }, (_, digit) => digit);
 
 export const signalDigits = (family: TSignalFamily, choice: TSignalChoice) =>

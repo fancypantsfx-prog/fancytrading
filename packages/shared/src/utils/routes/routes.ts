@@ -4,6 +4,7 @@ export const routes = {
     callback_page: '/callback',
     error404: '/404',
     endpoint: '/endpoint',
+    help: '/help',
 
     // Trading routes
     menu: '/menu',

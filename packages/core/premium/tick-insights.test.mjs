@@ -140,6 +140,9 @@ test('the finder drops expired ticks and expired collections even with a fresh s
             STRATEGY_FINDER_CACHE: {
                 get: async () => ({
                     updatedAt: now,
+                    contractLists: Object.fromEntries(['FRESH', 'OLD_TICK', 'OLD_COLLECTION', 'UNKNOWN_TICK'].map(symbol => [
+                        symbol, { checkedAt: now, contracts: [{ type: 'CALL', minimum: 1, maximum: 10 }] },
+                    ])),
                     markets: [
                         market,
                         { ...market, symbol: 'OLD_TICK', lastTick: Math.floor(now / 1000) - 180 },
@@ -152,11 +155,11 @@ test('the finder drops expired ticks and expired collections even with a fresh s
     });
     assert.equal(response.status, 200);
     const { rows } = await response.json();
-    assert.deepEqual(rows.map(row => row.symbol), ['FRESH', 'FRESH']);
+    assert.deepEqual(rows.map(row => row.symbol), ['FRESH']);
     assert.equal(rows[0].expiresAt, market.lastTick * 1000 + 180000);
 });
 
-test('the finder authorizes a live fallback while the shared snapshot is empty', async () => {
+test('the finder returns an empty response while the Worker warms the cache', async () => {
     const request = new Request('https://fancytrading.org/api/premium/tick-insights/scan?contract=rise_fall&ticks=5');
     const response = await onRequestGet({ request, env: {} });
     assert.equal(response.status, 200);
@@ -172,6 +175,9 @@ test('a failed market advances the refresh cursor and preserves only fresh sampl
     let snapshot = {
         updatedAt: now - 30000,
         lastAttempted: 'FIRST',
+        contractLists: Object.fromEntries(['FIRST','THIRD'].map(symbol => [
+            symbol, { checkedAt: now, contracts: [{ type: 'CALL', minimum: 1, maximum: 10 }] },
+        ])),
         catalog: {
             updatedAt: now,
             instruments: symbols.map(underlying_symbol => ({ underlying_symbol, groups: ['rise_fall'] })),
@@ -203,4 +209,56 @@ test('a failed market advances the refresh cursor and preserves only fresh sampl
     await warmStrategyFinder(cache, connect, wait);
     assert.deepEqual(calls, ['SECOND', 'THIRD', 'FIRST', 'SECOND']);
     assert.deepEqual(snapshot.markets.map(market => market.symbol), ['THIRD', 'FIRST']);
+});
+
+test('a scheduled refresh prepares only eligible tick rankings before any Pages request', async () => {
+    const lastTick = Math.floor(Date.now() / 1000);
+    const history = { prices: ticks.prices, times: ticks.times.map((_, i) => lastTick - 399 + i) };
+    const call = { contract_type: 'CALL', contract_category: 'callput', min_contract_duration: '5t', max_contract_duration: '10t' };
+    const instruments = [
+        { underlying_symbol: 'OPEN', exchange_is_open: 1 },
+        { underlying_symbol: 'CLOSED', exchange_is_open: 0 },
+        { underlying_symbol: 'STALE', exchange_is_open: 1 },
+    ];
+    const requests = [];
+    let snapshot;
+    const cache = {
+        get: async () => snapshot,
+        put: async (_key, value) => { snapshot = JSON.parse(value); },
+    };
+    const connect = async () => ({
+        close: () => undefined,
+        send: async request => {
+            requests.push(request);
+            if (request.active_symbols) return { active_symbols: request.contract_type.includes('CALL') ? instruments : [] };
+            if (request.contracts_for) return { contracts_for: { available: [
+                call,
+                { ...call, contract_type: 'PUT', contract_category: 'higherlower' },
+                { ...call, contract_type: 'PUT', start_type: 'forward' },
+                { ...call, contract_type: 'PUT', min_contract_duration: '1m', max_contract_duration: '1d' },
+            ] } };
+            return {
+                history: request.ticks_history === 'STALE'
+                    ? { ...history, times: history.times.map(time => time - 181) }
+                    : history,
+            };
+        },
+    });
+    await warmStrategyFinder(cache, connect, async () => undefined);
+    assert.deepEqual(snapshot.markets.map(market => market.symbol), ['OPEN']);
+    assert.deepEqual(requests.filter(request => request.contracts_for).map(request => request.contracts_for), ['OPEN']);
+    const requestCount = requests.length;
+    const scan = async duration => {
+        const response = await onRequestGet({
+            request: new Request(`https://fancytrading.org/api/premium/tick-insights/scan?contract=rise_fall&ticks=${duration}`),
+            env: { STRATEGY_FINDER_CACHE: cache },
+        });
+        assert.equal(response.status, 200);
+        return response.json();
+    };
+    const snapshotAtFiveTicks = await scan(5);
+    assert.deepEqual(snapshotAtFiveTicks.rows.map(row => row.candidate), ['CALL']);
+    assert.deepEqual((await scan(4)).rows, []);
+    assert.deepEqual((await scan(11)).rows, []);
+    assert.equal(requests.length, requestCount);
 });

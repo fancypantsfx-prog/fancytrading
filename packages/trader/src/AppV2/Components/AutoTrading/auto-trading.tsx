@@ -38,7 +38,7 @@ import {
 import TickInsights from './tick-insights';
 import SignalStrategy from './signal-strategy';
 import { FancyTradingDialogContext } from './fancy-trading-dialog-context';
-import { signalContracts } from './signal-rule';
+import { signalTradeTypes } from './signal-rule';
 import { getInsightContract, InsightQuoteChanged, waitForInsightRequest } from './tick-insights-data';
 import type { TInsightRun, TInsightStrategyOption, TInsightTrade } from './tick-insights-data';
 import './auto-trading.scss';
@@ -356,8 +356,6 @@ const AutoTrading = observer(
     ({ is_market_closed, onPurchaseSuccess }: { is_market_closed?: boolean; onPurchaseSuccess?: () => void }) => {
         const store = useTraderStore();
         const fancyTrading = React.useContext(FancyTradingDialogContext);
-        const [openingSignal, setOpeningSignal] = React.useState(false);
-        const [signalError, setSignalError] = React.useState('');
         const { client, common, ui, portfolio } = useStore();
         const ws = useWS();
         const [mode, setMode] = React.useState<'manual' | 'automatic'>('manual');
@@ -1185,37 +1183,12 @@ const AutoTrading = observer(
                 </div>
             </dialog>
         );
-        const signalTypesByTradeType: Record<string, readonly string[]> = {
-            rise_fall: signalContracts.direction,
-            even_odd: signalContracts.parity,
-            match_diff: signalContracts.match,
-            over_under: signalContracts.barrier,
-        };
-        const signalTypes = signalTypesByTradeType[store.contract_type.toLowerCase()];
+        const signalTypes = signalTradeTypes[store.contract_type.toLowerCase()];
         const signalContract = signalTypes?.find(type => type === contract) ?? signalTypes?.[0];
-        const signalContractSupported = !!signalContract;
-        const openSignal = async () => {
-            if (!fancyTrading || openingSignal || !client.is_logged_in) return;
-            setSignalError('');
-            setOpeningSignal(true);
-            try {
-                if (!signalContractSupported || store.is_market_closed || is_market_closed) {
-                    const fallback = store.active_symbols.find(
-                        market => market.underlying_symbol === '1HZ100V' && market.exchange_is_open === 1
-                    );
-                    if (!fallback) throw new Error('Default market unavailable');
-                    if (store.symbol !== fallback.underlying_symbol) {
-                        await store.onChange({ target: { name: 'symbol', value: fallback.underlying_symbol } });
-                    }
-                    await store.onChange({ target: { name: 'contract_type', value: 'rise_fall' } });
-                }
-                fancyTrading.setOpen(false);
-                fancyTrading.setSignalOpen(true);
-            } catch {
-                setSignalError(localize('The default signal market is unavailable. Choose an open Rise / Fall or Digits market.'));
-            } finally {
-                setOpeningSignal(false);
-            }
+        const openSignal = () => {
+            if (!fancyTrading || !client.is_logged_in) return;
+            fancyTrading.setOpen(false);
+            fancyTrading.setSignalOpen(true);
         };
 
         const signalOpen = !!client.is_logged_in && !!fancyTrading?.signalOpen;
@@ -1230,7 +1203,7 @@ const AutoTrading = observer(
                             {localize('Back to normal trading')}
                         </button>
                     </header>
-                    {signalContract ? (
+                    {signalContract && !is_market_closed && !store.is_market_closed ? (
                         <SignalStrategy
                             key={String(account_id) + ':' + store.symbol + ':' + store.currency + ':' + signalContract}
                             symbol={store.symbol}
@@ -1325,8 +1298,7 @@ const AutoTrading = observer(
                     purchase_block={connection_block || (unconfirmed_buy ? unconfirmed_message : '')}
                     onShowTrade={showInsightTrade}
                     onBuy={buyFromInsights}
-                    onOpenSignal={!openingSignal ? () => void openSignal() : undefined}
-                    signalError={signalError}
+                    onOpenSignal={openSignal}
                     getStrategies={getInsightStrategyOptions}
                     onRefreshAutomation={eligible && !state.busy ? () => { void controller.current?.refresh(); } : undefined}
                     onStart={startFromInsights}

@@ -1,0 +1,82 @@
+.fancy-help {
+    box-sizing: border-box;
+    width: min(100%, 880px);
+    margin-inline: auto;
+    padding: clamp(16px, 4vw, 48px);
+    color: var(--text-general);
+    font-size: 1.6rem;
+    line-height: 1.55;
+    overflow: auto;
+
+    &__hero {
+        padding: clamp(20px, 5vw, 44px);
+        border: 1px solid var(--border-normal);
+        border-top: 4px solid var(--brand-red-coral, #087943);
+        border-radius: 16px;
+        background: var(--general-section-1);
+
+        h1 {
+            font-size: clamp(2.8rem, 6vw, 4.4rem);
+            line-height: 1.15;
+        }
+
+        nav {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px 24px;
+            margin-top: 20px;
+        }
+    }
+
+    &__panel {
+        scroll-margin-block-start: 16px;
+        margin-top: 24px;
+        padding: clamp(16px, 4vw, 32px);
+        border: 1px solid var(--border-normal);
+        border-radius: 12px;
+        background: var(--general-main-1);
+
+        h2 {
+            font-size: 2.4rem;
+        }
+
+        details {
+            padding: 12px 0;
+            border-bottom: 1px solid var(--border-normal);
+        }
+
+        summary {
+            cursor: pointer;
+            font-weight: 600;
+        }
+    }
+
+    &__progress {
+        margin-top: 12px;
+        color: var(--text-less-prominent);
+    }
+
+    &__actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 12px;
+        margin-top: 16px;
+    }
+
+    a {
+        color: var(--text-prominent);
+        text-decoration: underline;
+        text-underline-offset: 3px;
+    }
+
+    button {
+        min-height: 44px;
+        padding-inline: 14px;
+        color: var(--text-general);
+        background: var(--general-section-1);
+        border: 1px solid var(--border-normal);
+        border-radius: 8px;
+        cursor: pointer;
+    }
+}

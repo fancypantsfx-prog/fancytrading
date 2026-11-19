@@ -1,5 +1,12 @@
 import { TICK_SAMPLE_SIZE } from '../premium/tick-insights.mjs';
-import { finderContracts, finderSampleExpiry, SCAN_CACHE_KEY, summarizeFinderMarket } from '../premium/strategy-finder.mjs';
+import {
+    CONTRACT_LIST_MAX_AGE_MS,
+    finderContracts,
+    finderSampleExpiry,
+    finderTickContracts,
+    SCAN_CACHE_KEY,
+    summarizeFinderMarket,
+} from '../premium/strategy-finder.mjs';
 
 const DERIV_PUBLIC_WS = 'https://api.derivws.com/trading/v1/options/ws/public';
 const REQUEST_SPACING_MS = 1000;
@@ -112,6 +119,9 @@ export const warmStrategyFinder = async (cache, connect = openMarketData, wait =
         const activeInstruments = new Map(catalog.instruments.map(item => [item.underlying_symbol, item]));
         const markets = [];
         const cachedMarkets = new Map((previous?.markets ?? []).map(market => [market.symbol, market]));
+        const contractLists = new Map(
+            Object.entries(previous?.contractLists ?? {}).filter(([symbol]) => activeInstruments.has(symbol))
+        );
         const instruments = [...activeInstruments.values()].filter(isOpen);
         const start = instruments.findIndex(item => item.underlying_symbol === previous?.lastAttempted) + 1;
         let lastAttempted = previous?.lastAttempted;
@@ -139,6 +149,16 @@ export const warmStrategyFinder = async (cache, connect = openMarketData, wait =
             if (history?.prices?.length !== TICK_SAMPLE_SIZE || history.times?.length !== TICK_SAMPLE_SIZE) continue;
             const lastTick = Number(history.times.at(-1));
             if (!(finderSampleExpiry({ collectedAt: Date.now(), lastTick }) > Date.now())) continue;
+            let listing = contractLists.get(symbol);
+            if (!(listing?.checkedAt + CONTRACT_LIST_MAX_AGE_MS > Date.now()) && Date.now() < deadline) {
+                const response = await send({ contracts_for: symbol }).catch(() => undefined);
+                if (response?.error?.code === 'RateLimit') break;
+                if (Array.isArray(response?.contracts_for?.available)) {
+                    listing = { checkedAt: Date.now(), contracts: finderTickContracts(response.contracts_for.available) };
+                    contractLists.set(symbol, listing);
+                }
+            }
+            if (!(listing?.checkedAt + CONTRACT_LIST_MAX_AGE_MS > Date.now()) || !listing.contracts.length) continue;
             const tickSize = Number(item.pip_size);
             let precision = Number.isInteger(pip_size) ? pip_size : undefined;
             if (precision === undefined && tickSize > 0 && tickSize <= 1) {
@@ -184,7 +204,9 @@ export const warmStrategyFinder = async (cache, connect = openMarketData, wait =
             ])
         );
         const updatedAt = refreshed ? now : previous?.updatedAt ?? 0;
-        await cache.put(SCAN_CACHE_KEY, JSON.stringify({ updatedAt, markets, instrumentsByGroup, catalog, lastAttempted }));
+        await cache.put(SCAN_CACHE_KEY, JSON.stringify({
+            updatedAt, markets, instrumentsByGroup, catalog, lastAttempted, contractLists: Object.fromEntries(contractLists),
+        }));
         console.info('Strategy Finder snapshot written', {
             refreshed,
             markets: markets.length,

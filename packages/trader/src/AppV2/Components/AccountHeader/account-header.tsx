@@ -7,7 +7,7 @@ import { Button, Skeleton, Text } from '@deriv/components';
 import AccountSwitcher from '@deriv/core/src/App/Components/Layout/Header/account-switcher';
 import ResetDemoBalanceButton from '@deriv/core/src/App/Components/Layout/Header/reset-demo-balance-button';
 import { LegacyChevronDown1pxIcon } from '@deriv/quill-icons';
-import { addComma, getDepositUrl, getCurrencyDisplayCode, getSignupUrl, redirectToLogin } from '@deriv/shared';
+import { addComma, getDepositUrl, getCurrencyDisplayCode, getSignupUrl, redirectToLogin, redirectToSignUp } from '@deriv/shared';
 import { useStore } from '@deriv/stores';
 import { Localize, useTranslations } from '@deriv-com/translations';
 import { useDevice } from '@deriv-com/ui';
@@ -187,7 +187,7 @@ const AccountHeader = observer(
                         {signup_url && (
                             <Button
                                 className='account-header__signup'
-                                onClick={() => window.open(signup_url, '_blank', 'noopener,noreferrer')}
+                                onClick={() => void redirectToSignUp()}
                                 aria-label={localize('Sign up')}
                                 type='button'
                                 secondary

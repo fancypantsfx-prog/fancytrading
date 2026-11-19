@@ -1,0 +1,26 @@
+name: Deploy Strategy Finder Worker
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: strategy-finder-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+      - name: Set up Node
+        uses: ./.github/actions/setup_node
+      - name: Verify the Worker and Pages endpoint
+        run: node --test packages/core/premium/tick-insights.test.mjs
+      - name: Deploy the scheduled Worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx --yes wrangler@latest deploy --config packages/core/strategy-finder-worker/wrangler.toml

@@ -2,7 +2,6 @@ import { fetchTickInsights } from '@deriv/api';
 import type { TPremiumAccess } from '@deriv/api';
 
 type TSample = { hits: number; count: number };
-export const FINDER_MAX_SAMPLE_AGE_MS = 180000;
 export type TFamily = 'accumulator' | 'digital';
 export type TTickInsights = {
     access: TPremiumAccess;
@@ -133,8 +132,6 @@ type TMarketData = {
         underlying_symbol_name?: string;
         name?: string;
         display_name?: string;
-        exchange_is_open?: number | boolean;
-        is_trading_suspended?: number | boolean;
     }[];
     history?: { prices: (number | string)[]; times: number[] };
     pip_size?: number;
@@ -250,26 +247,12 @@ export const getLiveInsightQuote = async (
 
 export const getInsightMarkets = async (
     send: (payload: Record<string, unknown>) => Promise<TMarketData>,
-    signal: AbortSignal,
-    contractTypes?: readonly string[]
+    signal: AbortSignal
 ) => {
-    const response = await sendInsightRequest(
-        send,
-        {
-            active_symbols: contractTypes ? 'full' : 'brief',
-            ...(contractTypes && { contract_type: contractTypes }),
-        },
-        signal
-    );
+    const response = await sendInsightRequest(send, { active_symbols: 'brief' }, signal);
     if (response.error) throw new Error('Could not load instruments');
     return (response.active_symbols ?? [])
-        .filter(
-            item =>
-                item.underlying_symbol &&
-                (!contractTypes ||
-                    (![0, false].includes(item.exchange_is_open ?? true) &&
-                        ![1, true].includes(item.is_trading_suspended ?? false)))
-        )
+        .filter(item => item.underlying_symbol)
         .map(item => ({
             symbol: item.underlying_symbol,
             label: item.underlying_symbol_name || item.name || item.display_name || item.underlying_symbol,
@@ -287,13 +270,11 @@ export const compareRecentTicks = async (
         windowSize?: number;
         candidate?: string;
         candidates?: string[];
-        maxSampleAge?: number;
     },
     signal: AbortSignal,
     marketRequests = new Map<string, Promise<TMarketData>>()
 ) => {
-    const { symbol, currency, stake, ticks, family, windowSize, candidate, candidates: selectedCandidates, maxSampleAge } =
-        options;
+    const { symbol, currency, stake, ticks, family, windowSize, candidate, candidates: selectedCandidates } = options;
     const count = windowSize ?? 400;
     const candidates = candidate
         ? [candidate]
@@ -315,9 +296,6 @@ export const compareRecentTicks = async (
     if (signal.aborted) return null;
     if (history?.error || history?.history?.prices?.length !== count || history?.history?.times?.length !== count) {
         throw new Error('Incomplete tick history');
-    }
-    if (maxSampleAge !== undefined && !(Number(history.history.times.at(-1)) * 1000 + maxSampleAge > Date.now())) {
-        return null;
     }
     const quotesRequest = Promise.allSettled(
         candidates.map(async candidate => {

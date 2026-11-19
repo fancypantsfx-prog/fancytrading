@@ -1,5 +1,6 @@
 export const SCAN_CACHE_KEY = 'strategy-finder:history:v1';
 export const SCAN_STALE_AFTER_MS = 3 * 60 * 1000;
+export const CONTRACT_LIST_MAX_AGE_MS = 10 * 60 * 1000;
 
 export const finderSampleExpiry = ({ lastTick, times, collectedAt }) =>
     Math.min((lastTick ?? times?.at(-1)) * 1000, collectedAt) + SCAN_STALE_AFTER_MS;
@@ -20,6 +21,30 @@ export const finderCandidates = (contract, barrier) => {
         .filter(type => !(type === 'DIGITOVER' && barrier === 9) && !(type === 'DIGITUNDER' && barrier === 0))
         .map(type => `${type}:${barrier}`);
 };
+
+const tickDuration = value => Number(/^(\d+)t$/i.exec(value ?? '')?.[1]);
+const supportedTypes = new Set(Object.values(finderContracts).flat());
+
+export const finderTickContracts = contracts =>
+    contracts.flatMap(contract => {
+        const { contract_type: type, start_type: start, contract_category: category } = contract;
+        const minimum = tickDuration(contract.min_contract_duration);
+        const maximum = tickDuration(contract.max_contract_duration);
+        const barrierRiseFall = Number(contract.barriers) > 0 && finderContracts.rise_fall.includes(type);
+        if (
+            (start && start !== 'spot') ||
+            category === 'higherlower' ||
+            barrierRiseFall ||
+            !supportedTypes.has(type) ||
+            !(minimum >= 0 && maximum >= Math.max(minimum, 1))
+        ) return [];
+        return [{ type, minimum, maximum }];
+    });
+
+export const finderSupportsDuration = (contracts, candidate, ticks) =>
+    contracts?.some(({ type, minimum, maximum }) =>
+        type === candidate.split(':')[0] && ticks >= minimum && ticks <= maximum
+    ) ?? false;
 
 // Store one compact summary per duration. Digit counts serve both barrier and match contracts.
 export const summarizeFinderMarket = ({ prices, times, precision }) => {

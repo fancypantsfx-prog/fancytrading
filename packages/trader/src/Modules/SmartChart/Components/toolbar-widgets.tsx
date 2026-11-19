@@ -9,19 +9,20 @@ type TToolbarWidgetsProps = {
     position?: string;
     updateChartType: (type: string) => void;
     updateGranularity: (granularity: number) => void;
+    tickChartOnly?: boolean;
 };
 
-const ToolbarWidgets = ({ position, updateChartType, updateGranularity }: TToolbarWidgetsProps) => {
+const ToolbarWidgets = ({ position, updateChartType, updateGranularity, tickChartOnly }: TToolbarWidgetsProps) => {
     const { isMobile } = useDevice();
     const is_real_desktop_device = isDesktopOs() && !isTabletOs; // in a tablet simulator on desktop, isDesktopOs returns true
 
     return (
         <ToolbarWidget position={position || (isMobile ? 'bottom' : null)}>
-            <ChartMode portalNodeId='modal_root' onChartType={updateChartType} onGranularity={updateGranularity} />
+            {!tickChartOnly && <ChartMode portalNodeId='modal_root' onChartType={updateChartType} onGranularity={updateGranularity} />}
             {is_real_desktop_device && !isMobile && (
                 <StudyLegend portalNodeId='modal_root' searchInputClassName='data-hj-whitelist' />
             )}
-            {!isMobile && (
+            {!isMobile && !tickChartOnly && (
                 <Views
                     portalNodeId='modal_root'
                     searchInputClassName='data-hj-whitelist'

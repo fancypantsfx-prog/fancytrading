@@ -10,6 +10,7 @@ import Endpoint from 'Modules/Endpoint';
 const Page404 = React.lazy(() => import(/* webpackChunkName: "404" */ 'Modules/Page404'));
 
 const MenuPage = React.lazy(() => import(/* webpackChunkName: "menu" */ 'Modules/Menu'));
+const HelpPage = React.lazy(() => import(/* webpackChunkName: "help" */ 'Modules/Help/help'));
 
 const Trader = React.lazy(() => import(/* webpackChunkName: "trader" */ '@deriv/trader'));
 
@@ -53,6 +54,12 @@ const getModules = () => {
             component: MenuPage,
             getTitle: () => localize('Menu'),
             protected: false,
+        },
+        {
+            path: routes.help,
+            component: HelpPage,
+            exact: true,
+            getTitle: () => localize('Help'),
         },
         {
             path: routes.index,
