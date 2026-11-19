@@ -2,6 +2,7 @@ import { fetchTickInsights } from '@deriv/api';
 import type { TPremiumAccess } from '@deriv/api';
 
 type TSample = { hits: number; count: number };
+export const FINDER_MAX_SAMPLE_AGE_MS = 180000;
 export type TFamily = 'accumulator' | 'digital';
 export type TTickInsights = {
     access: TPremiumAccess;
@@ -90,13 +91,17 @@ export const isInsightPresetValid = ({ stake, ticks, stopLoss, takeProfit }: TIn
     stopLoss >= stake &&
     (takeProfit === undefined || (Number.isFinite(takeProfit) && takeProfit > 0));
 
-export const waitForInsightRequest = async <T>(request: Promise<T>, timeoutMessage: string): Promise<T> => {
+export const waitForInsightRequest = async <T>(
+    request: Promise<T>,
+    timeoutMessage: string,
+    timeoutMs = 15000
+): Promise<T> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
         return await Promise.race([
             request,
             new Promise<never>((_, reject) => {
-                timer = setTimeout(() => reject(new Error(timeoutMessage)), 15000);
+                timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
             }),
         ]);
     } finally {
@@ -128,6 +133,8 @@ type TMarketData = {
         underlying_symbol_name?: string;
         name?: string;
         display_name?: string;
+        exchange_is_open?: number | boolean;
+        is_trading_suspended?: number | boolean;
     }[];
     history?: { prices: (number | string)[]; times: number[] };
     pip_size?: number;
@@ -202,12 +209,14 @@ export const getLiveInsightQuote = async (
         stake,
         ticks,
         candidate,
+        reportRejection,
     }: {
         symbol: string;
         currency: string;
         stake: number;
         ticks: number;
         candidate: string;
+        reportRejection?: boolean;
     },
     signal: AbortSignal
 ) => {
@@ -224,8 +233,15 @@ export const getLiveInsightQuote = async (
             },
             signal
         ),
-        'Trade quote timed out'
-    );
+        'Trade quote timed out',
+        6000
+    ).catch(error => {
+        const message = error?.error?.message;
+        if (reportRejection && typeof message === 'string') throw new Error(message);
+        throw error;
+    });
+    const rejection = response.error as { message?: string } | undefined;
+    if (reportRejection && rejection?.message) throw new Error(rejection.message);
     if (signal.aborted || response.error || !response.proposal) return null;
     const ask = Number(response.proposal.ask_price);
     const payout = Number(response.proposal.payout);
@@ -234,14 +250,30 @@ export const getLiveInsightQuote = async (
 
 export const getInsightMarkets = async (
     send: (payload: Record<string, unknown>) => Promise<TMarketData>,
-    signal: AbortSignal
+    signal: AbortSignal,
+    contractTypes?: readonly string[]
 ) => {
-    const response = await sendInsightRequest(send, { active_symbols: 'brief' }, signal);
+    const response = await sendInsightRequest(
+        send,
+        {
+            active_symbols: contractTypes ? 'full' : 'brief',
+            ...(contractTypes && { contract_type: contractTypes }),
+        },
+        signal
+    );
     if (response.error) throw new Error('Could not load instruments');
-    return (response.active_symbols ?? []).map(item => ({
-        symbol: item.underlying_symbol,
-        label: item.name || item.display_name || item.underlying_symbol,
-    }));
+    return (response.active_symbols ?? [])
+        .filter(
+            item =>
+                item.underlying_symbol &&
+                (!contractTypes ||
+                    (![0, false].includes(item.exchange_is_open ?? true) &&
+                        ![1, true].includes(item.is_trading_suspended ?? false)))
+        )
+        .map(item => ({
+            symbol: item.underlying_symbol,
+            label: item.underlying_symbol_name || item.name || item.display_name || item.underlying_symbol,
+        }));
 };
 
 export const compareRecentTicks = async (
@@ -255,11 +287,13 @@ export const compareRecentTicks = async (
         windowSize?: number;
         candidate?: string;
         candidates?: string[];
+        maxSampleAge?: number;
     },
     signal: AbortSignal,
     marketRequests = new Map<string, Promise<TMarketData>>()
 ) => {
-    const { symbol, currency, stake, ticks, family, windowSize, candidate, candidates: selectedCandidates } = options;
+    const { symbol, currency, stake, ticks, family, windowSize, candidate, candidates: selectedCandidates, maxSampleAge } =
+        options;
     const count = windowSize ?? 400;
     const candidates = candidate
         ? [candidate]
@@ -281,6 +315,9 @@ export const compareRecentTicks = async (
     if (signal.aborted) return null;
     if (history?.error || history?.history?.prices?.length !== count || history?.history?.times?.length !== count) {
         throw new Error('Incomplete tick history');
+    }
+    if (maxSampleAge !== undefined && !(Number(history.history.times.at(-1)) * 1000 + maxSampleAge > Date.now())) {
+        return null;
     }
     const quotesRequest = Promise.allSettled(
         candidates.map(async candidate => {
@@ -320,7 +357,9 @@ export const compareRecentTicks = async (
     );
 
     const precisionRequest =
-        family === 'digital' && !Number.isInteger(history.pip_size)
+        family === 'digital' &&
+        candidates.some(candidate => candidate.startsWith('DIGIT')) &&
+        !Number.isInteger(history.pip_size)
             ? marketRequest(`precision:${symbol}`, { ticks: symbol }).then(
                   response => response.tick?.pip_size,
                   error => {

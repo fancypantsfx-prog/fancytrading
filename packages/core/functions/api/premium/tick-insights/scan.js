@@ -19,11 +19,9 @@ export const onRequestGet = async ({ request, env }) => {
     try {
         const access = await getPremiumAccess(request, env, TICK_INSIGHTS_FEATURE);
         if (access.access === 'locked') return premiumResponse({ error: 'Premium access is required' }, 403);
-        const snapshot = await env.STRATEGY_FINDER_CACHE?.get(SCAN_CACHE_KEY, 'json');
-        if (!snapshot?.markets?.length)
-            return premiumResponse({ error: 'Market data has not been collected yet' }, 503);
+        const snapshot = await env.STRATEGY_FINDER_CACHE?.get(SCAN_CACHE_KEY, { type: 'json', cacheTtl: 30 });
 
-        const markets = snapshot.markets.filter(market => market.groups.includes(contract));
+        const markets = (snapshot?.markets ?? []).filter(market => market.groups.includes(contract));
         const now = Date.now();
         const rows = [];
         for (const market of markets) {
@@ -70,9 +68,9 @@ export const onRequestGet = async ({ request, env }) => {
             access,
             rows,
             ticks,
-            updatedAt: snapshot.updatedAt,
+            updatedAt: snapshot?.updatedAt ?? 0,
             marketsScanned: new Set(rows.map(row => row.symbol)).size,
-            instrumentsTotal: snapshot.instrumentsByGroup?.[contract] ?? markets.length,
+            instrumentsTotal: snapshot?.instrumentsByGroup?.[contract] ?? markets.length,
         });
     } catch {
         return premiumResponse({ error: 'Market data is unavailable' }, 503);

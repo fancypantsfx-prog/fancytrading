@@ -6,6 +6,8 @@ import { getPlatformLogo, useWS } from '@deriv/shared';
 import { localize } from '@deriv-com/translations';
 import { FancyTradingDialogContext } from './fancy-trading-dialog-context';
 import {
+    compareRecentTicks,
+    FINDER_MAX_SAMPLE_AGE_MS,
     getLiveInsightQuote,
     getInsightContract,
     getInsightMarkets,
@@ -13,6 +15,7 @@ import {
     InsightRateLimitError,
     InsightQuoteChanged,
     isInsightPresetValid,
+    waitForInsightRequest,
 } from './tick-insights-data';
 import type { TInsightRun, TInsightStrategyOption, TInsightTrade, TTickInsights } from './tick-insights-data';
 import MenuHelp from './menu-help';
@@ -30,6 +33,7 @@ type TFinderRow = Pick<TInsightRow, 'candidate' | 'historical'> & {
     symbol: string;
     expiresAt: number;
     quoteExpiresAt?: number;
+    payout?: number;
     label?: string;
 };
 type TFinderReport = {
@@ -40,7 +44,11 @@ type TFinderReport = {
     marketsScanned: number;
     settings?: string;
     instrumentsTotal?: number;
+    live?: boolean;
 };
+const FINDER_QUOTE_LIFETIME_MS = 45000;
+const rankFinderRows = (a: TFinderRow, b: TFinderRow) =>
+    b.historical.hits / b.historical.count - a.historical.hits / a.historical.count;
 const finderContracts = {
     rise_fall: ['CALL', 'PUT'],
     even_odd: ['DIGITEVEN', 'DIGITODD'],
@@ -139,6 +147,25 @@ const InsightsPanel = ({
     });
     const [markets, setMarkets] = React.useState<{ symbol: string; label: string }[]>([]);
     const request = React.useRef<AbortController>();
+    const fallbackCursor = React.useRef(0);
+    const [pageVisible, setPageVisible] = React.useState(() => !document.hidden);
+
+    React.useEffect(() => {
+        const resume = () => {
+            setPageVisible(!document.hidden);
+            if (document.hidden) return;
+            setReport(undefined);
+            refreshRankings();
+        };
+        document.addEventListener('visibilitychange', resume);
+        window.addEventListener('pageshow', resume);
+        window.addEventListener('online', resume);
+        return () => {
+            document.removeEventListener('visibilitychange', resume);
+            window.removeEventListener('pageshow', resume);
+            window.removeEventListener('online', resume);
+        };
+    }, []);
 
     React.useEffect(() => {
         if (view !== 'compare' || markets.length || typeof access === 'string' || access.access === 'locked') return;
@@ -187,7 +214,7 @@ const InsightsPanel = ({
     const hasScanAccess = typeof access !== 'string' && access.access !== 'locked';
 
     const settings = JSON.stringify([scanSettings, stake, currency]);
-    const report = quotedReport?.settings === settings && !purchase_block && quotedReport
+    const report = quotedReport?.settings === settings && !purchase_block && pageVisible
         ? { ...quotedReport, rows: quotedReport.rows.filter(row => (row.quoteExpiresAt ?? 0) > Date.now()) }
         : undefined;
 
@@ -208,8 +235,15 @@ const InsightsPanel = ({
     React.useEffect(() => {
         const amount = Number(stake);
         if (
-            view !== 'finder' || scanPaused || !hasScanAccess || purchase_block ||
-            !/^([1-9]|1[0-9]|20)$/.test(ticks) || !Number.isFinite(amount) || amount < 0.01 || amount > 1000000
+            view !== 'finder' ||
+            !pageVisible ||
+            scanPaused ||
+            !hasScanAccess ||
+            purchase_block ||
+            !/^([1-9]|1[0-9]|20)$/.test(ticks) ||
+            !Number.isFinite(amount) ||
+            amount < 0.01 ||
+            amount > 1000000
         ) {
             setLoadingScan(false);
             if (purchase_block) setReport(undefined);
@@ -217,8 +251,79 @@ const InsightsPanel = ({
         }
         const controller = new AbortController();
         let timer: number;
+        const findLiveRows = async (duration: number) => {
+            const liveController = new AbortController();
+            const abortLive = () => liveController.abort();
+            controller.signal.addEventListener('abort', abortLive, { once: true });
+            const timeout = window.setTimeout(abortLive, 12000);
+            try {
+                const types = finderContracts[finderGroup];
+                const barrier = Number(finderBarrier);
+                const candidates = types
+                    .filter(type => (type !== 'DIGITOVER' || barrier < 9) && (type !== 'DIGITUNDER' || barrier > 0))
+                    .map(type => finderGroup === 'rise_fall' || finderGroup === 'even_odd' ? type : `${type}:${barrier}`);
+                const instruments = await waitForInsightRequest(
+                    getInsightMarkets(send, liveController.signal, types),
+                    'Instrument request timed out',
+                    6000
+                );
+                const eligible = [...new Map(instruments.map(item => [item.symbol, item])).values()];
+                const current = eligible.find(item => item.symbol === symbol);
+                const rest = eligible.filter(item => item.symbol !== symbol);
+                const start = fallbackCursor.current % (rest.length || 1);
+                fallbackCursor.current += current ? 2 : 3;
+                const targets = [...(current ? [current] : []), ...rest.slice(start), ...rest.slice(0, start)].slice(0, 3);
+                const samples = await Promise.all(
+                    targets.map(async item => {
+                        try {
+                            const collectedAt = Date.now();
+                            const sample = await waitForInsightRequest(
+                                compareRecentTicks(
+                                    send,
+                                    {
+                                        symbol: item.symbol,
+                                        currency,
+                                        stake: amount,
+                                        ticks: duration,
+                                        family: 'digital',
+                                        windowSize: 400,
+                                        candidates,
+                                        maxSampleAge: FINDER_MAX_SAMPLE_AGE_MS,
+                                    },
+                                    liveController.signal
+                                ),
+                                'Tick sample request timed out',
+                                10000
+                            );
+                            if (liveController.signal.aborted || !sample || sample.ticks !== duration) return [];
+                            const expiresAt = Math.min(sample.lastTick * 1000, collectedAt) + FINDER_MAX_SAMPLE_AGE_MS;
+                            if (!(expiresAt > Date.now())) return [];
+                            return sample.rows
+                                .filter(row => row.stake === amount && Number.isFinite(row.payout) && row.payout > amount)
+                                .map(({ candidate, historical, payout }) => ({
+                                    ...item,
+                                    candidate,
+                                    historical,
+                                    payout,
+                                    expiresAt,
+                                    quoteExpiresAt: Math.min(expiresAt, collectedAt + FINDER_QUOTE_LIFETIME_MS),
+                                }));
+                        } catch (failure) {
+                            if (failure instanceof InsightRateLimitError) throw failure;
+                            return [];
+                        }
+                    })
+                );
+                return { rows: samples.flat().sort(rankFinderRows), instrumentsTotal: eligible.length };
+            } finally {
+                abortLive();
+                window.clearTimeout(timeout);
+                controller.signal.removeEventListener('abort', abortLive);
+            }
+        };
         const refresh = async () => {
             setLoadingScan(true);
+            let delay = 20000;
             try {
                 const fetchController = new AbortController();
                 const abortFetch = () => fetchController.abort();
@@ -238,42 +343,68 @@ const InsightsPanel = ({
                     return;
                 }
 
-                // Bound proposal traffic per refresh, including during manual refreshes.
-                const candidates = next.rows.filter(row => row.expiresAt > Date.now()).slice(0, 12);
-                const rows = await Promise.all(candidates.map(async row => {
+                const candidates = next.rows.filter(row => row.expiresAt > Date.now()).slice(0, 24);
+                const quoteRow = async (row: TFinderRow) => {
+                    if (row.expiresAt <= Date.now()) return null;
                     try {
-                        const quote = await getLiveInsightQuote(send, {
-                            symbol: row.symbol,
-                            currency,
-                            stake: amount,
-                            ticks: next.ticks,
-                            candidate: row.candidate,
-                        }, controller.signal);
+                        const quote = await getLiveInsightQuote(
+                            send,
+                            {
+                                symbol: row.symbol,
+                                currency,
+                                stake: amount,
+                                ticks: next.ticks,
+                                candidate: row.candidate,
+                            },
+                            controller.signal
+                        );
                         return quote?.stake === amount
-                            ? { ...row, quoteExpiresAt: Math.min(row.expiresAt, Date.now() + 30000) }
+                            ? {
+                                  ...row,
+                                  payout: quote.payout,
+                                  quoteExpiresAt: Math.min(row.expiresAt, Date.now() + FINDER_QUOTE_LIFETIME_MS),
+                              }
                             : null;
                     } catch (failure) {
                         if (failure instanceof InsightRateLimitError) throw failure;
                         return null;
                     }
-                }));
-                if (controller.signal.aborted) return;
-                setReport({
-                    ...next,
-                    settings,
-                    rows: rows.filter((row): row is NonNullable<typeof row> => !!row && row.quoteExpiresAt > Date.now()),
-                });
+                };
+                const rows: TFinderRow[] = [];
+                for (let offset = 0; offset < candidates.length && rows.length < 12; offset += 6) {
+                    const batch = await Promise.all(candidates.slice(offset, offset + 6).map(quoteRow));
+                    if (controller.signal.aborted) return;
+                    rows.push(
+                        ...batch.filter((row): row is NonNullable<typeof row> => !!row && row.quoteExpiresAt > Date.now())
+                    );
+                }
+                const quoted = rows.filter(row => (row.quoteExpiresAt ?? 0) > Date.now());
+                if (quoted.length) {
+                    setReport({ ...next, settings, rows: quoted.slice(0, 12) });
+                } else {
+                    delay = 30000;
+                    const live = await findLiveRows(next.ticks);
+                    if (controller.signal.aborted) return;
+                    setReport({
+                        ...next,
+                        ...live,
+                        settings,
+                        updatedAt: Date.now(),
+                        marketsScanned: new Set(live.rows.map(row => row.symbol)).size,
+                        live: true,
+                    });
+                }
                 setError('');
             } catch (failure) {
                 if (controller.signal.aborted) return;
-                setReport(undefined);
+                delay = failure instanceof InsightRateLimitError ? 60000 : 20000;
                 setError(failure instanceof InsightRateLimitError
                     ? localize('Deriv is limiting requests. Fancy Strategy Finder will retry automatically.')
                     : localize('Rankings are temporarily unavailable. Fancy Strategy Finder will retry automatically.'));
             } finally {
                 if (!controller.signal.aborted) {
                     setLoadingScan(false);
-                    timer = window.setTimeout(refresh, 15000);
+                    timer = window.setTimeout(refresh, delay);
                 }
             }
         };
@@ -282,7 +413,8 @@ const InsightsPanel = ({
             controller.abort();
             window.clearTimeout(timer);
         };
-    }, [view, scanPaused, hasScanAccess, ticks, scanSettings, refreshVersion, settings, currency, stake, purchase_block, send]);
+    }, [view, scanPaused, hasScanAccess, ticks, scanSettings, refreshVersion, settings, currency, stake, purchase_block,
+        send, pageVisible, finderGroup, finderBarrier, symbol]);
 
     const is_reviewing = !!draft;
     React.useEffect(() => {
@@ -362,22 +494,36 @@ const InsightsPanel = ({
         try {
             const quote = await getLiveInsightQuote(
                 payload => ws.send(payload),
-                { symbol: row.symbol, currency, stake: Number(stake), ticks: report.ticks, candidate: row.candidate },
+                {
+                    symbol: row.symbol,
+                    currency,
+                    stake: Number(stake),
+                    ticks: report.ticks,
+                    candidate: row.candidate,
+                    reportRejection: true,
+                },
                 controller.signal
             );
             if (controller.signal.aborted) return;
-            if (!quote || row.expiresAt <= Date.now()) throw new Error(localize('Deriv has no live quote for this selection.'));
+            if (row.expiresAt <= Date.now()) {
+                throw new Error(localize('This ranking expired. Return to Fancy Strategy Finder for current trades.'));
+            }
+            if (quote?.stake !== Number(stake)) {
+                throw new Error(localize('Deriv has no live quote for this selection.'));
+            }
             review({ ...row, ...quote }, automatic, report.ticks, row.expiresAt);
         } catch (failure) {
             if (!controller.signal.aborted) {
                 setReport(previous => previous && {
                     ...previous,
-                    rows: previous.rows.filter(candidate => candidate !== row),
+                    rows: previous.rows.filter(candidate => candidate.symbol !== row.symbol || candidate.candidate !== row.candidate),
                 });
                 setError(
                     failure instanceof InsightRateLimitError
                         ? localize('Deriv is limiting requests. Wait a minute before requesting another quote.')
-                        : localize('Could not quote this trade. Check the stake and contract availability.')
+                        : failure instanceof Error
+                          ? failure.message
+                          : localize('Could not quote this trade. Check the stake and contract availability.')
                 );
             }
         } finally {
@@ -785,7 +931,7 @@ const InsightsPanel = ({
                         disabled={busy || loadingScan || !/^([1-9]|1[0-9]|20)$/.test(ticks)}
                         onClick={refreshRankings}
                     >
-                        {loadingScan ? localize('Refreshing rankings�') : localize('Refresh rankings')}
+                        {loadingScan ? localize('Refreshing rankings…') : localize('Refresh rankings')}
                     </button>
                 </div>
             )}
@@ -913,12 +1059,17 @@ const InsightsPanel = ({
                                 {localize('Deriv has no automatic strategies for the contracts in this comparison.')}
                             </p>
                         )}
-                    <p role='status'>
-                        {localize('{{count}} instruments � Snapshot updated {{time}}', {
-                            count: String(report.marketsScanned),
-                            time: new Date(report.updatedAt).toLocaleString(),
-                        })}
-                    </p>
+                    {report.updatedAt > 0 && (
+                        <p role='status'>
+                            {report.live
+                                ? localize('Live scan checked at {{time}}', {
+                                      time: new Date(report.updatedAt).toLocaleTimeString(),
+                                  })
+                                : localize('Snapshot updated {{time}}', {
+                                      time: new Date(report.updatedAt).toLocaleTimeString(),
+                                  })}
+                        </p>
+                    )}
                     {report.instrumentsTotal !== undefined && report.marketsScanned < report.instrumentsTotal && (
                         <p role='status'>
                             {localize('Ranked {{loaded}} of {{total}} eligible instruments with available tick data.', {
@@ -942,7 +1093,10 @@ const InsightsPanel = ({
                             <thead>
                                 <tr>
                                     <th scope='col'>{localize('Trade')}</th>
-                                    <th scope='col'>{localize('Historical hit rate')}</th>
+                                    <th scope='col'>
+                                        {localize('Historical hit rate')}
+                                        <small>{localize('Quoted payout')}</small>
+                                    </th>
                                     <th scope='col'>{localize('Trade actions')}</th>
                                 </tr>
                             </thead>
@@ -950,9 +1104,12 @@ const InsightsPanel = ({
                                 {report.rows.map(row => (
                                     <tr key={`${row.symbol}:${row.candidate}`}>
                                         <th scope='row'>
-                                            {row.symbol} � {candidateLabel(row.candidate)}
+                                            {row.label || row.symbol} · {candidateLabel(row.candidate)}
                                         </th>
-                                        <td>{percent(row.historical.hits / row.historical.count)}</td>
+                                        <td>
+                                            {percent(row.historical.hits / row.historical.count)}
+                                            {row.payout !== undefined && <small>{formatMoney(row.payout, currency)}</small>}
+                                        </td>
                                         <td>
                                             <button
                                                 type='button'
@@ -999,7 +1156,11 @@ const InsightsPanel = ({
                             </tbody>
                         </table>
                     </div>
-                    {!report.rows.length && <p role='status'>{localize('No fresh, immediately available contracts were found for these settings.')}</p>}
+                    {!report.rows.length && !loadingScan && (
+                        <p role='status'>
+                            {localize('No fresh contracts could be quoted for this stake and tick duration. The finder will retry automatically.')}
+                        </p>
+                    )}
                 </>
             )}
             <p className='tick-insights__note'>

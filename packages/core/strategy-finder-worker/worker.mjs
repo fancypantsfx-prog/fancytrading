@@ -60,17 +60,17 @@ const openMarketData = async () => {
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-export const warmStrategyFinder = async (cache, connect = openMarketData) => {
-    const previous = await cache.get(SCAN_CACHE_KEY, 'json');
-    const connection = await connect();
+export const warmStrategyFinder = async (cache, connect = openMarketData, wait = pause) => {
     const deadline = Date.now() + REFRESH_BUDGET_MS;
+    const previous = await cache.get(SCAN_CACHE_KEY, { type: 'json', cacheTtl: 30 });
+    const connection = await connect();
     let retriedRateLimit = false;
     const send = async payload => {
-        await pause(REQUEST_SPACING_MS);
+        await wait(REQUEST_SPACING_MS);
         let response = await connection.send(payload);
         if (response.error?.code === 'RateLimit' && !retriedRateLimit && Date.now() + RATE_LIMIT_RETRY_MS < deadline) {
             retriedRateLimit = true;
-            await pause(RATE_LIMIT_RETRY_MS);
+            await wait(RATE_LIMIT_RETRY_MS);
             response = await connection.send(payload);
         }
         return response;
@@ -112,24 +112,26 @@ export const warmStrategyFinder = async (cache, connect = openMarketData) => {
         const activeInstruments = new Map(catalog.instruments.map(item => [item.underlying_symbol, item]));
         const markets = [];
         const cachedMarkets = new Map((previous?.markets ?? []).map(market => [market.symbol, market]));
-        // Refresh the oldest markets first so a partial refresh cannot starve later symbols.
-        const instruments = [...activeInstruments.values()]
-            .filter(isOpen)
-            .sort(
-                (a, b) =>
-                    (cachedMarkets.get(a.underlying_symbol)?.collectedAt ?? 0) -
-                    (cachedMarkets.get(b.underlying_symbol)?.collectedAt ?? 0)
-            );
+        const instruments = [...activeInstruments.values()].filter(isOpen);
+        const start = instruments.findIndex(item => item.underlying_symbol === previous?.lastAttempted) + 1;
+        let lastAttempted = previous?.lastAttempted;
         // Leave time to publish before the next scheduled invocation.
-        for (const item of instruments) {
+        for (let offset = 0; offset < instruments.length; offset++) {
             if (Date.now() >= deadline) break;
+            const item = instruments[(start + offset) % instruments.length];
             const symbol = item.underlying_symbol;
-            const { history, pip_size, error } = await send({
+            lastAttempted = symbol;
+            const response = await send({
                 ticks_history: symbol,
                 end: 'latest',
                 count: TICK_SAMPLE_SIZE,
                 style: 'ticks',
+            }).catch(error => {
+                console.warn('Strategy Finder history connection failed', String(error));
+                return undefined;
             });
+            if (!response) break;
+            const { history, pip_size, error } = response;
             if (error?.code === 'RateLimit') {
                 console.warn('Strategy Finder history rate limited', { refreshed: markets.length });
                 break;
@@ -144,9 +146,12 @@ export const warmStrategyFinder = async (cache, connect = openMarketData) => {
                 if (Math.abs(decimals - Math.round(decimals)) < 1e-8) precision = Math.round(decimals);
             }
             if (precision === undefined) {
-                const spot = await send({ ticks: symbol });
-                precision = spot.tick?.pip_size ?? cachedMarkets.get(symbol)?.precision;
-                if (spot.error?.code === 'RateLimit') {
+                precision = cachedMarkets.get(symbol)?.precision;
+            }
+            if (precision === undefined && item.groups.some(group => group !== 'rise_fall') && Date.now() < deadline) {
+                const spot = await send({ ticks: symbol }).catch(() => undefined);
+                precision = spot?.tick?.pip_size;
+                if (spot?.error?.code === 'RateLimit') {
                     console.warn('Strategy Finder precision rate limited', { refreshed: markets.length });
                     break;
                 }
@@ -165,12 +170,11 @@ export const warmStrategyFinder = async (cache, connect = openMarketData) => {
             cachedMarkets.delete(symbol);
         }
 
-        if (!markets.length) throw new Error('No new Deriv tick windows collected');
-        const updatedAt = Date.now();
         const refreshed = markets.length;
+        const now = Date.now();
         for (const market of cachedMarkets.values()) {
             const active = activeInstruments.get(market.symbol);
-            if (active && isOpen(active) && finderSampleExpiry(market) > updatedAt)
+            if (active && isOpen(active) && finderSampleExpiry(market) > now)
                 markets.push({ ...market, groups: active.groups });
         }
         const instrumentsByGroup = Object.fromEntries(
@@ -179,7 +183,8 @@ export const warmStrategyFinder = async (cache, connect = openMarketData) => {
                 [...activeInstruments.values()].filter(item => isOpen(item) && item.groups.includes(group)).length,
             ])
         );
-        await cache.put(SCAN_CACHE_KEY, JSON.stringify({ updatedAt, markets, instrumentsByGroup, catalog }));
+        const updatedAt = refreshed ? now : previous?.updatedAt ?? 0;
+        await cache.put(SCAN_CACHE_KEY, JSON.stringify({ updatedAt, markets, instrumentsByGroup, catalog, lastAttempted }));
         console.info('Strategy Finder snapshot written', {
             refreshed,
             markets: markets.length,

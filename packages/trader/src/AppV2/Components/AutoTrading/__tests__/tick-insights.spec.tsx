@@ -183,6 +183,83 @@ it('does not start a browser market scan when the prepared rankings are unavaila
     expect(fetchTickInsights).not.toHaveBeenCalled();
 });
 
+it('recovers from an empty snapshot using fresh history and adds only quoted rows to Compare', async () => {
+    (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
+    (fetchStrategyFinder as jest.Mock).mockResolvedValueOnce({
+        access: { access: 'free' }, ticks: 5, updatedAt: Date.now(), marketsScanned: 0, rows: [],
+    });
+    const lastTick = Math.floor(Date.now() / 1000);
+    const history = (end: number) => ({
+        prices: Array.from({ length: 400 }, (_, i) => 100 + i),
+        times: Array.from({ length: 400 }, (_, i) => end - 399 + i),
+    });
+    mockSend.mockImplementationOnce(async () => ({
+        active_symbols: [{ underlying_symbol: 'R_50' }, { underlying_symbol: '1HZ100V' }],
+    }));
+    mockSend.mockImplementationOnce(async () => ({ pip_size: 2, history: history(lastTick) }));
+    mockSend.mockImplementationOnce(async () => ({ pip_size: 2, history: history(lastTick - 181) }));
+    (fetchTickInsights as jest.Mock).mockResolvedValueOnce({
+        ticks: 5,
+        lastTick,
+        rows: [{ candidate: 'CALL', stake: 10, payout: 18, historical: { hits: 7, count: 10 } }],
+    });
+    render(
+        <FancyTradingDialogContext.Provider
+            value={{ open: true, setOpen: jest.fn(), signalOpen: false, setSignalOpen: jest.fn() }}
+        >
+            <TickInsights {...props} initial_candidate='PUT' />
+        </FancyTradingDialogContext.Provider>
+    );
+    expect(await screen.findByRole('rowheader', { name: /1HZ100V.*Rise/ })).toBeInTheDocument();
+    expect(screen.queryByRole('rowheader', { name: /R_50/ })).not.toBeInTheDocument();
+    expect(fetchTickInsights).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls.filter(([payload]) => payload.proposal).map(([payload]) => payload.underlying_symbol))
+        .toEqual(['1HZ100V', '1HZ100V']);
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Compare' }));
+    expect(screen.getByRole('button', { name: 'Compare (2)' })).toBeEnabled();
+    expect(props.onBuy).not.toHaveBeenCalled();
+});
+
+it('checks past the first twelve rankings when their quotes are unavailable', async () => {
+    (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
+    const now = Date.now();
+    (fetchStrategyFinder as jest.Mock).mockResolvedValueOnce({
+        access: { access: 'free' }, ticks: 5, updatedAt: now, marketsScanned: 13,
+        rows: Array.from({ length: 13 }, (_, i) => ({
+            expiresAt: now + 180000, candidate: 'PUT', symbol: `TEST_${i}`, historical: { hits: 24 - i, count: 24 },
+        })),
+    });
+    for (let i = 0; i < 12; i++) {
+        mockSend.mockImplementationOnce(async () => ({ error: { code: 'ContractUnavailable' } }));
+    }
+    render(
+        <FancyTradingDialogContext.Provider
+            value={{ open: true, setOpen: jest.fn(), signalOpen: false, setSignalOpen: jest.fn() }}
+        >
+            <TickInsights {...props} />
+        </FancyTradingDialogContext.Provider>
+    );
+    expect(await screen.findByRole('rowheader', { name: /TEST_12.*Fall/ })).toBeInTheDocument();
+    expect(screen.getAllByRole('rowheader')).toHaveLength(1);
+});
+
+it('refreshes quotes when a mobile browser restores the page', async () => {
+    (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
+    render(
+        <FancyTradingDialogContext.Provider
+            value={{ open: true, setOpen: jest.fn(), signalOpen: false, setSignalOpen: jest.fn() }}
+        >
+            <TickInsights {...props} />
+        </FancyTradingDialogContext.Provider>
+    );
+    expect(await screen.findByRole('rowheader', { name: /Fall/ })).toBeInTheDocument();
+    fireEvent(window, new Event('pageshow'));
+    expect(screen.queryByRole('rowheader', { name: /Fall/ })).not.toBeInTheDocument();
+    expect(await screen.findByRole('rowheader', { name: /Fall/ })).toBeInTheDocument();
+    expect(fetchStrategyFinder).toHaveBeenCalledTimes(2);
+    expect(mockSend).toHaveBeenCalledTimes(2);
+});
+
 it('stops queued quotes and reports the broker rate limit inside FancyTrading', async () => {
     mockRateLimitProposal = true;
     (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });

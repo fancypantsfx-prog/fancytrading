@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { analyzeTickInsights } from './tick-insights.mjs';
 import { onRequestPost } from '../functions/api/premium/tick-insights/analysis.js';
+import { onRequestGet } from '../functions/api/premium/tick-insights/scan.js';
+import { warmStrategyFinder } from '../strategy-finder-worker/worker.mjs';
 
 const ticks = {
     prices: Array.from({ length: 400 }, (_, i) => (i < 200 ? 100 + i : 500 - i)),
@@ -124,7 +126,6 @@ test('serves free launch and timed preview, and enforces paid access on the anal
 
 
 test('the finder drops expired ticks and expired collections even with a fresh snapshot timestamp', async () => {
-    const { onRequestGet } = await import('../functions/api/premium/tick-insights/scan.js');
     const now = Date.now();
     const market = {
         symbol: 'FRESH',
@@ -153,4 +154,53 @@ test('the finder drops expired ticks and expired collections even with a fresh s
     const { rows } = await response.json();
     assert.deepEqual(rows.map(row => row.symbol), ['FRESH', 'FRESH']);
     assert.equal(rows[0].expiresAt, market.lastTick * 1000 + 180000);
+});
+
+test('the finder authorizes a live fallback while the shared snapshot is empty', async () => {
+    const request = new Request('https://fancytrading.org/api/premium/tick-insights/scan?contract=rise_fall&ticks=5');
+    const response = await onRequestGet({ request, env: {} });
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()).rows, []);
+    assert.equal(response.headers.get('Cache-Control'), 'private, no-store');
+});
+
+test('a failed market advances the refresh cursor and preserves only fresh samples', async () => {
+    const now = Date.now();
+    const lastTick = Math.floor(now / 1000);
+    const symbols = ['FIRST', 'SECOND', 'THIRD'];
+    const calls = [];
+    let snapshot = {
+        updatedAt: now - 30000,
+        lastAttempted: 'FIRST',
+        catalog: {
+            updatedAt: now,
+            instruments: symbols.map(underlying_symbol => ({ underlying_symbol, groups: ['rise_fall'] })),
+        },
+        markets: [
+            { symbol: 'FIRST', groups: ['rise_fall'], lastTick, collectedAt: now },
+            { symbol: 'SECOND', groups: ['rise_fall'], lastTick: lastTick - 181, collectedAt: now },
+        ],
+    };
+    const cache = {
+        get: async () => snapshot,
+        put: async (_key, value) => { snapshot = JSON.parse(value); },
+    };
+    const connect = async () => ({
+        close: () => undefined,
+        send: async ({ ticks_history: symbol }) => {
+            calls.push(symbol);
+            if (symbol === 'SECOND') throw new Error('Connection closed');
+            return { history: { prices: ticks.prices, times: ticks.times.map((_, i) => lastTick - 399 + i) } };
+        },
+    });
+    const wait = async () => undefined;
+    await warmStrategyFinder(cache, connect, wait);
+    assert.deepEqual(calls, ['SECOND']);
+    assert.equal(snapshot.updatedAt, now - 30000);
+    assert.equal(snapshot.lastAttempted, 'SECOND');
+    assert.deepEqual(snapshot.markets.map(market => market.symbol), ['FIRST']);
+
+    await warmStrategyFinder(cache, connect, wait);
+    assert.deepEqual(calls, ['SECOND', 'THIRD', 'FIRST', 'SECOND']);
+    assert.deepEqual(snapshot.markets.map(market => market.symbol), ['THIRD', 'FIRST']);
 });
