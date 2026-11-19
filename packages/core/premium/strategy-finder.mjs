@@ -1,9 +1,5 @@
 export const SCAN_CACHE_KEY = 'strategy-finder:history:v1';
-export const SCAN_STALE_AFTER_MS = 3 * 60 * 1000;
 export const CONTRACT_LIST_MAX_AGE_MS = 10 * 60 * 1000;
-
-export const finderSampleExpiry = ({ lastTick, times, collectedAt }) =>
-    Math.min((lastTick ?? times?.at(-1)) * 1000, collectedAt) + SCAN_STALE_AFTER_MS;
 
 export const finderContracts = {
     rise_fall: ['CALL', 'PUT'],

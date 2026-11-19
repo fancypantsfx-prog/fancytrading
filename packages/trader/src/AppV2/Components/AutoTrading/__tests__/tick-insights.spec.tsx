@@ -100,7 +100,7 @@ beforeEach(() => {
         ticks: 5,
         updatedAt: Date.now(),
         marketsScanned: 1,
-        rows: [{ expiresAt: Date.now() + 180000, candidate: 'PUT', symbol: '1HZ100V', historical: { hits: 6, count: 10 } }],
+        rows: [{ sampleAt: Date.now() - 600000, candidate: 'PUT', symbol: '1HZ100V', historical: { hits: 6, count: 10 } }],
     });
     localStorage.clear();
     HTMLDialogElement.prototype.showModal = function () {
@@ -108,7 +108,7 @@ beforeEach(() => {
     };
 });
 
-it('loads the cloud rankings without a broker request and quotes only on review', async () => {
+it('loads older cloud rankings without a broker request and quotes only on review', async () => {
     (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
     render(
         <FancyTradingDialogContext.Provider
@@ -118,6 +118,7 @@ it('loads the cloud rankings without a broker request and quotes only on review'
         </FancyTradingDialogContext.Provider>
     );
     expect(await screen.findByRole('rowheader', { name: /Fall/ })).toBeInTheDocument();
+    expect(screen.getByText(/^Sample time/)).toBeInTheDocument();
     expect(fetchStrategyFinder).toHaveBeenCalledWith(
         new URLSearchParams({ contract: 'rise_fall', ticks: '5', barrier: '5' }),
         expect.any(AbortSignal)
@@ -195,7 +196,7 @@ it('waits for the next cloud snapshot without starting a local scan', async () =
             <TickInsights {...props} />
         </FancyTradingDialogContext.Provider>
     );
-    expect(await screen.findByText(/No fresh contracts are ready/)).toBeInTheDocument();
+    expect(await screen.findByText(/No cached rankings are available/)).toBeInTheDocument();
     expect(mockSend).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Refresh rankings' }));
     expect(await screen.findByRole('rowheader', { name: /Fall/ })).toBeInTheDocument();
@@ -213,9 +214,8 @@ it('refreshes the cloud snapshot when a mobile browser restores the page', async
     );
     expect(await screen.findByRole('rowheader', { name: /Fall/ })).toBeInTheDocument();
     fireEvent(window, new Event('pageshow'));
-    expect(screen.queryByRole('rowheader', { name: /Fall/ })).not.toBeInTheDocument();
-    expect(await screen.findByRole('rowheader', { name: /Fall/ })).toBeInTheDocument();
-    expect(fetchStrategyFinder).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('rowheader', { name: /Fall/ })).toBeInTheDocument();
+    await waitFor(() => expect(fetchStrategyFinder).toHaveBeenCalledTimes(2));
     expect(mockSend).not.toHaveBeenCalled();
 });
 

@@ -2,7 +2,6 @@ import { TICK_SAMPLE_SIZE } from '../premium/tick-insights.mjs';
 import {
     CONTRACT_LIST_MAX_AGE_MS,
     finderContracts,
-    finderSampleExpiry,
     finderTickContracts,
     SCAN_CACHE_KEY,
     summarizeFinderMarket,
@@ -148,19 +147,11 @@ export const warmStrategyFinder = async (cache, connect = openMarketData, wait =
             }
             if (history?.prices?.length !== TICK_SAMPLE_SIZE || history.times?.length !== TICK_SAMPLE_SIZE) continue;
             const lastTick = Number(history.times.at(-1));
-            if (!(finderSampleExpiry({ collectedAt: Date.now(), lastTick }) > Date.now())) continue;
-            let listing = contractLists.get(symbol);
-            if (!(listing?.checkedAt + CONTRACT_LIST_MAX_AGE_MS > Date.now()) && Date.now() < deadline) {
-                const response = await send({ contracts_for: symbol }).catch(() => undefined);
-                if (response?.error?.code === 'RateLimit') break;
-                if (Array.isArray(response?.contracts_for?.available)) {
-                    listing = { checkedAt: Date.now(), contracts: finderTickContracts(response.contracts_for.available) };
-                    contractLists.set(symbol, listing);
-                }
-            }
-            if (!(listing?.checkedAt + CONTRACT_LIST_MAX_AGE_MS > Date.now()) || !listing.contracts.length) continue;
+            const cachedLastTick = cachedMarkets.get(symbol)?.lastTick ?? 0;
+            if (!Number.isSafeInteger(lastTick) || lastTick <= 0 || lastTick < cachedLastTick) continue;
             const tickSize = Number(item.pip_size);
             let precision = Number.isInteger(pip_size) ? pip_size : undefined;
+            let precisionRateLimited = false;
             if (precision === undefined && tickSize > 0 && tickSize <= 1) {
                 const decimals = -Math.log10(tickSize);
                 if (Math.abs(decimals - Math.round(decimals)) < 1e-8) precision = Math.round(decimals);
@@ -173,7 +164,7 @@ export const warmStrategyFinder = async (cache, connect = openMarketData, wait =
                 precision = spot?.tick?.pip_size;
                 if (spot?.error?.code === 'RateLimit') {
                     console.warn('Strategy Finder precision rate limited', { refreshed: markets.length });
-                    break;
+                    precisionRateLimited = true;
                 }
             }
             const summaries = summarizeFinderMarket({ ...history, precision });
@@ -188,13 +179,26 @@ export const warmStrategyFinder = async (cache, connect = openMarketData, wait =
                 collectedAt: Date.now(),
             });
             cachedMarkets.delete(symbol);
+            if (precisionRateLimited) break;
+
+            const listing = contractLists.get(symbol);
+            if (!(listing?.checkedAt + CONTRACT_LIST_MAX_AGE_MS > Date.now()) && Date.now() < deadline) {
+                const response = await send({ contracts_for: symbol }).catch(() => undefined);
+                if (response?.error?.code === 'RateLimit') break;
+                if (Array.isArray(response?.contracts_for?.available)) {
+                    contractLists.set(symbol, {
+                        checkedAt: Date.now(),
+                        contracts: finderTickContracts(response.contracts_for.available),
+                    });
+                }
+            }
         }
 
         const refreshed = markets.length;
         const now = Date.now();
         for (const market of cachedMarkets.values()) {
             const active = activeInstruments.get(market.symbol);
-            if (active && isOpen(active) && finderSampleExpiry(market) > now)
+            if (active && isOpen(active))
                 markets.push({ ...market, groups: active.groups });
         }
         const instrumentsByGroup = Object.fromEntries(

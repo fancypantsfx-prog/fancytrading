@@ -75,7 +75,7 @@ const Help = observer(() => {
                 <h2>{localize('Common questions')}</h2>
                 <details>
                     <summary>{localize('Why is Fancy Strategy Finder empty?')}</summary>
-                    <p>{localize('The finder shows only fresh cloud rankings for contracts that support the selected duration. It refreshes automatically. Try a different duration or contract group if the current selection is empty.')}</p>
+                    <p>{localize('The finder refreshes automatically and shows the latest cached sample for each result. Try a different duration or contract group if the current selection is empty.')}</p>
                 </details>
                 <details>
                     <summary>{localize('Why did the payout change during trade review?')}</summary>

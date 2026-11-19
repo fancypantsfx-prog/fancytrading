@@ -28,7 +28,7 @@ const formatMoney = (value: number, currency: string) =>
 
 type TFinderRow = Pick<TInsightRow, 'candidate' | 'historical'> & {
     symbol: string;
-    expiresAt: number;
+    sampleAt?: number;
     label?: string;
 };
 type TFinderReport = {
@@ -125,7 +125,6 @@ const InsightsPanel = ({
     const [access, setAccess] = React.useState<TPremiumAccess | 'checking' | 'error'>('checking');
     const [check, setCheck] = React.useState(0);
     const [snapshot, setReport] = React.useState<TFinderReport>();
-    const [, checkExpiry] = React.useReducer(version => version + 1, 0);
     const [loadingScan, setLoadingScan] = React.useState(false);
     const [refreshVersion, refreshRankings] = React.useReducer(version => version + 1, 0);
     const [error, setError] = React.useState('');
@@ -145,7 +144,6 @@ const InsightsPanel = ({
         const resume = () => {
             setPageVisible(!document.hidden);
             if (document.hidden) return;
-            setReport(undefined);
             refreshRankings();
         };
         document.addEventListener('visibilitychange', resume);
@@ -208,21 +206,9 @@ const InsightsPanel = ({
     const rejectionKey = (row: TFinderRow) => JSON.stringify([settings, stake, currency, finderRowKey(row)]);
     const report = snapshot?.settings === settings && pageVisible
         ? { ...snapshot, rows: snapshot.rows.filter(row =>
-            row.expiresAt > Date.now() && (rejectedQuotes.current.get(rejectionKey(row)) ?? 0) <= Date.now()
+            (rejectedQuotes.current.get(rejectionKey(row)) ?? 0) <= Date.now()
         ).slice(0, 12) }
         : undefined;
-
-    const finderExpiry = draft?.trade.finderExpiresAt;
-    const nextExpiry = Math.min(
-        ...(report?.rows.map(row => row.expiresAt) ?? []),
-        finderExpiry !== undefined && finderExpiry > Date.now() ? finderExpiry : Infinity
-    );
-    React.useEffect(() => {
-        if (!Number.isFinite(nextExpiry)) return;
-        const timer = window.setTimeout(checkExpiry, Math.max(1, nextExpiry - Date.now()));
-        return () => window.clearTimeout(timer);
-    }, [nextExpiry]);
-    const finderExpired = finderExpiry !== undefined && finderExpiry <= Date.now();
 
     const scanPaused = !!draft;
     React.useEffect(() => {
@@ -318,8 +304,7 @@ const InsightsPanel = ({
     const review = (
         row: Pick<TInsightRow, 'candidate' | 'symbol' | 'stake' | 'payout'>,
         automatic: boolean,
-        duration = report?.ticks ?? Number(ticks),
-        finderExpiresAt?: number
+        duration = report?.ticks ?? Number(ticks)
     ) => {
         if (row.stake !== Number(stake)) {
             setError(localize('The quoted stake differs from the entered stake. Adjust the stake and compare again.'));
@@ -338,7 +323,6 @@ const InsightsPanel = ({
                 currency,
                 stake: row.stake,
                 payout: row.payout,
-                finderExpiresAt,
             },
             run: automatic
                 ? {
@@ -352,7 +336,7 @@ const InsightsPanel = ({
     };
 
     const quoteFinderRow = async (row: TFinderRow, automatic: boolean) => {
-        if (!report || busy || purchase_block || row.expiresAt <= Date.now()) return;
+        if (!report || busy || purchase_block) return;
         const amount = Number(stake);
         if (!Number.isFinite(amount) || amount < 0.01 || amount > 1000000) {
             setError(localize('Enter a valid stake before requesting a live quote.'));
@@ -376,13 +360,10 @@ const InsightsPanel = ({
                 controller.signal
             );
             if (controller.signal.aborted) return;
-            if (row.expiresAt <= Date.now()) {
-                throw new Error(localize('This ranking expired. Return to Fancy Strategy Finder for current trades.'));
-            }
             if (quote?.stake !== amount) {
                 throw new Error(localize('Deriv has no live quote for this selection.'));
             }
-            review({ ...row, ...quote }, automatic, report.ticks, row.expiresAt);
+            review({ ...row, ...quote }, automatic, report.ticks);
         } catch (failure) {
             if (!controller.signal.aborted) {
                 if (!(failure instanceof InsightRateLimitError)) {
@@ -402,7 +383,7 @@ const InsightsPanel = ({
     };
 
     const confirm = async () => {
-        if (!draft || busy || finderExpired || (draft.run ? execution_block : purchase_block)) return;
+        if (!draft || busy || (draft.run ? execution_block : purchase_block)) return;
         const controller = new AbortController();
         request.current = controller;
         setBusy(true);
@@ -460,9 +441,7 @@ const InsightsPanel = ({
     if (draft) {
         const { trade, run } = draft;
         const title = run ? localize('Review automatic run') : localize('Review one contract');
-        const block = finderExpired
-            ? localize('This ranking expired. Return to Fancy Strategy Finder for current trades.')
-            : run ? execution_block : purchase_block;
+        const block = run ? execution_block : purchase_block;
         const money = (value: number) => formatMoney(value, trade.currency);
         const strategies = run ? optionsFor(trade.candidate, trade.ticks) : [];
         const selected_strategy = strategies.find(option => option.id === run?.strategyId);
@@ -971,7 +950,16 @@ const InsightsPanel = ({
                                         <th scope='row'>
                                             {row.label || row.symbol} · {candidateLabel(row.candidate)}
                                         </th>
-                                        <td>{percent(row.historical.hits / row.historical.count)}</td>
+                                        <td>
+                                            {percent(row.historical.hits / row.historical.count)}
+                                            {!!row.sampleAt && (
+                                                <small>
+                                                    {localize('Sample time {{time}}', {
+                                                        time: new Date(row.sampleAt).toLocaleString(),
+                                                    })}
+                                                </small>
+                                            )}
+                                        </td>
                                         <td>
                                             <button
                                                 type='button'
@@ -1020,7 +1008,7 @@ const InsightsPanel = ({
                     </div>
                     {!report.rows.length && !loadingScan && (
                         <p role='status'>
-                            {localize('No fresh contracts are ready for this group and tick duration. The next cloud update will appear here automatically.')}
+                            {localize('No cached rankings are available for this contract group and tick duration yet.')}
                         </p>
                     )}
                 </>

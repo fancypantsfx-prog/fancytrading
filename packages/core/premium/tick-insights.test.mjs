@@ -125,7 +125,7 @@ test('serves free launch and timed preview, and enforces paid access on the anal
 });
 
 
-test('the finder drops expired ticks and expired collections even with a fresh snapshot timestamp', async () => {
+test('the finder displays older samples and works before a contract list has been cached', async () => {
     const now = Date.now();
     const market = {
         symbol: 'FRESH',
@@ -140,7 +140,7 @@ test('the finder drops expired ticks and expired collections even with a fresh s
             STRATEGY_FINDER_CACHE: {
                 get: async () => ({
                     updatedAt: now,
-                    contractLists: Object.fromEntries(['FRESH', 'OLD_TICK', 'OLD_COLLECTION', 'UNKNOWN_TICK'].map(symbol => [
+                    contractLists: Object.fromEntries(['FRESH', 'OLD_TICK', 'OLD_COLLECTION'].map(symbol => [
                         symbol, { checkedAt: now, contracts: [{ type: 'CALL', minimum: 1, maximum: 10 }] },
                     ])),
                     markets: [
@@ -155,8 +155,9 @@ test('the finder drops expired ticks and expired collections even with a fresh s
     });
     assert.equal(response.status, 200);
     const { rows } = await response.json();
-    assert.deepEqual(rows.map(row => row.symbol), ['FRESH']);
-    assert.equal(rows[0].expiresAt, market.lastTick * 1000 + 180000);
+    assert.deepEqual(rows.map(row => row.symbol), ['FRESH', 'OLD_TICK', 'OLD_COLLECTION', 'UNKNOWN_TICK', 'UNKNOWN_TICK']);
+    assert.equal(rows.find(row => row.symbol === 'OLD_TICK').sampleAt, (Math.floor(now / 1000) - 180) * 1000);
+    assert.equal(rows.find(row => row.symbol === 'UNKNOWN_TICK').sampleAt, market.collectedAt);
 });
 
 test('the finder returns an empty response while the Worker warms the cache', async () => {
@@ -167,7 +168,7 @@ test('the finder returns an empty response while the Worker warms the cache', as
     assert.equal(response.headers.get('Cache-Control'), 'private, no-store');
 });
 
-test('a failed market advances the refresh cursor and preserves only fresh samples', async () => {
+test('a failed market advances the refresh cursor and preserves older samples', async () => {
     const now = Date.now();
     const lastTick = Math.floor(now / 1000);
     const symbols = ['FIRST', 'SECOND', 'THIRD'];
@@ -204,11 +205,11 @@ test('a failed market advances the refresh cursor and preserves only fresh sampl
     assert.deepEqual(calls, ['SECOND']);
     assert.equal(snapshot.updatedAt, now - 30000);
     assert.equal(snapshot.lastAttempted, 'SECOND');
-    assert.deepEqual(snapshot.markets.map(market => market.symbol), ['FIRST']);
+    assert.deepEqual(snapshot.markets.map(market => market.symbol), ['FIRST', 'SECOND']);
 
     await warmStrategyFinder(cache, connect, wait);
     assert.deepEqual(calls, ['SECOND', 'THIRD', 'FIRST', 'SECOND']);
-    assert.deepEqual(snapshot.markets.map(market => market.symbol), ['THIRD', 'FIRST']);
+    assert.deepEqual(snapshot.markets.map(market => market.symbol), ['THIRD', 'FIRST', 'SECOND']);
 });
 
 test('a scheduled refresh prepares only eligible tick rankings before any Pages request', async () => {
@@ -245,8 +246,8 @@ test('a scheduled refresh prepares only eligible tick rankings before any Pages 
         },
     });
     await warmStrategyFinder(cache, connect, async () => undefined);
-    assert.deepEqual(snapshot.markets.map(market => market.symbol), ['OPEN']);
-    assert.deepEqual(requests.filter(request => request.contracts_for).map(request => request.contracts_for), ['OPEN']);
+    assert.deepEqual(snapshot.markets.map(market => market.symbol), ['OPEN', 'STALE']);
+    assert.deepEqual(requests.filter(request => request.contracts_for).map(request => request.contracts_for), ['OPEN', 'STALE']);
     const requestCount = requests.length;
     const scan = async duration => {
         const response = await onRequestGet({
@@ -257,7 +258,7 @@ test('a scheduled refresh prepares only eligible tick rankings before any Pages 
         return response.json();
     };
     const snapshotAtFiveTicks = await scan(5);
-    assert.deepEqual(snapshotAtFiveTicks.rows.map(row => row.candidate), ['CALL']);
+    assert.deepEqual(snapshotAtFiveTicks.rows.map(row => [row.symbol, row.candidate]), [['OPEN', 'CALL'], ['STALE', 'CALL']]);
     assert.deepEqual((await scan(4)).rows, []);
     assert.deepEqual((await scan(11)).rows, []);
     assert.equal(requests.length, requestCount);

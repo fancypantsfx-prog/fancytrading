@@ -6,7 +6,6 @@ import {
     finderHistorical,
     finderSupportsDuration,
     SCAN_CACHE_KEY,
-    finderSampleExpiry,
 } from '../../../../premium/strategy-finder.mjs';
 
 export const onRequestGet = async ({ request, env }) => {
@@ -28,10 +27,12 @@ export const onRequestGet = async ({ request, env }) => {
         const rows = [];
         for (const market of markets) {
             const listing = snapshot.contractLists?.[market.symbol];
-            const expiresAt = Math.min(finderSampleExpiry(market), (listing?.checkedAt ?? 0) + CONTRACT_LIST_MAX_AGE_MS);
-            if (!(expiresAt > now)) continue;
-            const availableCandidates = candidates.filter(candidate => finderSupportsDuration(listing.contracts, candidate, ticks));
+            const availableCandidates = listing?.checkedAt + CONTRACT_LIST_MAX_AGE_MS > now
+                ? candidates.filter(candidate => finderSupportsDuration(listing.contracts, candidate, ticks))
+                : candidates;
             if (!availableCandidates.length) continue;
+            const lastTick = Number(market.lastTick ?? market.times?.at(-1));
+            const sampleAt = lastTick > 0 ? lastTick * 1000 : market.collectedAt;
             const summary = market.summaries?.[ticks - 1];
             if (summary) {
                 for (const candidate of availableCandidates) {
@@ -42,7 +43,7 @@ export const onRequestGet = async ({ request, env }) => {
                         historical,
                         symbol: market.symbol,
                         label: market.label,
-                        expiresAt,
+                        sampleAt,
                     });
                 }
                 continue;
@@ -64,7 +65,7 @@ export const onRequestGet = async ({ request, env }) => {
                     ...row,
                     symbol: market.symbol,
                     label: market.label,
-                    expiresAt,
+                    sampleAt,
                 }))
             );
         }
