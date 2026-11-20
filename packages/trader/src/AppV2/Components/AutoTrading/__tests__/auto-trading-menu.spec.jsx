@@ -480,7 +480,7 @@ const reviewFancyTrade = async (candidate = 'CALL', automatic = true, recoverSta
         expect(screen.queryByRole('dialog', { name: 'Automatic settings' })).toBeNull();
     }
     if (recoverStatus) {
-        await screen.findByText('Strategy list temporarily unavailable');
+        await within(screen.getByRole('dialog', { name: 'FancyTrading' })).findByText('Strategy list temporarily unavailable');
         mockStrategyListError = undefined;
         fireEvent.click(await screen.findByRole('button', { name: 'Refresh automatic status' }));
     }

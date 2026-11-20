@@ -6,6 +6,7 @@ import { getPlatformLogo, useWS } from '@deriv/shared';
 import { localize } from '@deriv-com/translations';
 import { FancyTradingDialogContext } from './fancy-trading-dialog-context';
 import {
+    formatInsightMoney as formatMoney,
     getLiveInsightQuote,
     getInsightContract,
     getInsightMarkets,
@@ -23,22 +24,15 @@ import './tick-insights.scss';
 const percent = (value: number) => value.toLocaleString(undefined, { style: 'percent', maximumFractionDigits: 1 });
 type TInsightRow = TTickInsights['rows'][number];
 
-const formatMoney = (value: number, currency: string) =>
-    value.toLocaleString(undefined, { style: 'currency', currency });
-
 type TFinderRow = Pick<TInsightRow, 'candidate' | 'historical'> & {
     symbol: string;
-    sampleAt?: number;
     label?: string;
 };
 type TFinderReport = {
     access: TPremiumAccess;
     rows: TFinderRow[];
     ticks: number;
-    updatedAt: number;
-    marketsScanned: number;
     settings?: string;
-    instrumentsTotal?: number;
 };
 const finderContracts = {
     rise_fall: ['CALL', 'PUT'],
@@ -47,7 +41,9 @@ const finderContracts = {
     match_diff: ['DIGITMATCH', 'DIGITDIFF'],
 } as const;
 type TFinderContract = keyof typeof finderContracts;
-const finderRowKey = (row: TFinderRow) => `${row.symbol}:${row.candidate}`;
+const finderQuoteKey = (settings: string, row: TFinderRow) => JSON.stringify([settings, row.symbol, row.candidate]);
+const QUOTE_CHECKS_PER_REFRESH = 6;
+const QUOTE_AVAILABILITY_MS = 60000;
 
 type TProps = {
     symbol: string;
@@ -68,6 +64,7 @@ type TProps = {
 };
 
 type TPanelProps = TProps & {
+    open: boolean;
     starred: TCompareSetup[];
     setStarred: (setups: TCompareSetup[]) => void;
     durations: number[];
@@ -75,6 +72,7 @@ type TPanelProps = TProps & {
 };
 
 const InsightsPanel = ({
+    open,
     symbol,
     currency,
     initial_stake,
@@ -129,7 +127,8 @@ const InsightsPanel = ({
     const [refreshVersion, refreshRankings] = React.useReducer(version => version + 1, 0);
     const [error, setError] = React.useState('');
     const [scanError, setScanError] = React.useState('');
-    const rejectedQuotes = React.useRef(new Map<string, number>());
+    const quoteChecks = React.useRef(new Map<string, { available: boolean; expiresAt: number }>());
+    const [, updateQuoteVisibility] = React.useReducer(version => version + 1, 0);
     const [busy, setBusy] = React.useState(false);
     const [view, setView] = React.useState<'finder' | 'compare'>('finder');
     const [manualSetup, setManualSetup] = React.useState<TCompareSetup>({
@@ -157,7 +156,11 @@ const InsightsPanel = ({
     }, []);
 
     React.useEffect(() => {
-        if (view !== 'compare' || markets.length || typeof access === 'string' || access.access === 'locked') return;
+        if (purchase_block) quoteChecks.current.clear();
+    }, [purchase_block]);
+
+    React.useEffect(() => {
+        if (!open || view !== 'compare' || markets.length || typeof access === 'string' || access.access === 'locked') return;
         const controller = new AbortController();
         void getInsightMarkets(payload => ws.send(payload), controller.signal).then(
             result => {
@@ -166,7 +169,7 @@ const InsightsPanel = ({
             () => undefined
         );
         return () => controller.abort();
-    }, [view, markets.length, ws, access]);
+    }, [open, view, markets.length, ws, access]);
 
     React.useEffect(() => {
         const controller = new AbortController();
@@ -199,24 +202,49 @@ const InsightsPanel = ({
 
     React.useEffect(() => () => request.current?.abort(), []);
 
+    React.useEffect(() => {
+        if (open) return;
+        request.current?.abort();
+        setBusy(false);
+        setDraft(undefined);
+        setResult(undefined);
+        setError('');
+        setSettingsOpen(false);
+        setView('finder');
+    }, [open]);
+
     const scanSettings = new URLSearchParams({ contract: finderGroup, ticks, barrier: finderBarrier }).toString();
     const hasScanAccess = typeof access !== 'string' && access.access !== 'locked';
 
-    const settings = scanSettings;
-    const rejectionKey = (row: TFinderRow) => JSON.stringify([settings, stake, currency, finderRowKey(row)]);
-    const report = snapshot?.settings === settings && pageVisible
-        ? { ...snapshot, rows: snapshot.rows.filter(row =>
-            (rejectedQuotes.current.get(rejectionKey(row)) ?? 0) <= Date.now()
-        ).slice(0, 12) }
+    const settings = JSON.stringify([scanSettings, stake, currency, account_label]);
+    const report = snapshot?.settings === settings && pageVisible && !purchase_block
+        ? { ...snapshot, rows: snapshot.rows.filter(row => {
+            const check = quoteChecks.current.get(finderQuoteKey(settings, row));
+            return check?.available && check.expiresAt > Date.now();
+        }).slice(0, 12) }
         : undefined;
 
-    const scanPaused = !!draft;
+    const nextExpiry = Math.min(...(report?.rows.map(row =>
+        quoteChecks.current.get(finderQuoteKey(settings, row))?.expiresAt ?? Infinity
+    ) ?? []));
     React.useEffect(() => {
+        if (!Number.isFinite(nextExpiry)) return;
+        const timer = window.setTimeout(updateQuoteVisibility, Math.max(1, nextExpiry - Date.now()));
+        return () => window.clearTimeout(timer);
+    }, [nextExpiry]);
+
+    const scanPaused = !!draft || busy;
+    const send = ws.send;
+    React.useEffect(() => {
+        const amount = Number(stake);
         if (
             view !== 'finder' ||
             !pageVisible ||
             scanPaused ||
             !hasScanAccess ||
+            purchase_block ||
+            !currency ||
+            !Number.isFinite(amount) || amount < 0.01 || amount > 1000000 ||
             !/^([1-9]|1[0-9]|20)$/.test(ticks)
         ) {
             setLoadingScan(false);
@@ -226,6 +254,7 @@ const InsightsPanel = ({
         let timer: number;
         const refresh = async () => {
             setLoadingScan(true);
+            let delay = 15000;
             try {
                 const fetchController = new AbortController();
                 const abortFetch = () => fetchController.abort();
@@ -246,18 +275,46 @@ const InsightsPanel = ({
                 }
 
                 const now = Date.now();
-                for (const [key, expiresAt] of rejectedQuotes.current) {
-                    if (expiresAt <= now) rejectedQuotes.current.delete(key);
+                for (const [key, check] of quoteChecks.current) {
+                    if (check.expiresAt <= now) quoteChecks.current.delete(key);
                 }
                 setReport({ ...next, settings });
                 setScanError('');
+                const unchecked = next.rows.filter(row =>
+                    !quoteChecks.current.has(finderQuoteKey(settings, row))
+                ).slice(0, QUOTE_CHECKS_PER_REFRESH);
+                for (const row of unchecked) {
+                    if (controller.signal.aborted) return;
+                    let available = false;
+                    try {
+                        const quote = await getLiveInsightQuote(send, {
+                            symbol: row.symbol,
+                            currency,
+                            stake: amount,
+                            ticks: next.ticks,
+                            candidate: row.candidate,
+                        }, controller.signal);
+                        available = quote?.stake === amount;
+                    } catch (failure) {
+                        if (failure instanceof InsightRateLimitError) {
+                            delay = 60000;
+                            break;
+                        }
+                    }
+                    if (controller.signal.aborted) return;
+                    quoteChecks.current.set(finderQuoteKey(settings, row), {
+                        available,
+                        expiresAt: Date.now() + (available ? QUOTE_AVAILABILITY_MS : 120000),
+                    });
+                    updateQuoteVisibility();
+                }
             } catch {
                 if (controller.signal.aborted) return;
                 setScanError(localize('Rankings are temporarily unavailable. Fancy Strategy Finder will retry automatically.'));
             } finally {
                 if (!controller.signal.aborted) {
                     setLoadingScan(false);
-                    timer = window.setTimeout(refresh, 15000);
+                    timer = window.setTimeout(refresh, delay);
                 }
             }
         };
@@ -266,7 +323,7 @@ const InsightsPanel = ({
             controller.abort();
             window.clearTimeout(timer);
         };
-    }, [view, scanPaused, hasScanAccess, ticks, scanSettings, refreshVersion, settings, pageVisible]);
+    }, [view, scanPaused, hasScanAccess, ticks, scanSettings, refreshVersion, settings, pageVisible, purchase_block, stake, currency, send]);
 
     const is_reviewing = !!draft;
     React.useEffect(() => {
@@ -367,7 +424,7 @@ const InsightsPanel = ({
         } catch (failure) {
             if (!controller.signal.aborted) {
                 if (!(failure instanceof InsightRateLimitError)) {
-                    rejectedQuotes.current.set(rejectionKey(row), Date.now() + 60000);
+                    quoteChecks.current.set(finderQuoteKey(settings, row), { available: false, expiresAt: Date.now() + 120000 });
                 }
                 setError(
                     failure instanceof InsightRateLimitError
@@ -910,21 +967,6 @@ const InsightsPanel = ({
                                 {localize('Deriv has no automatic strategies for the contracts in this comparison.')}
                             </p>
                         )}
-                    {report.updatedAt > 0 && (
-                        <p role='status'>
-                            {localize('Cloud snapshot updated {{time}}', {
-                                time: new Date(report.updatedAt).toLocaleTimeString(),
-                            })}
-                        </p>
-                    )}
-                    {report.instrumentsTotal !== undefined && report.marketsScanned < report.instrumentsTotal && (
-                        <p role='status'>
-                            {localize('Ranked {{loaded}} of {{total}} eligible instruments with available tick data.', {
-                                loaded: String(report.marketsScanned),
-                                total: String(report.instrumentsTotal),
-                            })}
-                        </p>
-                    )}
                     <p>
                         {localize(
                             'Top results won most often in the historical sample for your settings. Select a contract to check the live payout for your account and stake.'
@@ -950,16 +992,7 @@ const InsightsPanel = ({
                                         <th scope='row'>
                                             {row.label || row.symbol} · {candidateLabel(row.candidate)}
                                         </th>
-                                        <td>
-                                            {percent(row.historical.hits / row.historical.count)}
-                                            {!!row.sampleAt && (
-                                                <small>
-                                                    {localize('Sample time {{time}}', {
-                                                        time: new Date(row.sampleAt).toLocaleString(),
-                                                    })}
-                                                </small>
-                                            )}
-                                        </td>
+                                        <td>{percent(row.historical.hits / row.historical.count)}</td>
                                         <td>
                                             <button
                                                 type='button'
@@ -1008,7 +1041,7 @@ const InsightsPanel = ({
                     </div>
                     {!report.rows.length && !loadingScan && (
                         <p role='status'>
-                            {localize('No cached rankings are available for this contract group and tick duration yet.')}
+                            {localize('No tradeable contracts have been verified for these settings yet.')}
                         </p>
                     )}
                 </>
@@ -1032,14 +1065,17 @@ const TickInsights = (props: TProps) => {
 
     React.useEffect(() => {
         const element = dialog.current;
-        if (open && element && !element.open) element.showModal();
+        if (!element) return;
+        if (open && !element.open) element.showModal();
+        if (!open && element.open) element.close();
     }, [open]);
 
-    if (!open) return null;
+    if (!fancy_trading || !props.symbol) return null;
 
     return createPortal(
         <dialog
             ref={dialog}
+            hidden={!open}
             className='tick-insights tick-insights__dialog'
             aria-labelledby={title}
             onClose={() => fancy_trading?.setOpen(false)}
@@ -1065,6 +1101,7 @@ const TickInsights = (props: TProps) => {
             <InsightsPanel
                 key={JSON.stringify([props.account_label, props.currency])}
                 {...props}
+                open={open}
                 starred={starred}
                 setStarred={setStarred}
                 durations={durations ?? [props.initial_ticks]}

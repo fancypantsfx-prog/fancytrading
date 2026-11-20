@@ -227,7 +227,7 @@ const TradeChart = observer(() => {
     return (
         <>
             <SmartChart
-                key={show_digits_stats ? symbol : 'trade-chart'}
+                key={signalOpen ? `fancy-probs:${symbol}` : show_digits_stats ? symbol : 'trade-chart'}
                 drawingToolFloatingMenuPosition={
                     isMobile
                         ? CHART_CONSTANTS.MOBILE_DRAWING_TOOL_POSITION
@@ -263,8 +263,8 @@ const TradeChart = observer(() => {
                 toolbarWidget={() => {
                     return <ToolbarWidgets updateChartType={updateChartType} updateGranularity={updateGranularity} tickChartOnly={signalOpen} />;
                 }}
-                importedLayout={chart_layout}
-                onExportLayout={exportLayout}
+                importedLayout={signalOpen ? undefined : chart_layout}
+                onExportLayout={signalOpen ? undefined : exportLayout}
                 shouldFetchTradingTimes={false}
                 hasAlternativeSource={has_alternative_source}
                 getMarketsOrder={getMarketsOrder}

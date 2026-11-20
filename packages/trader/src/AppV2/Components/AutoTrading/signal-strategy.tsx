@@ -2,6 +2,7 @@ import React from 'react';
 import { localize } from '@deriv-com/translations';
 import { getDecimalPlaces, useWS } from '@deriv/shared';
 import {
+    formatInsightMoney,
     getLiveInsightQuote,
     InsightRateLimitError,
     isInsightRateLimit,
@@ -118,7 +119,7 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
     React.useEffect(() => {
         const amount = Number(stake);
         const duration = Number(ticks);
-        if (block || active || !Number.isFinite(amount) || amount <= 0 ||
+        if (block || active || !currency || !Number.isFinite(amount) || amount <= 0 ||
             !Number.isInteger(duration) || duration < 1 || duration > 10) return;
 
         const controller = new AbortController();
@@ -191,7 +192,7 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
         choice === 'first' || choice === 'second' ? signalContracts[family][Number(choice === 'second')] : contract
     );
     const rulesTitle = localize('{{contract}} rules', { contract: contractLabel });
-    const money = (amount: number) => amount.toLocaleString(undefined, { style: 'currency', currency });
+    const money = (amount: number) => formatInsightMoney(amount, currency);
     const stop = React.useCallback((message: string) => {
         const current = run.current;
         run.current = undefined;

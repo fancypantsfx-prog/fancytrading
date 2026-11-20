@@ -1286,7 +1286,7 @@ const AutoTrading = observer(
                               ? contract
                               : undefined
                     }
-                    currency={/^[A-Z]{3}$/.test(store.currency) ? store.currency : 'USD'}
+                    currency={store.currency}
                     initial_stake={stake}
                     initial_ticks={ticks}
                     account_label={

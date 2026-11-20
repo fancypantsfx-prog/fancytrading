@@ -105,7 +105,8 @@ export const analyzeTickInsights = input => {
         ticks > 20 ||
         !['digital', 'accumulator'].includes(family) ||
         typeof currency !== 'string' ||
-        !/^[A-Z]{3}$/.test(currency) ||
+        typeof currency !== 'string' ||
+        !/^[A-Z0-9]{3,12}$/i.test(currency) ||
         (!historyOnly && (!quotes || typeof quotes !== 'object')) ||
         (historyOnly && family !== 'digital')
     )

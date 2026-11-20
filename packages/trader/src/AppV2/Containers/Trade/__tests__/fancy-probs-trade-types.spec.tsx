@@ -24,3 +24,16 @@ it('offers only supported contract families from the current market', () => {
     fireEvent.change(contracts, { target: { value: 'even_odd' } });
     expect(onSelect).toHaveBeenLastCalledWith('even_odd');
 });
+
+it('reports a failed contract switch inside Fancy Probs', async () => {
+    const onSelect = jest.fn().mockRejectedValue(new Error('Contract unavailable'));
+    render(
+        <FancyProbsTradeTypes
+            value='accumulator'
+            onSelect={onSelect}
+            tradeTypes={[{ value: 'rise_fall', text: 'Rise / Fall' }]}
+        />
+    );
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not select this contract');
+    expect(onSelect).toHaveBeenCalledTimes(1);
+});

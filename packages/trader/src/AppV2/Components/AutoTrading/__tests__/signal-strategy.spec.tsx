@@ -24,6 +24,21 @@ jest.setTimeout(15000);
 
 jest.mock('@deriv/shared', () => ({ useWS: () => mockWS, getDecimalPlaces: () => 2 }));
 
+it('opens before the account currency is ready and renders currencies with non-ISO codes', () => {
+    const props = {
+        symbol: 'R_100',
+        contract: 'CALL',
+        initialStake: 10,
+        initialTicks: 5,
+        block: 'Connecting',
+        buy: jest.fn(),
+    };
+    const { rerender } = render(<SignalStrategy {...props} currency='' />);
+    expect(screen.getByRole('button', { name: 'Rules' })).toBeInTheDocument();
+    rerender(<SignalStrategy {...props} currency='USDT' />);
+    expect(screen.getAllByText(/USDT/).length).toBeGreaterThan(0);
+});
+
 it.each([
     { demo: false, candidate: 'DIGITEVEN' },
     { demo: true, candidate: 'DIGITDIFF:7' },

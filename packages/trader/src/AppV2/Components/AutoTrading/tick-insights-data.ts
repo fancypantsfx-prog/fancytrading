@@ -125,6 +125,11 @@ export const getInsightContract = (family: TFamily, candidate: string, ticks: nu
     throw new Error('Choose a supported contract from the comparison.');
 };
 
+export const formatInsightMoney = (amount: number, currency: string) =>
+    /^[A-Z]{3}$/i.test(currency)
+        ? amount.toLocaleString(undefined, { style: 'currency', currency })
+        : [amount.toLocaleString(), currency].filter(Boolean).join(' ');
+
 type TMarketData = {
     active_symbols?: {
         underlying_symbol: string;

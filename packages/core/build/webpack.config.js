@@ -23,7 +23,9 @@ module.exports = function (env) {
             server: 'https',
 
             port: 8443,
-            historyApiFallback: true,
+            historyApiFallback: {
+                rewrites: [{ from: /^\/home\/?$/, to: `${base}home.html` }],
+            },
             hot: false,
             client: {
                 overlay: false,

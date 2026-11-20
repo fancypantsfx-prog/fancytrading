@@ -3,6 +3,7 @@ import MenuHelp from './menu-help';
 import { localize } from '@deriv-com/translations';
 import {
     compareRecentTicks,
+    formatInsightMoney,
     getInsightContract,
     InsightRateLimitError,
     isInsightRateLimit,
@@ -201,7 +202,7 @@ const InsightsCompare = ({
 
     const changeSetup = (index: number, setup: TCompareSetup) =>
         onSetups(setups.map((item, position) => (position === index ? setup : item)));
-    const money = (value: number) => value.toLocaleString(undefined, { style: 'currency', currency });
+    const money = (value: number) => formatInsightMoney(value, currency);
     const marketLabel = (market: string) => markets.find(item => item.symbol === market)?.label ?? market;
 
     return (

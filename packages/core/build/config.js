@@ -59,6 +59,12 @@ const copyConfig = base => {
         },
         { from: path.resolve(__dirname, '../src/root_files/custom404.html'), to: 'custom404.html', toType: 'file' },
         {
+            from: path.resolve(__dirname, '../src/root_files/home.html'),
+            to: 'home.html',
+            toType: 'file',
+            transform: (content, source_path) => transformContentUrlBase(content, source_path, base),
+        },
+        {
             from: path.resolve(__dirname, '../src/root_files/front-channel.html'),
             to: 'front-channel.html',
             toType: 'file',
