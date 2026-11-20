@@ -96,7 +96,7 @@ const InsightsCompare = ({
     const subscribeRef = React.useRef(subscribeTicks);
     subscribeRef.current = subscribeTicks;
     React.useEffect(() => {
-        if (rateLimited || !Number.isFinite(Number(stake)) || Number(stake) < 0.01 || Number(stake) > 1000000) return;
+        if (!setups.length || rateLimited || !Number.isFinite(Number(stake)) || Number(stake) < 0.01 || Number(stake) > 1000000) return;
         let timer: ReturnType<typeof setTimeout> | undefined;
         let request: AbortController;
         let cancelled = false;
@@ -409,14 +409,12 @@ const InsightsCompare = ({
                                 />
                             </div>
                         )}
-                        {setups.length > 1 && (
-                            <button
-                                type='button'
-                                onClick={() => onSetups(setups.filter((_, position) => position !== index))}
-                            >
-                                {localize('Remove setup')}
-                            </button>
-                        )}
+                        <button
+                            type='button'
+                            onClick={() => onSetups(setups.filter((_, position) => position !== index))}
+                        >
+                            {localize('Remove setup')}
+                        </button>
                     </fieldset>
                 );
             })}
@@ -460,12 +458,17 @@ const InsightsCompare = ({
                     )}
                 />
             </div>
+            {setups.length > 0 && (
+                <button type='button' onClick={() => onSetups([])}>
+                    {localize('Clear all')}
+                </button>
+            )}
             {rateLimited && (
                 <p role='status'>
                     {localize('Deriv is limiting requests. Wait a minute before refreshing or going live again.')}
                 </p>
             )}
-            {!current && !rateLimited && (
+            {!!setups.length && !current && !rateLimited && (
                 <p role='status'>
                     {Number(stake) >= 0.01 && Number(stake) <= 1000000
                         ? localize('Loading comparison…')
@@ -490,6 +493,9 @@ const InsightsCompare = ({
                                 {marketLabel(setup.symbol)} · {candidateLabel(setup.candidate)} · {ticks}{' '}
                                 {localize('ticks')}
                             </h3>
+                            <button type='button' onClick={() => onSetups(setups.filter((_, position) => position !== Math.floor(index / durations.length)))}>
+                                {localize('Remove setup')}
+                            </button>
                             {rate === undefined || !row || !report || !result ? (
                                 <p>{localize('No completed trials or comparable quote for this setup.')}</p>
                             ) : (

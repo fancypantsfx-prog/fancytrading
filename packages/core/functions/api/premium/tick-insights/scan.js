@@ -4,6 +4,7 @@ import {
     CONTRACT_LIST_MAX_AGE_MS,
     finderCandidates,
     finderHistorical,
+    finderRankingKey,
     finderSupportsDuration,
     SCAN_CACHE_KEY,
 } from '../../../../premium/strategy-finder.mjs';
@@ -23,6 +24,13 @@ export const onRequestGet = async ({ request, env }) => {
         const snapshot = await env.STRATEGY_FINDER_CACHE?.get(SCAN_CACHE_KEY, { type: 'json', cacheTtl: 30 });
 
         const markets = (snapshot?.markets ?? []).filter(market => market.groups.includes(contract));
+        const prepared = snapshot?.rankings?.[finderRankingKey(contract, ticks, barrier)];
+        if (prepared) {
+            return premiumResponse({
+                access, rows: prepared, ticks, updatedAt: snapshot.updatedAt, marketsScanned: markets.length,
+                instrumentsTotal: snapshot.instrumentsByGroup?.[contract] ?? markets.length,
+            });
+        }
         const now = Date.now();
         const rows = [];
         for (const market of markets) {

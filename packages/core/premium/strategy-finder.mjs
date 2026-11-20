@@ -96,3 +96,32 @@ export const finderHistorical = ({ count, rise, fall, histogram }, candidate) =>
     }
     return { hits, count };
 };
+
+export const finderRankingKey = (group, ticks, barrier) =>
+    [group, ticks, ['over_under', 'match_diff'].includes(group) ? barrier : ''].join('/');
+
+export const prepareFinderRankings = (markets, listings, now) => {
+    const rankings = {};
+    for (const group of Object.keys(finderContracts)) {
+        const barriers = ['over_under', 'match_diff'].includes(group) ? Array.from({ length: 10 }, (_, i) => i) : [0];
+        for (let ticks = 1; ticks <= 20; ticks++) {
+            for (const barrier of barriers) {
+                const rows = [];
+                const candidates = finderCandidates(group, barrier);
+                for (const market of markets) {
+                    const listing = listings.get(market.symbol);
+                    const summary = market.summaries?.[ticks - 1];
+                    if (!summary || !market.groups.includes(group) || !(listing?.checkedAt + CONTRACT_LIST_MAX_AGE_MS > now)) continue;
+                    for (const candidate of candidates) {
+                        if (!finderSupportsDuration(listing.contracts, candidate, ticks)) continue;
+                        const historical = finderHistorical(summary, candidate);
+                        if (historical) rows.push({ symbol: market.symbol, label: market.label, candidate, historical, sampleAt: market.lastTick * 1000 });
+                    }
+                }
+                rows.sort((a, b) => b.historical.hits / b.historical.count - a.historical.hits / a.historical.count);
+                rankings[finderRankingKey(group, ticks, barrier)] = rows;
+            }
+        }
+    }
+    return rankings;
+};

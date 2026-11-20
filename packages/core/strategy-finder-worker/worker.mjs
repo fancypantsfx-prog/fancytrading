@@ -5,6 +5,7 @@ import {
     finderTickContracts,
     SCAN_CACHE_KEY,
     summarizeFinderMarket,
+    prepareFinderRankings,
 } from '../premium/strategy-finder.mjs';
 
 const DERIV_PUBLIC_WS = 'https://api.derivws.com/trading/v1/options/ws/public';
@@ -208,8 +209,9 @@ export const warmStrategyFinder = async (cache, connect = openMarketData, wait =
             ])
         );
         const updatedAt = refreshed ? now : previous?.updatedAt ?? 0;
+        const rankings = prepareFinderRankings(markets, contractLists, now);
         await cache.put(SCAN_CACHE_KEY, JSON.stringify({
-            updatedAt, markets, instrumentsByGroup, catalog, lastAttempted, contractLists: Object.fromEntries(contractLists),
+            updatedAt, rankings, markets, instrumentsByGroup, catalog, lastAttempted, contractLists: Object.fromEntries(contractLists),
         }));
         console.info('Strategy Finder snapshot written', {
             refreshed,

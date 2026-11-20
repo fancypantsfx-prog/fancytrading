@@ -41,10 +41,6 @@ const finderContracts = {
     match_diff: ['DIGITMATCH', 'DIGITDIFF'],
 } as const;
 type TFinderContract = keyof typeof finderContracts;
-const finderQuoteKey = (settings: string, row: TFinderRow) => JSON.stringify([settings, row.symbol, row.candidate]);
-const QUOTE_CHECKS_PER_REFRESH = 6;
-const QUOTE_AVAILABILITY_MS = 60000;
-
 type TProps = {
     symbol: string;
     currency: string;
@@ -127,14 +123,8 @@ const InsightsPanel = ({
     const [refreshVersion, refreshRankings] = React.useReducer(version => version + 1, 0);
     const [error, setError] = React.useState('');
     const [scanError, setScanError] = React.useState('');
-    const quoteChecks = React.useRef(new Map<string, { available: boolean; expiresAt: number }>());
-    const [, updateQuoteVisibility] = React.useReducer(version => version + 1, 0);
     const [busy, setBusy] = React.useState(false);
     const [view, setView] = React.useState<'finder' | 'compare'>('finder');
-    const [manualSetup, setManualSetup] = React.useState<TCompareSetup>({
-        symbol,
-        candidate: initial_candidate ?? 'CALL',
-    });
     const [markets, setMarkets] = React.useState<{ symbol: string; label: string }[]>([]);
     const request = React.useRef<AbortController>();
     const [pageVisible, setPageVisible] = React.useState(() => !document.hidden);
@@ -154,10 +144,6 @@ const InsightsPanel = ({
             window.removeEventListener('online', resume);
         };
     }, []);
-
-    React.useEffect(() => {
-        if (purchase_block) quoteChecks.current.clear();
-    }, [purchase_block]);
 
     React.useEffect(() => {
         if (!open || view !== 'compare' || markets.length || typeof access === 'string' || access.access === 'locked') return;
@@ -216,35 +202,15 @@ const InsightsPanel = ({
     const scanSettings = new URLSearchParams({ contract: finderGroup, ticks, barrier: finderBarrier }).toString();
     const hasScanAccess = typeof access !== 'string' && access.access !== 'locked';
 
-    const settings = JSON.stringify([scanSettings, stake, currency, account_label]);
-    const report = snapshot?.settings === settings && pageVisible && !purchase_block
-        ? { ...snapshot, rows: snapshot.rows.filter(row => {
-            const check = quoteChecks.current.get(finderQuoteKey(settings, row));
-            return check?.available && check.expiresAt > Date.now();
-        }).slice(0, 12) }
-        : undefined;
-
-    const nextExpiry = Math.min(...(report?.rows.map(row =>
-        quoteChecks.current.get(finderQuoteKey(settings, row))?.expiresAt ?? Infinity
-    ) ?? []));
-    React.useEffect(() => {
-        if (!Number.isFinite(nextExpiry)) return;
-        const timer = window.setTimeout(updateQuoteVisibility, Math.max(1, nextExpiry - Date.now()));
-        return () => window.clearTimeout(timer);
-    }, [nextExpiry]);
+    const report = snapshot?.settings === scanSettings ? snapshot : undefined;
 
     const scanPaused = !!draft || busy;
-    const send = ws.send;
     React.useEffect(() => {
-        const amount = Number(stake);
         if (
             view !== 'finder' ||
             !pageVisible ||
             scanPaused ||
             !hasScanAccess ||
-            purchase_block ||
-            !currency ||
-            !Number.isFinite(amount) || amount < 0.01 || amount > 1000000 ||
             !/^([1-9]|1[0-9]|20)$/.test(ticks)
         ) {
             setLoadingScan(false);
@@ -254,7 +220,6 @@ const InsightsPanel = ({
         let timer: number;
         const refresh = async () => {
             setLoadingScan(true);
-            let delay = 15000;
             try {
                 const fetchController = new AbortController();
                 const abortFetch = () => fetchController.abort();
@@ -274,56 +239,24 @@ const InsightsPanel = ({
                     return;
                 }
 
-                const now = Date.now();
-                for (const [key, check] of quoteChecks.current) {
-                    if (check.expiresAt <= now) quoteChecks.current.delete(key);
-                }
-                setReport({ ...next, settings });
+                setReport({ ...next, settings: scanSettings });
                 setScanError('');
-                const unchecked = next.rows.filter(row =>
-                    !quoteChecks.current.has(finderQuoteKey(settings, row))
-                ).slice(0, QUOTE_CHECKS_PER_REFRESH);
-                for (const row of unchecked) {
-                    if (controller.signal.aborted) return;
-                    let available = false;
-                    try {
-                        const quote = await getLiveInsightQuote(send, {
-                            symbol: row.symbol,
-                            currency,
-                            stake: amount,
-                            ticks: next.ticks,
-                            candidate: row.candidate,
-                        }, controller.signal);
-                        available = quote?.stake === amount;
-                    } catch (failure) {
-                        if (failure instanceof InsightRateLimitError) {
-                            delay = 60000;
-                            break;
-                        }
-                    }
-                    if (controller.signal.aborted) return;
-                    quoteChecks.current.set(finderQuoteKey(settings, row), {
-                        available,
-                        expiresAt: Date.now() + (available ? QUOTE_AVAILABILITY_MS : 120000),
-                    });
-                    updateQuoteVisibility();
-                }
             } catch {
                 if (controller.signal.aborted) return;
                 setScanError(localize('Rankings are temporarily unavailable. Fancy Strategy Finder will retry automatically.'));
             } finally {
                 if (!controller.signal.aborted) {
                     setLoadingScan(false);
-                    timer = window.setTimeout(refresh, delay);
+                    timer = window.setTimeout(refresh, 15000);
                 }
             }
         };
-        timer = window.setTimeout(refresh, 250);
+        void refresh();
         return () => {
             controller.abort();
             window.clearTimeout(timer);
         };
-    }, [view, scanPaused, hasScanAccess, ticks, scanSettings, refreshVersion, settings, pageVisible, purchase_block, stake, currency, send]);
+    }, [view, scanPaused, hasScanAccess, ticks, scanSettings, refreshVersion, pageVisible]);
 
     const is_reviewing = !!draft;
     React.useEffect(() => {
@@ -423,9 +356,6 @@ const InsightsPanel = ({
             review({ ...row, ...quote }, automatic, report.ticks);
         } catch (failure) {
             if (!controller.signal.aborted) {
-                if (!(failure instanceof InsightRateLimitError)) {
-                    quoteChecks.current.set(finderQuoteKey(settings, row), { available: false, expiresAt: Date.now() + 120000 });
-                }
                 setError(
                     failure instanceof InsightRateLimitError
                         ? localize('Deriv is limiting requests. Wait a minute before requesting another quote.')
@@ -717,7 +647,7 @@ const InsightsPanel = ({
                     disabled={busy}
                     onClick={() => setView('compare')}
                 >
-                    {localize('Compare')} ({starred.length + 1})
+                    {localize('Compare')} ({starred.length})
                 </button>
                 <MenuHelp
                     label={localize('Compare')}
@@ -928,11 +858,8 @@ const InsightsPanel = ({
                             setPresetSaved(false);
                             setReport(undefined);
                         }}
-                        setups={[manualSetup, ...starred]}
-                        onSetups={([first, ...rest]) => {
-                            setManualSetup(first);
-                            setStarred(rest);
-                        }}
+                        setups={starred}
+                        onSetups={setStarred}
                         durations={durations}
                         onDurations={setDurations}
                         send={payload => ws.send(payload)}
@@ -973,7 +900,7 @@ const InsightsPanel = ({
                         )}
                     </p>
                     <div
-                        className='tick-insights__table'
+                        className='tick-insights__table tick-insights__table--finder'
                         tabIndex={0}
                         role='region'
                         aria-label={localize('Scan results')}
@@ -1015,8 +942,8 @@ const InsightsPanel = ({
                                             <button
                                                 type='button'
                                                 disabled={
-                                                    starred.length >= 3 ||
-                                                    [manualSetup, ...starred].some(
+                                                    starred.length >= 4 ||
+                                                    starred.some(
                                                         setup =>
                                                             setup.symbol === row.symbol &&
                                                             setup.candidate === row.candidate
@@ -1041,7 +968,7 @@ const InsightsPanel = ({
                     </div>
                     {!report.rows.length && !loadingScan && (
                         <p role='status'>
-                            {localize('No tradeable contracts have been verified for these settings yet.')}
+                            {localize('No ranked contracts are available for these settings yet.')}
                         </p>
                     )}
                 </>

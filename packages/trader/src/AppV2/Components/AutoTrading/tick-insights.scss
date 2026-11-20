@@ -366,6 +366,11 @@
         }
     }
 
+    &__table--finder {
+        max-height: 55vh;
+        overflow-y: auto;
+    }
+
     &__table {
         overflow-x: auto;
         border: 1px solid var(--border-normal, #c6ccd4);
