@@ -1181,7 +1181,7 @@ const AutoTrading = observer(
                 </div>
             </dialog>
         );
-        const signalTypes = signalTradeTypes[store.contract_type.toLowerCase()];
+        const signalTypes = signalTradeTypes[store.contract_type?.toLowerCase() ?? ''];
         const signalContract = signalTypes?.find(type => type === contract) ?? signalTypes?.[0];
         const openSignal = () => {
             if (!fancyTrading || !client.is_logged_in) return;

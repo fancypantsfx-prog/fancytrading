@@ -115,11 +115,11 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
     const [availability, setAvailability] = React.useState<{ key: string; sides: boolean[] }>();
     const [hasFirst, hasSecond] = !block && availability?.key === availabilityKey ? availability.sides : [];
     const availableChoice = choice === 'first' ? hasFirst : choice === 'second' ? hasSecond : hasFirst && hasSecond;
-    const send = ws.send;
+    const send = ws?.send;
     React.useEffect(() => {
         const amount = Number(stake);
         const duration = Number(ticks);
-        if (block || active || !currency || !Number.isFinite(amount) || amount <= 0 ||
+        if (!send || block || active || !currency || !Number.isFinite(amount) || amount <= 0 ||
             !Number.isInteger(duration) || duration < 1 || duration > 10) return;
 
         const controller = new AbortController();
@@ -410,6 +410,7 @@ const SignalStrategy = ({ symbol, currency, account, contract, initialStake, ini
     };
 
     React.useEffect(() => {
+        if (!ws) return;
         live.current = true;
         const controller = new AbortController();
         let subscription: TSubscription | undefined;

@@ -22,7 +22,8 @@ const mockWS = {
 configure({ asyncUtilTimeout: 5000 });
 jest.setTimeout(15000);
 
-jest.mock('@deriv/shared', () => ({ useWS: () => mockWS, getDecimalPlaces: () => 2 }));
+let mockSocketReady = true;
+jest.mock('@deriv/shared', () => ({ useWS: () => mockSocketReady ? mockWS : undefined, getDecimalPlaces: () => 2 }));
 
 it('opens before the account currency is ready and renders currencies with non-ISO codes', () => {
     const props = {
@@ -37,6 +38,22 @@ it('opens before the account currency is ready and renders currencies with non-I
     expect(screen.getByRole('button', { name: 'Rules' })).toBeInTheDocument();
     rerender(<SignalStrategy {...props} currency='USDT' />);
     expect(screen.getAllByText(/USDT/).length).toBeGreaterThan(0);
+});
+
+it('opens while the socket is initializing and subscribes when it becomes available', async () => {
+    jest.clearAllMocks();
+    const props = { symbol: 'R_100', currency: 'USD', contract: 'CALL', initialStake: 5, initialTicks: 1, block: '', buy: jest.fn() };
+    mockSocketReady = false;
+    try {
+        const { rerender } = render(<SignalStrategy {...props} />);
+        expect(screen.getByRole('button', { name: 'Rules' })).toBeInTheDocument();
+        expect(mockWS.send).not.toHaveBeenCalled();
+        mockSocketReady = true;
+        rerender(<SignalStrategy {...props} />);
+        await waitFor(() => expect(mockWS.subscribeTicks).toHaveBeenCalled());
+    } finally {
+        mockSocketReady = true;
+    }
 });
 
 it.each([

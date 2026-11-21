@@ -78,7 +78,7 @@ const TradeDesktop = observer(() => {
     const contract_types = getDisplayedContractTypes(trade_types_store, contract_type, trade_type_tab);
     const is_all_types_with_errors = contract_types.every(item => proposal_info?.[item]?.has_error);
     const is_any_type_with_errors = contract_types.some(item => proposal_info?.[item]?.has_error);
-    const is_high_low = /^high_low$/.test(contract_type.toLowerCase());
+    const is_high_low = /^high_low$/.test(contract_type?.toLowerCase() ?? '');
 
     // Showing snackbar for all cases, except when it is Rise/Fall or Digits and only one subtype has error
     const should_show_snackbar =
