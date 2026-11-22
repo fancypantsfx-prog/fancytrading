@@ -16,6 +16,7 @@ import {
     isInsightPresetValid,
 } from './tick-insights-data';
 import type { TInsightRun, TInsightStrategyOption, TInsightTrade, TTickInsights } from './tick-insights-data';
+import RankedRunner from './ranked-runner';
 import MenuHelp from './menu-help';
 import InsightsCompare, { candidateLabel } from './insights-compare';
 import type { TCompareSetup } from './insights-compare';
@@ -53,7 +54,7 @@ type TProps = {
     preset_key?: string;
     onShowTrade?: (trade: TInsightTrade) => Promise<void>;
     onBuy: (trade: TInsightTrade, signal: AbortSignal) => Promise<string>;
-    onOpenSignal?: () => void;
+    onRankedBuy?: React.ComponentProps<typeof RankedRunner>['buy'];
     getStrategies: (contract_type: string) => TInsightStrategyOption[];
     onRefreshAutomation?: () => void;
     onStart: (draft: TInsightRun, signal: AbortSignal) => Promise<string>;
@@ -79,8 +80,8 @@ const InsightsPanel = ({
     purchase_block,
     preset_key,
     onBuy,
+    onRankedBuy,
     onShowTrade,
-    onOpenSignal,
     getStrategies,
     onRefreshAutomation,
     onStart,
@@ -124,7 +125,7 @@ const InsightsPanel = ({
     const [error, setError] = React.useState('');
     const [scanError, setScanError] = React.useState('');
     const [busy, setBusy] = React.useState(false);
-    const [view, setView] = React.useState<'finder' | 'compare'>('finder');
+    const [view, setView] = React.useState<'finder' | 'compare' | 'trade'>('finder');
     const [markets, setMarkets] = React.useState<{ symbol: string; label: string }[]>([]);
     const request = React.useRef<AbortController>();
     const [pageVisible, setPageVisible] = React.useState(() => !document.hidden);
@@ -653,18 +654,10 @@ const InsightsPanel = ({
                     label={localize('Compare')}
                     description={localize('Compare selected contracts, instruments and tick durations side by side.')}
                 />
-                {onOpenSignal && (
-                    <>
-                        <button type='button' disabled={busy} onClick={onOpenSignal}>
-                            {localize('Fancy Probs')}
-                        </button>
-                        <MenuHelp
-                            label={localize('Fancy Probs')}
-                            description={localize('Use live ticks to run a trade rule for the selected contract.')}
-                        />
-                    </>
-                )}
+                {onRankedBuy && <button type='button' disabled={busy} aria-pressed={view === 'trade'} onClick={() => setView('trade')}>{localize('Trade')}</button>}
             </nav>
+            {view === 'trade' && onRankedBuy && <RankedRunner currency={currency} stake={initial_stake}
+                account={account_label} block={execution_block || purchase_block} buy={onRankedBuy} />}
             {view === 'finder' && loadingScan && !report && <p role='status'>{localize('Loading market rankings�')}</p>}
             {view === 'finder' && (
                 <div className='tick-insights__fields'>

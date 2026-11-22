@@ -36,9 +36,7 @@ import {
     stepNumber,
 } from './automation';
 import TickInsights from './tick-insights';
-import SignalStrategy from './signal-strategy';
 import { FancyTradingDialogContext } from './fancy-trading-dialog-context';
-import { signalTradeTypes } from './signal-rule';
 import { getInsightContract, InsightQuoteChanged, waitForInsightRequest } from './tick-insights-data';
 import type { TInsightRun, TInsightStrategyOption, TInsightTrade } from './tick-insights-data';
 import './auto-trading.scss';
@@ -732,7 +730,7 @@ const AutoTrading = observer(
             const checkAccount = () => {
                 const id = ensureInsightTrade(draft, signal);
                 const automation = controller.current?.state;
-                if (beforeRuleBuy && (owner.current !== id || store.symbol !== draft.symbol || !automation?.ready ||
+                if (beforeRuleBuy && (owner.current !== id || !automation?.ready ||
                     automation.uncertain || automation.runs.some(item => item.status !== 'stopped'))) {
                     throw new Error(localize('The market changed or another automatic run is active. Check Automatic settings.'));
                 }
@@ -766,14 +764,7 @@ const AutoTrading = observer(
                 ensureInsightAccess(access);
                 if (ws.getWSUrl?.() !== connection)
                     throw new Error(localize('The market connection changed. Review the trade again.'));
-                if (beforeRuleBuy) {
-                    if (Number(proposal.ask_price) !== draft.stake || !Number.isFinite(Number(proposal.payout)) ||
-                        Number(proposal.payout) <= draft.stake) {
-                        throw new Error(localize('Deriv did not quote the exact stake for this rule.'));
-                    }
-                } else {
-                    ensureInsightQuote(draft, proposal);
-                }
+                ensureInsightQuote(draft, proposal);
 
                 const markUnconfirmed = () => {
                     if (beforeRuleBuy) {
@@ -1181,48 +1172,8 @@ const AutoTrading = observer(
                 </div>
             </dialog>
         );
-        const signalTypes = signalTradeTypes[store.contract_type?.toLowerCase() ?? ''];
-        const signalContract = signalTypes?.find(type => type === contract) ?? signalTypes?.[0];
-        const openSignal = () => {
-            if (!fancyTrading || !client.is_logged_in) return;
-            fancyTrading.setOpen(false);
-            fancyTrading.setSignalOpen(true);
-        };
-
-        const signalOpen = !!client.is_logged_in && !!fancyTrading?.signalOpen;
         const stake = store.basis === 'stake' && Number(store.amount) > 0 ? Number(store.amount) : 10;
         const ticks = store.duration_unit === 't' && store.duration >= 1 && store.duration <= 20 ? store.duration : 5;
-
-        if (signalOpen && !fancyTrading?.open) {
-            return (
-                <section className='tick-insights tick-insights__signal-panel'>
-                    <header className='tick-insights__actions'>
-                        <button type='button' onClick={() => fancyTrading?.setSignalOpen(false)}>
-                            {localize('Back to normal trading')}
-                        </button>
-                    </header>
-                    {signalContract && !is_market_closed && !store.is_market_closed ? (
-                        <SignalStrategy
-                            key={String(account_id) + ':' + store.symbol + ':' + store.currency + ':' + signalContract}
-                            symbol={store.symbol}
-                            currency={store.currency}
-                            account={account_id ? { id: account_id, demo: !!client.is_virtual } : undefined}
-                            initialStake={stake}
-                            initialTicks={ticks}
-                            contract={signalContract}
-                            block={
-                                store.is_market_closed
-                                    ? localize('The selected market is closed.')
-                                    : trade_block || (unconfirmed_buy ? unconfirmed_message : insight_block)
-                            }
-                            buy={buyFromInsights}
-                        />
-                    ) : (
-                        <p role='status'>{localize('Choose an open Rise / Fall or Digits market to use Fancy Probs.')}</p>
-                    )}
-                </section>
-            );
-        }
 
         const showInsightTrade = async (trade: TInsightTrade) => {
             const [type, barrier] = trade.candidate.split(':');
@@ -1295,8 +1246,8 @@ const AutoTrading = observer(
                     execution_block={insight_block}
                     purchase_block={connection_block || (unconfirmed_buy ? unconfirmed_message : '')}
                     onShowTrade={showInsightTrade}
+                    onRankedBuy={buyFromInsights}
                     onBuy={buyFromInsights}
-                    onOpenSignal={openSignal}
                     getStrategies={getInsightStrategyOptions}
                     onRefreshAutomation={eligible && !state.busy ? () => { void controller.current?.refresh(); } : undefined}
                     onStart={startFromInsights}

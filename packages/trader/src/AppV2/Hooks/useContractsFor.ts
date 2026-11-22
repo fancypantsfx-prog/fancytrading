@@ -5,7 +5,6 @@ import { cloneObject, getContractCategoriesConfig, getContractTypesConfig, setTr
 import { useStore } from '@deriv/stores';
 
 import { checkContractTypePrefix } from 'AppV2/Utils/contract-type';
-import { signalTradeTypes } from 'AppV2/Components/AutoTrading/signal-rule';
 import { getTradeTypesList } from 'AppV2/Utils/trade-types-utils';
 import { TContractType } from 'AppV2/Types/contract-type';
 import { useTraderStore } from 'Stores/useTraderStores';
@@ -228,13 +227,7 @@ const useContractsFor = () => {
         setTradeTypes([]);
     };
 
-    const tickContracts = isLoading || error ? [] : response?.contracts_for?.available ?? [];
-    const signal_trade_types = trade_types.filter(type => signalTradeTypes[type.value]?.some(contract =>
-        tickContracts.some(item => item.contract_type === contract && item.expiry_type === 'tick' &&
-            item.contract_category !== 'higherlower')
-    ));
-
-    return { trade_types, signal_trade_types, contract_types_list, available_contract_types, is_fetching_ref, resetTradeTypes };
+    return { trade_types, contract_types_list, available_contract_types, is_fetching_ref, resetTradeTypes };
 };
 
 export default useContractsFor;
