@@ -4,11 +4,12 @@ import { localize } from '@deriv-com/translations';
 import { candidateLabel } from './insights-compare';
 import type { RankedQuote } from './ranked-trade';
 import { fresh, rankedTradeKey, selectRankedTrade } from './ranked-trade';
-import { InsightQuoteChanged, waitForInsightRequest } from './tick-insights-data';
+import { InsightQuoteChanged, InsightRateLimitError, waitForInsightRequest } from './tick-insights-data';
 import type { TInsightTrade } from './tick-insights-data';
 
 type Props = {
     currency: string;
+    symbol?: string;
     stake: number;
     account: string;
     block: string;
@@ -16,7 +17,7 @@ type Props = {
 };
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-export default function RankedRunner({ currency, stake, account, block, buy }: Props) {
+export default function RankedRunner({ currency, symbol, stake, account, block, buy }: Props) {
     const ws = useWS();
     const [loss, setLoss] = React.useState('');
     const [target, setTarget] = React.useState(String(3 * stake));
@@ -68,11 +69,21 @@ export default function RankedRunner({ currency, stake, account, block, buy }: P
                     if (latest.current.block) throw new Error(latest.current.block);
                     if (net >= tp || round(net - amount) < -sl) break;
                     setStatus('Comparing live contracts. Session P/L ' + net + ' ' + currency);
-                    const pick = await selectRankedTrade(ws.send, currency, amount, signal, skipped, setRankings);
+                    let pick: RankedQuote | undefined;
+                    try {
+                        pick = await selectRankedTrade(ws.send, currency, amount, signal, skipped, setRankings, symbol);
+                    } catch (error) {
+                        if (!(error instanceof InsightRateLimitError)) throw error;
+                        setStatus('Deriv is limiting quotes. Retrying when the limit clears.');
+                        await delay(10000);
+                        continue;
+                    }
                     if (signal.aborted || stopping.current) break;
                     if (!pick) {
                         skipped.clear();
-                        setStatus('Waiting for a live contract. Session P/L ' + net + ' ' + currency);
+                        setStatus(
+                            'No eligible live quote at this stake. Retrying. Session P/L ' + net + ' ' + currency
+                        );
                         await delay(10000);
                         continue;
                     }

@@ -161,6 +161,7 @@ export const isInsightRateLimit = (response: unknown): boolean => {
 };
 
 export class InsightRateLimitError extends Error {}
+export class IncompleteInsightHistory extends Error {}
 
 const REQUEST_SPACING_MS = 400;
 const RATE_LIMIT_COOLDOWN_MS = 60000;
@@ -299,7 +300,7 @@ export const compareRecentTicks = async (
     });
     if (signal.aborted) return null;
     if (history?.error || history?.history?.prices?.length !== count || history?.history?.times?.length !== count) {
-        throw new Error('Incomplete tick history');
+        throw new IncompleteInsightHistory('Incomplete tick history');
     }
     const quotesRequest = Promise.allSettled(
         candidates.map(async candidate => {

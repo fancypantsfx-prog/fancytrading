@@ -54,7 +54,6 @@ type TProps = {
     preset_key?: string;
     onShowTrade?: (trade: TInsightTrade) => Promise<void>;
     onBuy: (trade: TInsightTrade, signal: AbortSignal) => Promise<string>;
-    onOpenSignal?: () => void;
     onRankedBuy?: React.ComponentProps<typeof RankedRunner>['buy'];
     getStrategies: (contract_type: string) => TInsightStrategyOption[];
     onRefreshAutomation?: () => void;
@@ -82,7 +81,6 @@ const InsightsPanel = ({
     preset_key,
     onBuy,
     onRankedBuy,
-    onOpenSignal,
     onShowTrade,
     getStrategies,
     onRefreshAutomation,
@@ -664,15 +662,11 @@ const InsightsPanel = ({
                         {localize('FancyTrading')}
                     </button>
                 )}
-                {onOpenSignal && (
-                    <button type='button' disabled={busy} onClick={onOpenSignal}>
-                        {localize('Fancy Probs')}
-                    </button>
-                )}
             </nav>
             {view === 'trade' && onRankedBuy && (
                 <RankedRunner
                     currency={currency}
+                    symbol={symbol}
                     stake={initial_stake}
                     account={account_label}
                     block={execution_block || purchase_block}

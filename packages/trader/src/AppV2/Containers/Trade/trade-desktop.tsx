@@ -16,7 +16,6 @@ import OnboardingGuide, {
     OnboardingGuideDesktop,
     OnboardingGuideDesktopReturning,
 } from 'AppV2/Components/OnboardingGuide/GuideForPages';
-import { FancyTradingDialogContext } from 'AppV2/Components/AutoTrading/fancy-trading-dialog-context';
 import AutoTrading from 'AppV2/Components/AutoTrading/auto-trading';
 import TradeErrorSnackbar from 'AppV2/Components/TradeErrorSnackbar';
 import { TradeParameters } from 'AppV2/Components/TradeParameters';
@@ -32,10 +31,8 @@ import { useTraderStore } from 'Stores/useTraderStores';
 import { TradeChart } from '../Chart';
 
 import TradeTypes from './trade-types';
-import FancyProbsTradeTypes from './fancy-probs-trade-types';
 
 const TradeDesktop = observer(() => {
-    const signalOpen = React.useContext(FancyTradingDialogContext)?.signalOpen;
     const chart_ref = React.useRef<HTMLDivElement>(null);
     const {
         client,
@@ -58,11 +55,7 @@ const TradeDesktop = observer(() => {
         trade_types: trade_types_store,
         trade_type_tab,
     } = useTraderStore();
-    const { trade_types, signal_trade_types } = useContractsFor();
-    const selectSignalContract = React.useCallback(
-        (value: string) => onChange({ target: { name: 'contract_type', value } }),
-        [onChange]
-    );
+    const { trade_types } = useContractsFor();
     useDefaultSymbol(); // This will initialize and set the default symbol
     const { should_show_portrait_loader } = useTabletLandscape({
         is_chart_loading,
@@ -133,20 +126,12 @@ const TradeDesktop = observer(() => {
                     })}
                 >
                     <div className='trade__header'>
-                        {signalOpen ? (
-                            <FancyProbsTradeTypes
-                                tradeTypes={signal_trade_types}
-                                value={contract_type}
-                                onSelect={selectSignalContract}
-                            />
-                        ) : (
-                            <TradeTypes
-                                contract_type={contract_type}
-                                onTradeTypeSelect={onTradeTypeSelect}
-                                trade_types={trade_types}
-                                is_dark_mode_on={is_dark_mode_on}
-                            />
-                        )}
+                        <TradeTypes
+                            contract_type={contract_type}
+                            onTradeTypeSelect={onTradeTypeSelect}
+                            trade_types={trade_types}
+                            is_dark_mode_on={is_dark_mode_on}
+                        />
                         <AccountHeader />
                     </div>
                     {/* Commented out to use chart's native market selector instead */}
@@ -164,14 +149,14 @@ const TradeDesktop = observer(() => {
                             >
                                 <TradeChart />
                             </section>
-                            {!signalOpen && is_accumulator && <AccumulatorStats />}
+                            {is_accumulator && <AccumulatorStats />}
                         </div>
                         <div className='trade-params'>
-                            {!signalOpen && <Guide show_guide_for_selected_contract />}
-                            {!signalOpen && <TradeParameters />}
-                            {!signalOpen && <ClosedMarketMessage />}
+                            <Guide show_guide_for_selected_contract />
+                            <TradeParameters />
+                            <ClosedMarketMessage />
                             <AutoTrading is_market_closed={is_market_closed} />
-                            {!signalOpen && <TradeParamsFooter />}
+                            <TradeParamsFooter />
                         </div>
                     </div>
                     {/* Mobile onboarding */}

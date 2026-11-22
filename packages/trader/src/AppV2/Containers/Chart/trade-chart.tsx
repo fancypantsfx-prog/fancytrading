@@ -14,7 +14,6 @@ import { useDevice } from '@deriv-com/ui';
 
 import { filterByContractType } from 'Modules/Contract/Components/ContractAudit/positions-helper';
 import useActiveSymbols from 'AppV2/Hooks/useActiveSymbols';
-import { FancyTradingDialogContext } from 'AppV2/Components/AutoTrading/fancy-trading-dialog-context';
 import useDefaultSymbol from 'AppV2/Hooks/useDefaultSymbol';
 import { SmartChart } from 'Modules/SmartChart';
 import AccumulatorsChartElements from 'Modules/SmartChart/Components/Markers/accumulators-chart-elements';
@@ -52,7 +51,6 @@ const BottomWidgetsMobile = observer(({ digits, tick }: TBottomWidgetsParams) =>
 });
 
 const TradeChart = observer(() => {
-    const signalOpen = React.useContext(FancyTradingDialogContext)?.signalOpen;
     const { ui, common, contract_trade, portfolio, client } = useStore();
     const { isMobile } = useDevice();
     const { is_logged_in } = client;
@@ -227,7 +225,7 @@ const TradeChart = observer(() => {
     return (
         <>
             <SmartChart
-                key={signalOpen ? `fancy-probs:${symbol}` : show_digits_stats ? symbol : 'trade-chart'}
+                key={show_digits_stats ? symbol : 'trade-chart'}
                 drawingToolFloatingMenuPosition={
                     isMobile
                         ? CHART_CONSTANTS.MOBILE_DRAWING_TOOL_POSITION
@@ -240,7 +238,7 @@ const TradeChart = observer(() => {
                 showLastDigitStats
                 chartControlsWidgets={null}
                 chartStatusListener={(v: boolean) => setChartStatus(!v, true)}
-                chartType={signalOpen ? 'area' : chart_type}
+                chartType={chart_type}
                 chartData={chartData}
                 getQuotes={getQuotes}
                 subscribeQuotes={subscribeQuotes}
@@ -251,9 +249,9 @@ const TradeChart = observer(() => {
                 isMobile={isMobile}
                 isVerticalScrollEnabled={!isMobile}
                 maxTick={isMobile ? max_ticks : undefined}
-                granularity={signalOpen || show_digits_stats || is_accumulator ? 0 : granularity}
+                granularity={show_digits_stats || is_accumulator ? 0 : granularity}
                 settings={settings}
-                allowTickChartTypeOnly={signalOpen || show_digits_stats || is_accumulator}
+                allowTickChartTypeOnly={show_digits_stats || is_accumulator}
                 stateChangeListener={chartStateChange}
                 symbol={symbol}
                 // Enable chart native TopWidgets for desktop, keep hidden for mobile
@@ -261,10 +259,10 @@ const TradeChart = observer(() => {
                 isConnectionOpened={is_socket_opened}
                 clearChart={false}
                 toolbarWidget={() => {
-                    return <ToolbarWidgets updateChartType={updateChartType} updateGranularity={updateGranularity} tickChartOnly={signalOpen} />;
+                    return <ToolbarWidgets updateChartType={updateChartType} updateGranularity={updateGranularity} />;
                 }}
-                importedLayout={signalOpen ? undefined : chart_layout}
-                onExportLayout={signalOpen ? undefined : exportLayout}
+                importedLayout={chart_layout}
+                onExportLayout={exportLayout}
                 shouldFetchTradingTimes={false}
                 hasAlternativeSource={has_alternative_source}
                 getMarketsOrder={getMarketsOrder}
