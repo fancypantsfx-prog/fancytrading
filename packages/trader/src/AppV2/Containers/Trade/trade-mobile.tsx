@@ -25,10 +25,12 @@ import { useTraderStore } from 'Stores/useTraderStores';
 import { TradeChart } from '../Chart';
 
 import TradeTypes from './trade-types';
+import FancyProbsTradeTypes from './fancy-probs-trade-types';
 
 const Trade = observer(() => {
     const chart_ref = React.useRef<HTMLDivElement>(null);
     const fancy_trading = React.useContext(FancyTradingDialogContext);
+    const signalOpen = fancy_trading?.signalOpen;
     const {
         client,
         common: { current_language, network_status },
@@ -51,7 +53,11 @@ const Trade = observer(() => {
         trade_types: trade_types_store,
         trade_type_tab,
     } = useTraderStore();
-    const { trade_types } = useContractsFor();
+    const { trade_types, signal_trade_types } = useContractsFor();
+    const selectSignalContract = React.useCallback(
+        (value: string) => onChange({ target: { name: 'contract_type', value } }),
+        [onChange]
+    );
     useDefaultSymbol(); // This will initialize and set the default symbol
     const [guide_dtrader_v2] = useLocalStorageData<Record<string, boolean>>('guide_dtrader_v2', {
         trade_types_selection: false,
@@ -116,12 +122,20 @@ const Trade = observer(() => {
             {symbols.length && trade_types.length ? (
                 <React.Fragment>
                     <div className='trade'>
-                        <TradeTypes
-                            contract_type={contract_type}
-                            onTradeTypeSelect={onTradeTypeSelect}
-                            trade_types={trade_types}
-                            is_dark_mode_on={is_dark_mode_on}
-                        />
+                        {signalOpen ? (
+                            <FancyProbsTradeTypes
+                                tradeTypes={signal_trade_types}
+                                value={contract_type}
+                                onSelect={selectSignalContract}
+                            />
+                        ) : (
+                            <TradeTypes
+                                contract_type={contract_type}
+                                onTradeTypeSelect={onTradeTypeSelect}
+                                trade_types={trade_types}
+                                is_dark_mode_on={is_dark_mode_on}
+                            />
+                        )}
                         <div className='trade__market-selector-guide'>
                             <MarketSelector />
                             <div className='trade__market-actions'>
@@ -138,7 +152,7 @@ const Trade = observer(() => {
                                 >
                                     FancyTrading
                                 </Button>
-                                <Guide show_guide_for_selected_contract />
+                                {!signalOpen && <Guide show_guide_for_selected_contract />}
                             </div>
                         </div>
                         {isDigitTradeType(contract_type) && <CurrentSpot />}
@@ -158,7 +172,7 @@ const Trade = observer(() => {
                                 <TradeChart />
                             </section>
                         </div>
-                        {is_accumulator && <AccumulatorStats />}
+                        {!signalOpen && is_accumulator && <AccumulatorStats />}
                     </div>
                     <TradeParametersContainer is_market_closed={is_market_closed} />
                     {is_logged_in && <OnboardingGuide type='trade_page' is_dark_mode_on={is_dark_mode_on} />}

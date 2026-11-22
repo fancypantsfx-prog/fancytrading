@@ -5,12 +5,12 @@ import { selectRankedTrade } from '../ranked-trade';
 jest.mock('@deriv/api', () => ({ fetchStrategyFinder: jest.fn() }));
 jest.mock('../tick-insights-data', () => ({ compareRecentTicks: jest.fn() }));
 
-it('chooses the highest positive expected net with fresh data, even over a higher hit rate', async () => {
+it('chooses the highest expected payout with fresh data, even over a higher hit rate', async () => {
     const now = Date.now();
     const row = (symbol: string) => ({
         symbol,
         candidate: 'CALL',
-        historical: { hits: 90, count: 100 },
+        historical: { hits: 5, count: 10 },
         sampleAt: now,
     });
     (fetchStrategyFinder as jest.Mock).mockImplementation(async params => ({
@@ -33,5 +33,7 @@ it('chooses the highest positive expected net with fresh data, even over a highe
         lastTick: Math.floor(now / 1000),
         rows: [{ candidate: 'CALL', stake: 10, payout: 11, estimated: false, historical: { hits: 90, count: 100 } }],
     });
-    expect(await selectRankedTrade(jest.fn(), 'USD', 10, new AbortController().signal)).toBeUndefined();
+    expect(await selectRankedTrade(jest.fn(), 'USD', 10, new AbortController().signal)).toMatchObject({
+        expectedPayout: 9.9,
+    });
 });

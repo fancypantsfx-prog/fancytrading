@@ -6,6 +6,23 @@
         text-decoration: underline;
     }
 
+    &__fancy-probs-contract {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        font-size: 1.4rem;
+
+        select {
+            max-width: 100%;
+            padding: 6px 8px;
+            color: var(--text-general);
+            background: var(--general-main-1);
+            border: 1px solid var(--border-normal);
+            border-radius: 6px;
+        }
+    }
     button,
     select,
     input {
@@ -21,6 +38,11 @@
 
     button:not(:disabled) {
         cursor: pointer;
+    }
+
+    &__rankings {
+        flex: 1 1 100%;
+        min-width: 0;
     }
 
     :is(button, input, select, [tabindex]):focus-visible {
@@ -384,5 +406,12 @@
     &__note {
         margin-block: 10px;
         color: var(--text-less-prominent, #666);
+    }
+}
+
+@media (pointer: coarse) {
+    :is(.trade, .tick-insights, .auto-trading) :is(button, [role='button']):active:not(:disabled):not([aria-disabled='true']) {
+        filter: brightness(0.85);
+        box-shadow: inset 0 0 0 2px currentColor;
     }
 }

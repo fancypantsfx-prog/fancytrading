@@ -1,7 +1,10 @@
 import React from 'react';
 import { getDecimalPlaces, useWS } from '@deriv/shared';
-import { fresh, selectRankedTrade } from './ranked-trade';
-import { waitForInsightRequest } from './tick-insights-data';
+import { localize } from '@deriv-com/translations';
+import { candidateLabel } from './insights-compare';
+import type { RankedQuote } from './ranked-trade';
+import { fresh, rankedTradeKey, selectRankedTrade } from './ranked-trade';
+import { InsightQuoteChanged, waitForInsightRequest } from './tick-insights-data';
 import type { TInsightTrade } from './tick-insights-data';
 
 type Props = {
@@ -18,13 +21,23 @@ export default function RankedRunner({ currency, stake, account, block, buy }: P
     const [loss, setLoss] = React.useState('');
     const [target, setTarget] = React.useState(String(3 * stake));
     const [method, setMethod] = React.useState('martingale');
+    const [mode, setMode] = React.useState('automatic');
+    const [review, setReview] = React.useState<Awaited<ReturnType<typeof selectRankedTrade>>>();
+    const reviewDecision = React.useRef<(decision?: boolean) => void>();
+    const [rankings, setRankings] = React.useState<RankedQuote[]>();
     const [running, setRunning] = React.useState(false);
     const [status, setStatus] = React.useState('');
     const current = React.useRef<AbortController>();
     const stopping = React.useRef(false);
     const latest = React.useRef({ block, buy });
     latest.current = { block, buy };
-    React.useEffect(() => () => current.current?.abort(), []);
+    React.useEffect(
+        () => () => {
+            current.current?.abort();
+            reviewDecision.current?.();
+        },
+        []
+    );
     const key = 'fancy-ranked-purchase:' + account;
     const start = async () => {
         if (current.current || !ws || block) return;
@@ -38,6 +51,7 @@ export default function RankedRunner({ currency, stake, account, block, buy }: P
         const { signal } = controller;
         current.current = controller;
         stopping.current = false;
+        setRankings(undefined);
         setRunning(true);
         try {
             await navigator.locks.request(key, { ifAvailable: true }, async lock => {
@@ -48,23 +62,57 @@ export default function RankedRunner({ currency, stake, account, block, buy }: P
                     );
                 let net = 0,
                     amount = stake;
+                const skipped = new Set<string>();
                 const round = (value: number) => Number(value.toFixed(getDecimalPlaces(currency)));
                 while (!signal.aborted && !stopping.current) {
                     if (latest.current.block) throw new Error(latest.current.block);
                     if (net >= tp || round(net - amount) < -sl) break;
                     setStatus('Comparing live contracts. Session P/L ' + net + ' ' + currency);
-                    const pick = await selectRankedTrade(ws.send, currency, amount, signal);
+                    const pick = await selectRankedTrade(ws.send, currency, amount, signal, skipped, setRankings);
                     if (signal.aborted || stopping.current) break;
                     if (!pick) {
-                        setStatus('Waiting for a qualifying contract. Session P/L ' + net + ' ' + currency);
+                        skipped.clear();
+                        setStatus('Waiting for a live contract. Session P/L ' + net + ' ' + currency);
                         await delay(10000);
                         continue;
                     }
-                    const id = await latest.current.buy(pick.trade, signal, () => {
-                        if (!fresh(pick.time) || signal.aborted || stopping.current || latest.current.block)
-                            throw new Error('Trading conditions changed before purchase.');
-                        localStorage.setItem(key, 'pending');
-                    });
+                    if (mode === 'semi-automatic') {
+                        setReview(pick);
+                        setStatus('Review this contract before trading. Session P/L ' + net + ' ' + currency);
+                        const decision = await new Promise<boolean | undefined>(resolve => {
+                            const timer = setTimeout(() => resolve(undefined), 30000);
+                            reviewDecision.current = value => {
+                                clearTimeout(timer);
+                                resolve(value);
+                            };
+                        });
+                        reviewDecision.current = undefined;
+                        if (signal.aborted || stopping.current) break;
+                        setReview(undefined);
+                        if (decision === false) skipped.add(rankedTradeKey(pick.trade));
+                        if (decision !== true || !fresh(pick.time)) continue;
+                    }
+                    let id: string;
+                    try {
+                        id = await latest.current.buy(pick.trade, signal, () => {
+                            if (signal.aborted || stopping.current || latest.current.block)
+                                throw new Error('Trading conditions changed before purchase.');
+                            if (!fresh(pick.time))
+                                throw new InsightQuoteChanged(
+                                    'The comparison expired. Checking live contracts again.',
+                                    pick.trade.payout
+                                );
+                            localStorage.setItem(key, 'pending');
+                        });
+                    } catch (error) {
+                        if (error instanceof InsightQuoteChanged) {
+                            setStatus('Quote changed. Checking live contracts again.');
+                            await delay(1000);
+                            continue;
+                        }
+                        throw error;
+                    }
+                    skipped.clear();
                     localStorage.setItem(key, id);
                     setStatus(
                         pick.trade.symbol +
@@ -107,13 +155,16 @@ export default function RankedRunner({ currency, stake, account, block, buy }: P
                 setStatus(error instanceof Error ? error.message : 'Run stopped. Check Positions and Reports.');
         } finally {
             current.current = undefined;
-            if (!signal.aborted) setRunning(false);
+            if (!signal.aborted) {
+                setReview(undefined);
+                setRunning(false);
+            }
         }
     };
     return (
         <section className='tick-insights__fields'>
             <p>
-                {account} · Initial stake {stake} {currency} · Keep the Trade tab open during the run.
+                {account} · Initial stake {stake} {currency} · Keep the FancyTrading tab open during the run.
             </p>
             <label>
                 Stop loss ({currency}){' '}
@@ -142,12 +193,40 @@ export default function RankedRunner({ currency, stake, account, block, buy }: P
                     <option value='fixed'>Fixed stake</option>
                 </select>
             </label>
+            <label>
+                Execution mode{' '}
+                <select value={mode} disabled={running} onChange={e => setMode(e.target.value)}>
+                    <option value='automatic'>Automatic</option>
+                    <option value='semi-automatic'>Semi-automatic</option>
+                </select>
+            </label>
+            {review && (
+                <section aria-label='Review next contract'>
+                    <p>
+                        {review.trade.symbol} · {review.trade.candidate} · {review.trade.ticks} ticks
+                    </p>
+                    <p>
+                        Historical wins {(review.rate * 100).toFixed(1)}% · Stake {review.trade.stake} {currency}
+                        {' · '}Quoted payout {review.trade.payout} {currency}
+                        {' · '}Expected net{' '}
+                        {(review.expectedPayout - review.trade.stake).toFixed(getDecimalPlaces(currency))} {currency}
+                    </p>
+                    <button type='button' disabled={!!block} onClick={() => reviewDecision.current?.(true)}>
+                        Confirm trade
+                    </button>
+                    <button type='button' onClick={() => reviewDecision.current?.(false)}>
+                        Skip
+                    </button>
+                </section>
+            )}
             <button
                 type='button'
                 disabled={!running && !!block}
                 onClick={() => {
                     if (running) {
                         stopping.current = true;
+                        reviewDecision.current?.();
+                        setReview(undefined);
                         setStatus('Stopping after any open contract settles.');
                     } else void start();
                 }}
@@ -155,6 +234,49 @@ export default function RankedRunner({ currency, stake, account, block, buy }: P
                 {running ? 'Stop run' : 'Start trading'}
             </button>
             <p role='status'>{block || status}</p>
+            <section className='tick-insights__rankings'>
+                <h3>{localize('Top 3 contracts')}</h3>
+                <p>{localize('Expected payout = historical win probability × quoted payout.')}</p>
+                {rankings?.length ? (
+                    <div className='tick-insights__table'>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th scope='col'>{localize('Contract')}</th>
+                                    <th scope='col'>{localize('Historical win probability')}</th>
+                                    <th scope='col'>{localize('Expected payout')}</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {rankings.slice(0, 3).map(({ trade, rate, expectedPayout }, index) => (
+                                    <tr key={rankedTradeKey(trade)}>
+                                        <th scope='row'>
+                                            {trade.symbol} · {candidateLabel(trade.candidate)} · {trade.ticks}{' '}
+                                            {localize('ticks')}
+                                            {index === 0 && <small>{localize('Highest expected payout')}</small>}
+                                        </th>
+                                        <td>
+                                            {rate.toLocaleString(undefined, {
+                                                style: 'percent',
+                                                maximumFractionDigits: 1,
+                                            })}
+                                        </td>
+                                        <td>
+                                            {expectedPayout.toFixed(getDecimalPlaces(currency))} {currency}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                ) : (
+                    <p>
+                        {rankings
+                            ? localize('No live quotes to compare.')
+                            : localize('Start trading to see the comparison.')}
+                    </p>
+                )}
+            </section>
             {!running && status && localStorage.getItem(key) && (
                 <button
                     type='button'

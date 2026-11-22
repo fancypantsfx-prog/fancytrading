@@ -4,6 +4,7 @@ import { observer } from 'mobx-react-lite';
 
 import { LegacyHandleLessIcon } from '@deriv/quill-icons';
 
+import { FancyTradingDialogContext } from 'AppV2/Components/AutoTrading/fancy-trading-dialog-context';
 import AutoTrading from 'AppV2/Components/AutoTrading/auto-trading';
 import { isSameTradeTypeCategory } from 'AppV2/Utils/trade-types-utils';
 import { useTraderStore } from 'Stores/useTraderStores';
@@ -17,6 +18,7 @@ type TTradeParametersContainer = {
 const SWIPE_THRESHOLD_PX = 50; // Minimum distance (px) to recognize as swipe vs tap
 
 const TradeParametersContainer = ({ is_market_closed }: TTradeParametersContainer) => {
+    const signalOpen = React.useContext(FancyTradingDialogContext)?.signalOpen;
     const { contract_type } = useTraderStore();
     const [is_sheet_expanded, setIsSheetExpanded] = React.useState(false);
     const handle_touch_start_y = React.useRef<number>(0);
@@ -51,8 +53,8 @@ const TradeParametersContainer = ({ is_market_closed }: TTradeParametersContaine
     return (
         <div
             className={clsx('trade-params__container', {
-                'trade-params__container--expanded': is_sheet_expanded,
-                'trade-params__container--collapsed': !is_sheet_expanded,
+                'trade-params__container--expanded': is_sheet_expanded || signalOpen,
+                'trade-params__container--collapsed': !is_sheet_expanded && !signalOpen,
             })}
             data-testid='trade-params-container'
             onTouchStart={e => {
@@ -90,10 +92,10 @@ const TradeParametersContainer = ({ is_market_closed }: TTradeParametersContaine
                 <section
                     className={clsx('', {
                         'trade-params--minimized': !is_sheet_expanded,
-                        'trade-params': is_sheet_expanded,
+                        'trade-params': is_sheet_expanded || signalOpen,
                     })}
                 >
-                    <TradeParameters is_minimized={!is_sheet_expanded} />
+                    {!signalOpen && <TradeParameters is_minimized={!is_sheet_expanded} />}
                     <AutoTrading is_market_closed={is_market_closed} onPurchaseSuccess={handlePurchaseSuccess} />
                 </section>
             </div>

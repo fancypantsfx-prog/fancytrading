@@ -54,6 +54,7 @@ type TProps = {
     preset_key?: string;
     onShowTrade?: (trade: TInsightTrade) => Promise<void>;
     onBuy: (trade: TInsightTrade, signal: AbortSignal) => Promise<string>;
+    onOpenSignal?: () => void;
     onRankedBuy?: React.ComponentProps<typeof RankedRunner>['buy'];
     getStrategies: (contract_type: string) => TInsightStrategyOption[];
     onRefreshAutomation?: () => void;
@@ -81,6 +82,7 @@ const InsightsPanel = ({
     preset_key,
     onBuy,
     onRankedBuy,
+    onOpenSignal,
     onShowTrade,
     getStrategies,
     onRefreshAutomation,
@@ -204,6 +206,9 @@ const InsightsPanel = ({
     const hasScanAccess = typeof access !== 'string' && access.access !== 'locked';
 
     const report = snapshot?.settings === scanSettings ? snapshot : undefined;
+    const finderRows = finderGroup === 'rise_fall'
+        ? report?.rows.filter(({ historical }) => historical.hits / historical.count < 0.9)
+        : report?.rows;
 
     const scanPaused = !!draft || busy;
     React.useEffect(() => {
@@ -654,10 +659,31 @@ const InsightsPanel = ({
                     label={localize('Compare')}
                     description={localize('Compare selected contracts, instruments and tick durations side by side.')}
                 />
-                {onRankedBuy && <button type='button' disabled={busy} aria-pressed={view === 'trade'} onClick={() => setView('trade')}>{localize('Trade')}</button>}
+                {onRankedBuy && (
+                    <button type='button' disabled={busy} aria-pressed={view === 'trade'} onClick={() => setView('trade')}>
+                        {localize('FancyTrading')}
+                    </button>
+                )}
+                {onOpenSignal && (
+                    <button type='button' disabled={busy} onClick={onOpenSignal}>
+                        {localize('Fancy Probs')}
+                    </button>
+                )}
             </nav>
-            {view === 'trade' && onRankedBuy && <RankedRunner currency={currency} stake={initial_stake}
-                account={account_label} block={execution_block || purchase_block} buy={onRankedBuy} />}
+            {view === 'trade' && onRankedBuy && (
+                <RankedRunner
+                    currency={currency}
+                    stake={initial_stake}
+                    account={account_label}
+                    block={execution_block || purchase_block}
+                    buy={onRankedBuy}
+                />
+            )}
+            {view === 'finder' && starred.length > 0 && (
+                <button type='button' disabled={busy} onClick={() => setStarred([])}>
+                    {localize('Clear Compare')}
+                </button>
+            )}
             {view === 'finder' && loadingScan && !report && <p role='status'>{localize('Loading market rankings�')}</p>}
             {view === 'finder' && (
                 <div className='tick-insights__fields'>
@@ -881,8 +907,8 @@ const InsightsPanel = ({
                         </button>
                     )}
                     {!execution_block &&
-                        !!report.rows.length &&
-                        report.rows.every(row => !optionsFor(row.candidate, report.ticks).length) && (
+                        !!finderRows?.length &&
+                        finderRows.every(row => !optionsFor(row.candidate, report.ticks).length) && (
                             <p role='status'>
                                 {localize('Deriv has no automatic strategies for the contracts in this comparison.')}
                             </p>
@@ -907,7 +933,7 @@ const InsightsPanel = ({
                                 </tr>
                             </thead>
                             <tbody>
-                                {report.rows.map(row => (
+                                {finderRows?.map(row => (
                                     <tr key={`${row.symbol}:${row.candidate}`}>
                                         <th scope='row'>
                                             {row.label || row.symbol} · {candidateLabel(row.candidate)}
@@ -959,7 +985,7 @@ const InsightsPanel = ({
                             </tbody>
                         </table>
                     </div>
-                    {!report.rows.length && !loadingScan && (
+                    {!finderRows?.length && !loadingScan && (
                         <p role='status'>
                             {localize('No ranked contracts are available for these settings yet.')}
                         </p>

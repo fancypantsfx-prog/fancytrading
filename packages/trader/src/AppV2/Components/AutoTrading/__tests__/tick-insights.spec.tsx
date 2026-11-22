@@ -54,7 +54,7 @@ it('stars a finder result and applies multiple durations to both comparison setu
     }));
     render(
         <FancyTradingDialogContext.Provider
-            value={{ open: true, setOpen: jest.fn() }}
+            value={{ open: true, setOpen: jest.fn(), signalOpen: false, setSignalOpen: jest.fn() }}
         >
             <TickInsights {...props} initial_candidate='DIGITOVER:4' />
         </FancyTradingDialogContext.Provider>
@@ -119,7 +119,7 @@ it('removes a setup from its result and clears the remaining selections', async 
     (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
     render(
         <FancyTradingDialogContext.Provider
-            value={{ open: true, setOpen: jest.fn() }}
+            value={{ open: true, setOpen: jest.fn(), signalOpen: false, setSignalOpen: jest.fn() }}
         >
             <TickInsights {...props} />
         </FancyTradingDialogContext.Provider>
@@ -134,13 +134,19 @@ it('removes a setup from its result and clears the remaining selections', async 
     fireEvent.click(screen.getByRole('button', { name: 'Clear all' }));
     expect(screen.getByRole('button', { name: 'Compare (0)' })).toBeInTheDocument();
     expect(screen.queryByRole('article')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fancy Strategy Finder' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Add to Compare' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear Compare' }));
+    expect(screen.getByRole('button', { name: 'Compare (0)' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Fancy Strategy Finder' })).toHaveAttribute('aria-pressed', 'true');
 });
 
 it('loads older cloud rankings without broker verification on load or refresh', async () => {
     (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
     render(
         <FancyTradingDialogContext.Provider
-            value={{ open: true, setOpen: jest.fn() }}
+            value={{ open: true, setOpen: jest.fn(), signalOpen: false, setSignalOpen: jest.fn() }}
         >
             <TickInsights {...props} />
         </FancyTradingDialogContext.Provider>
@@ -172,7 +178,7 @@ it('loads the saved automatic settings for the matching account and currency', a
     localStorage.setItem(props.preset_key, JSON.stringify({ stake: 12, ticks: 7, stopLoss: 24, takeProfit: 16 }));
     render(
         <FancyTradingDialogContext.Provider
-            value={{ open: true, setOpen: jest.fn() }}
+            value={{ open: true, setOpen: jest.fn(), signalOpen: false, setSignalOpen: jest.fn() }}
         >
             <TickInsights {...props} />
         </FancyTradingDialogContext.Provider>
@@ -188,7 +194,7 @@ it('keeps market requests behind the access check', async () => {
     (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'locked' });
     render(
         <FancyTradingDialogContext.Provider
-            value={{ open: true, setOpen: jest.fn() }}
+            value={{ open: true, setOpen: jest.fn(), signalOpen: false, setSignalOpen: jest.fn() }}
         >
             <TickInsights {...props} />
         </FancyTradingDialogContext.Provider>
@@ -203,7 +209,7 @@ it('does not start a browser market scan when the prepared rankings are unavaila
     (fetchStrategyFinder as jest.Mock).mockRejectedValueOnce(new Error('Cache unavailable'));
     render(
         <FancyTradingDialogContext.Provider
-            value={{ open: true, setOpen: jest.fn() }}
+            value={{ open: true, setOpen: jest.fn(), signalOpen: false, setSignalOpen: jest.fn() }}
         >
             <TickInsights {...props} />
         </FancyTradingDialogContext.Provider>
@@ -220,7 +226,7 @@ it('waits for the next cloud snapshot without starting a local scan', async () =
     });
     render(
         <FancyTradingDialogContext.Provider
-            value={{ open: true, setOpen: jest.fn() }}
+            value={{ open: true, setOpen: jest.fn(), signalOpen: false, setSignalOpen: jest.fn() }}
         >
             <TickInsights {...props} />
         </FancyTradingDialogContext.Provider>
@@ -236,7 +242,7 @@ it('refreshes the cloud snapshot when a mobile browser restores the page', async
     (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
     render(
         <FancyTradingDialogContext.Provider
-            value={{ open: true, setOpen: jest.fn() }}
+            value={{ open: true, setOpen: jest.fn(), signalOpen: false, setSignalOpen: jest.fn() }}
         >
             <TickInsights {...props} />
         </FancyTradingDialogContext.Provider>
@@ -248,24 +254,27 @@ it('refreshes the cloud snapshot when a mobile browser restores the page', async
     expect(mockSend).not.toHaveBeenCalled();
 });
 
-it('shows all ranked rows beyond the first seven without requesting proposals', async () => {
+it('shows qualifying ranked rows beyond the first seven without requesting proposals', async () => {
     mockUnavailableSymbol = 'CRASH200';
     (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
     (fetchStrategyFinder as jest.Mock).mockResolvedValue({
         access: { access: 'free' }, ticks: 5, rows: [
-            ...Array.from({ length: 21 }, (_, i) => ({ candidate: 'CALL', symbol: String(i), historical: { hits: 99, count: 100 } })),
+            ...Array.from({ length: 21 }, (_, i) => ({ candidate: 'CALL', symbol: String(i), historical: { hits: 89, count: 100 } })),
+            { candidate: 'CALL', symbol: 'AT_THRESHOLD', historical: { hits: 90, count: 100 } },
+            { candidate: 'PUT', symbol: 'ABOVE_THRESHOLD', historical: { hits: 99, count: 100 } },
             { candidate: 'PUT', symbol: '1HZ100V', historical: { hits: 6, count: 10 } },
         ],
     });
     render(
         <FancyTradingDialogContext.Provider
-            value={{ open: true, setOpen: jest.fn() }}
+            value={{ open: true, setOpen: jest.fn(), signalOpen: false, setSignalOpen: jest.fn() }}
         >
             <TickInsights {...props} />
         </FancyTradingDialogContext.Provider>
     );
     expect(await screen.findByRole('rowheader', { name: /Fall/ })).toBeInTheDocument();
     expect(screen.getAllByRole('rowheader')).toHaveLength(22);
+    expect(screen.queryByRole('rowheader', { name: /AT_THRESHOLD|ABOVE_THRESHOLD/ })).not.toBeInTheDocument();
     expect(mockSend).not.toHaveBeenCalled();
 });
 
@@ -273,7 +282,7 @@ it('shows prepared rows immediately when the finder opens', async () => {
     (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
     const panel = (open: boolean) => (
         <FancyTradingDialogContext.Provider
-            value={{ open, setOpen: jest.fn() }}
+            value={{ open, setOpen: jest.fn(), signalOpen: false, setSignalOpen: jest.fn() }}
         >
             <TickInsights {...props} />
         </FancyTradingDialogContext.Provider>
@@ -290,7 +299,7 @@ it('keeps the broker rate-limit message inside the trade panel', async () => {
     (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
     render(
         <FancyTradingDialogContext.Provider
-            value={{ open: true, setOpen: jest.fn() }}
+            value={{ open: true, setOpen: jest.fn(), signalOpen: false, setSignalOpen: jest.fn() }}
         >
             <TickInsights {...props} />
         </FancyTradingDialogContext.Provider>
