@@ -63,6 +63,7 @@ it('stars a finder result and applies multiple durations to both comparison setu
     fireEvent.click(await screen.findByRole('button', { name: 'Add to Compare' }));
     fireEvent.click(screen.getByRole('button', { name: 'Compare (1)' }));
     fireEvent.click(screen.getByRole('button', { name: 'Add setup' }));
+    expect(screen.queryByRole('option', { name: /Differs/ })).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Duration in ticks'), { target: { value: '1' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add duration' }));
     const heading = await screen.findByRole('heading', { name: /Fall · 1 ticks/ });
@@ -260,6 +261,7 @@ it('shows qualifying ranked rows beyond the first seven without requesting propo
     (fetchStrategyFinder as jest.Mock).mockResolvedValue({
         access: { access: 'free' }, ticks: 5, rows: [
             ...Array.from({ length: 21 }, (_, i) => ({ candidate: 'CALL', symbol: String(i), historical: { hits: 89, count: 100 } })),
+            { candidate: 'DIGITDIFF:5', symbol: 'DIFFERS_MARKET', historical: { hits: 85, count: 100 } },
             { candidate: 'CALL', symbol: 'AT_THRESHOLD', historical: { hits: 90, count: 100 } },
             { candidate: 'PUT', symbol: 'ABOVE_THRESHOLD', historical: { hits: 99, count: 100 } },
             { candidate: 'PUT', symbol: '1HZ100V', historical: { hits: 6, count: 10 } },
@@ -274,7 +276,7 @@ it('shows qualifying ranked rows beyond the first seven without requesting propo
     );
     expect(await screen.findByRole('rowheader', { name: /Fall/ })).toBeInTheDocument();
     expect(screen.getAllByRole('rowheader')).toHaveLength(22);
-    expect(screen.queryByRole('rowheader', { name: /AT_THRESHOLD|ABOVE_THRESHOLD/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('rowheader', { name: /AT_THRESHOLD|ABOVE_THRESHOLD|DIFFERS_MARKET/ })).not.toBeInTheDocument();
     expect(mockSend).not.toHaveBeenCalled();
 });
 

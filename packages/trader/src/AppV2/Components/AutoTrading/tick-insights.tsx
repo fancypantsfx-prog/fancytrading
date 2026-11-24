@@ -39,7 +39,7 @@ const finderContracts = {
     rise_fall: ['CALL', 'PUT'],
     even_odd: ['DIGITEVEN', 'DIGITODD'],
     over_under: ['DIGITOVER', 'DIGITUNDER'],
-    match_diff: ['DIGITMATCH', 'DIGITDIFF'],
+    match_diff: ['DIGITMATCH'],
 } as const;
 type TFinderContract = keyof typeof finderContracts;
 type TProps = {
@@ -243,7 +243,11 @@ const InsightsPanel = ({
                     return;
                 }
 
-                setReport({ ...next, settings: scanSettings });
+                setReport({
+                    ...next,
+                    rows: next.rows.filter(row => row.candidate.split(':')[0] !== 'DIGITDIFF'),
+                    settings: scanSettings,
+                });
                 setScanError('');
             } catch {
                 if (controller.signal.aborted) return;
@@ -695,7 +699,7 @@ const InsightsPanel = ({
                                 <option value='rise_fall'>{localize('Rise / Fall')}</option>
                                 <option value='even_odd'>{localize('Even / Odd')}</option>
                                 <option value='over_under'>{localize('Over / Under')}</option>
-                                <option value='match_diff'>{localize('Matches / Differs')}</option>
+                                <option value='match_diff'>{localize('Digit Matches')}</option>
                             </select>
                         </label>
                         <MenuHelp
@@ -854,42 +858,33 @@ const InsightsPanel = ({
                 {localize('FancyTrading tutorial')}
             </a>
             {view === 'compare' && (
-                <>
-                    {!initial_candidate && (
-                        <p className='tick-insights__note'>
-                            {localize(
-                                'This manual contract has no tick replay. Compare starts with Rise on the active instrument.'
-                            )}
-                        </p>
-                    )}
-                    <InsightsCompare
-                        symbol={symbol}
-                        currency={currency}
-                        stake={stake}
-                        onStake={value => {
-                            setStake(value);
-                            setPresetSaved(false);
-                            setReport(undefined);
-                        }}
-                        setups={starred}
-                        onSetups={setStarred}
-                        durations={durations}
-                        onDurations={setDurations}
-                        send={payload => ws.send(payload)}
-                        subscribeTicks={
-                            ws.subscribeTicks
-                                ? (market, callback) =>
-                                      ws.subscribeTicks(market, callback, { fancytrading_insights: true })
-                                : undefined
-                        }
-                        markets={markets}
-                        canBuy={!busy && !purchase_block}
-                        canReview={contract => !busy && !execution_block && !!getStrategies(contract).length}
-                        onReview={({ setup, row, report }, automatic) =>
-                            review({ ...row, symbol: setup.symbol }, automatic, report.ticks)
-                        }
-                    />
-                </>
+                <InsightsCompare
+                    symbol={symbol}
+                    currency={currency}
+                    stake={stake}
+                    onStake={value => {
+                        setStake(value);
+                        setPresetSaved(false);
+                        setReport(undefined);
+                    }}
+                    setups={starred}
+                    onSetups={setStarred}
+                    durations={durations}
+                    onDurations={setDurations}
+                    send={payload => ws.send(payload)}
+                    subscribeTicks={
+                        ws.subscribeTicks
+                            ? (market, callback) =>
+                                  ws.subscribeTicks(market, callback, { fancytrading_insights: true })
+                            : undefined
+                    }
+                    markets={markets}
+                    canBuy={!busy && !purchase_block}
+                    canReview={contract => !busy && !execution_block && !!getStrategies(contract).length}
+                    onReview={({ setup, row, report }, automatic) =>
+                        review({ ...row, symbol: setup.symbol }, automatic, report.ticks)
+                    }
+                />
             )}
             {view === 'finder' && purchase_block && <p role='status'>{purchase_block}</p>}
             {view === 'finder' && report && (
@@ -907,11 +902,6 @@ const InsightsPanel = ({
                                 {localize('Deriv has no automatic strategies for the contracts in this comparison.')}
                             </p>
                         )}
-                    <p>
-                        {localize(
-                            'Top results won most often in the historical sample for your settings. Select a contract to check the live payout for your account and stake.'
-                        )}
-                    </p>
                     <div
                         className='tick-insights__table tick-insights__table--finder'
                         tabIndex={0}
@@ -986,11 +976,6 @@ const InsightsPanel = ({
                     )}
                 </>
             )}
-            <p className='tick-insights__note'>
-                {localize(
-                    'Historical hit rates describe past ticks. Review the account, stake and payout before confirming a trade.'
-                )}
-            </p>
         </>
     );
 };

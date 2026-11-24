@@ -17,7 +17,7 @@ export type TCompareSetup = { symbol: string; candidate: string };
 export type TCompareResult = { setup: TCompareSetup; report: TTickInsights; row: TTickInsights['rows'][number] };
 const familyOf = (candidate: string): TFamily => (/^[1-5]$/.test(candidate) ? 'accumulator' : 'digital');
 const percent = (value: number) => value.toLocaleString(undefined, { style: 'percent', maximumFractionDigits: 1 });
-const contracts = ['CALL', 'PUT', 'DIGITEVEN', 'DIGITODD', 'DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'];
+const contracts = ['CALL', 'PUT', 'DIGITEVEN', 'DIGITODD', 'DIGITOVER', 'DIGITUNDER', 'DIGITMATCH'];
 
 export const candidateLabel = (candidate: string) => {
     const [type, barrier] = candidate.split(':');
@@ -36,8 +36,6 @@ export const candidateLabel = (candidate: string) => {
             return localize('Digit Under {{digit}}', { digit: barrier ?? '' }).trim();
         case 'DIGITMATCH':
             return localize('Digit Matches {{digit}}', { digit: barrier ?? '' }).trim();
-        case 'DIGITDIFF':
-            return localize('Digit Differs {{digit}}', { digit: barrier ?? '' }).trim();
         default:
             return localize('{{rate}}% growth', { rate: candidate });
     }
@@ -87,7 +85,6 @@ const InsightsCompare = ({
     const [snapshot, setSnapshot] = React.useState<{
         key: string;
         results: { setup: TCompareSetup; ticks: number; result?: TCompareResult }[];
-        updated: number;
     }>();
     const key = JSON.stringify([setups, durations, windowSize, stake, currency]);
     const current = snapshot?.key === key ? snapshot : undefined;
@@ -161,7 +158,7 @@ const InsightsCompare = ({
             if (cancelled) return;
             request.abort();
             running = false;
-            setSnapshot({ key, results, updated: Date.now() });
+            setSnapshot({ key, results });
             if (live && (pendingTick || !subscriptions.length)) schedule();
         };
         if (live || !current) void update();
@@ -364,7 +361,7 @@ const InsightsCompare = ({
                                         const type = e.target.value;
                                         changeSetup(index, {
                                             ...setup,
-                                            candidate: ['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF'].includes(
+                                            candidate: ['DIGITOVER', 'DIGITUNDER', 'DIGITMATCH'].includes(
                                                 type
                                             )
                                                 ? `${type}:5`
@@ -475,14 +472,6 @@ const InsightsCompare = ({
                         : localize('Enter a valid stake.')}
                 </p>
             )}
-            {current && (
-                <p className='tick-insights__note'>
-                    {localize(
-                        'Last quote check {{time}}. Estimates use current quotes and historical simulated outcomes.',
-                        { time: new Date(current.updated).toLocaleTimeString() }
-                    )}
-                </p>
-            )}
             <div className='tick-insights__comparison-grid'>
                 {current?.results.map(({ setup, ticks, result }, index) => {
                     const { row, report } = result ?? {};
@@ -512,13 +501,6 @@ const InsightsCompare = ({
                                         {new Date(report.firstTick * 1000).toLocaleString()} –{' '}
                                         {new Date(report.lastTick * 1000).toLocaleString()}
                                     </p>
-                                    {row.estimated && (
-                                        <p className='tick-insights__note'>
-                                            {localize(
-                                                'Accumulator replay uses the currently quoted range and assumes exit at the selected tick target.'
-                                            )}
-                                        </p>
-                                    )}
                                     <div className='tick-insights__chart-label'>
                                         <span>
                                             {localize('Win rate')} {percent(rate)}

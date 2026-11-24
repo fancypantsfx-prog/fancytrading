@@ -5,7 +5,7 @@ import { selectRankedTrade } from '../ranked-trade';
 jest.mock('@deriv/api', () => ({ fetchStrategyFinder: jest.fn() }));
 jest.mock('../tick-insights-data', () => ({ compareRecentTicks: jest.fn() }));
 
-it('ranks fresh contracts by conservative net and skips a positive raw estimate with a weak recent sample', async () => {
+it('ranks fresh contracts by historical expected payout', async () => {
     const now = Date.now();
     const row = (symbol: string) => ({
         symbol,
@@ -31,33 +31,7 @@ it('ranks fresh contracts by conservative net and skips a positive raw estimate 
         ],
     }));
     const pick = await selectRankedTrade(jest.fn(), 'USD', 10, new AbortController().signal);
-    expect(pick?.trade).toMatchObject({ symbol: 'B', ticks: 3, payout: 19 });
-    const standard = await selectRankedTrade(
-        jest.fn(),
-        'USD',
-        10,
-        new AbortController().signal,
-        undefined,
-        undefined,
-        undefined,
-        'standard'
-    );
-    expect(standard?.trade).toMatchObject({ symbol: 'A', ticks: 3, payout: 18 });
-    (compareRecentTicks as jest.Mock).mockResolvedValue({
-        lastTick: Math.floor(now / 1000),
-        rows: [
-            {
-                candidate: 'CALL',
-                stake: 10,
-                payout: 18,
-                estimated: false,
-                historical: { hits: 145, count: 200 },
-                older: { hits: 95, count: 100 },
-                recent: { hits: 50, count: 100 },
-            },
-        ],
-    });
-    expect(await selectRankedTrade(jest.fn(), 'USD', 10, new AbortController().signal)).toBeUndefined();
+    expect(pick?.trade).toMatchObject({ symbol: 'A', ticks: 3, payout: 18 });
 });
 
 it('checks live contracts on the selected market when Finder has no rows', async () => {
@@ -86,6 +60,8 @@ it('checks live contracts on the selected market when Finder has no rows', async
         'R_100'
     );
     expect(pick?.trade).toMatchObject({ symbol: 'R_100', candidate: 'DIGITEVEN', payout: 19 });
+    const comparisons = (compareRecentTicks as jest.Mock).mock.calls;
+    expect(comparisons.at(-1)?.[1].candidates).not.toContain('DIGITDIFF:5');
 });
 
 it('loads all Finder shortlists concurrently and analyzes contracts on the same market and duration together', async () => {
@@ -104,7 +80,7 @@ it('loads all Finder shortlists concurrently and analyzes contracts on the same 
     expect(finder).toHaveBeenCalledTimes(8);
 
     releaseScan({
-        rows: ['CALL', 'PUT'].map(candidate => ({
+        rows: ['DIGITDIFF:5', 'CALL', 'PUT'].map(candidate => ({
             symbol: 'R_100',
             candidate,
             historical: { hits: 5, count: 10 },

@@ -6,46 +6,13 @@ export const rankedTradeKey = ({ symbol, candidate, ticks }: Pick<TInsightTrade,
     JSON.stringify([symbol, candidate, ticks]);
 
 type Row = { symbol: string; candidate: string; historical: { hits: number; count: number }; sampleAt: number };
-export type RankedQuote = {
-    trade: TInsightTrade;
-    expectedPayout: number;
-    adjustedNet: number | null;
-    rate: number;
-    time: number;
-};
-export type RankingMethod = 'adjusted' | 'standard';
-
-export const rankQuotes = (quotes: RankedQuote[], method: RankingMethod) =>
-    [...quotes].sort((a, b) =>
-        method === 'standard'
-            ? b.expectedPayout - a.expectedPayout || b.rate - a.rate
-            : (b.adjustedNet ?? -Infinity) - (a.adjustedNet ?? -Infinity) || b.expectedPayout - a.expectedPayout
-    );
-
-export const qualifies = (quote: RankedQuote, method: RankingMethod) =>
-    method === 'standard' || (quote.adjustedNet !== null && quote.adjustedNet > 0);
-
-const minimumWindowSize = 50;
-const lowerWinRate = ({ hits, count }: Row['historical']) => {
-    const rate = hits / count;
-    // One-sided 95% Wilson lower bound for a binomial proportion.
-    const z = 1.6448536269514722;
-    const adjustment = (z * z) / count;
-    return (rate + adjustment / 2 - z * Math.sqrt((rate * (1 - rate) + adjustment / 4) / count)) / (1 + adjustment);
-};
-const validWindow = (sample?: Row['historical']): sample is Row['historical'] =>
-    !!sample &&
-    Number.isInteger(sample.count) &&
-    sample.count >= minimumWindowSize &&
-    Number.isInteger(sample.hits) &&
-    sample.hits >= 0 &&
-    sample.hits <= sample.count;
+export type RankedQuote = { trade: TInsightTrade; expectedPayout: number; rate: number; time: number };
 export const fresh = (time: number) => time <= Date.now() && time >= Date.now() - 180000;
 const contractsByGroup = {
     rise_fall: ['CALL', 'PUT'],
     even_odd: ['DIGITEVEN', 'DIGITODD'],
     over_under: ['DIGITOVER:5', 'DIGITUNDER:5'],
-    match_diff: ['DIGITMATCH:5', 'DIGITDIFF:5'],
+    match_diff: ['DIGITMATCH:5'],
 };
 const durations = [1, 3];
 
@@ -56,8 +23,7 @@ export async function selectRankedTrade(
     signal: AbortSignal,
     skipped?: ReadonlySet<string>,
     onCompared?: (quotes: RankedQuote[]) => void,
-    fallbackSymbol?: string,
-    method: RankingMethod = 'adjusted'
+    fallbackSymbol?: string
 ) {
     const shortlists = await Promise.all(
         durations.flatMap(ticks =>
@@ -66,7 +32,12 @@ export async function selectRankedTrade(
                 const scan = await fetchStrategyFinder<{ rows: Row[] }>(settings, signal);
                 if (!scan) throw new Error('Strategy Finder access is required.');
                 return scan.rows
-                    .filter(row => row.historical.count > 0 && !skipped?.has(rankedTradeKey({ ...row, ticks })))
+                    .filter(
+                        row =>
+                            row.candidate.split(':')[0] !== 'DIGITDIFF' &&
+                            row.historical.count > 0 &&
+                            !skipped?.has(rankedTradeKey({ ...row, ticks }))
+                    )
                     .sort((a, b) => Number(fresh(b.sampleAt)) - Number(fresh(a.sampleAt)))
                     .slice(0, 2)
                     .map(row => ({ ...row, ticks }));
@@ -107,17 +78,12 @@ export async function selectRankedTrade(
             if (!available.includes(row.candidate) || row.estimated || row.stake !== stake || row.historical.count < 1)
                 continue;
             const rate = row.historical.hits / row.historical.count;
-            const adjustedNet =
-                validWindow(row.older) && validWindow(row.recent)
-                    ? Math.min(lowerWinRate(row.older), lowerWinRate(row.recent)) * row.payout - stake
-                    : null;
             const expectedPayout = rate * row.payout;
             if (rate >= 0 && rate <= 1 && Number.isFinite(expectedPayout) && row.payout > stake) {
                 quotes.push({
                     trade: { ...setup, candidate: row.candidate, payout: row.payout },
                     rate,
                     expectedPayout,
-                    adjustedNet,
                     time,
                 });
             }
@@ -134,15 +100,14 @@ export async function selectRankedTrade(
     };
 
     await compareSetups(setups.values());
-    if (fallbackSymbol && !quotes.some(quote => qualifies(quote, method) && fresh(quote.time))) {
+    if (fallbackSymbol && !quotes.some(quote => fresh(quote.time))) {
         const contracts = Object.values(contractsByGroup).flat();
         await compareSetups(durations.map(ticks => ({ symbol: fallbackSymbol, ticks, contracts })));
     }
-    const ranked = rankQuotes(
-        quotes.filter(quote => fresh(quote.time)),
-        method
-    );
+    const ranked = quotes
+        .filter(quote => fresh(quote.time))
+        .sort((a, b) => b.expectedPayout - a.expectedPayout || b.rate - a.rate);
     if (signal.aborted) return undefined;
     onCompared?.(ranked);
-    return ranked.find(quote => qualifies(quote, method));
+    return ranked[0];
 }
