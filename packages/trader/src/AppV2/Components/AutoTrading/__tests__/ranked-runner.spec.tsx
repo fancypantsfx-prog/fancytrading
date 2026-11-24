@@ -4,6 +4,7 @@ import RankedRunner from '../ranked-runner';
 import { selectRankedTrade } from '../ranked-trade';
 
 jest.mock('../ranked-trade', () => ({
+    ...jest.requireActual('../ranked-trade'),
     fresh: () => true,
     rankedTradeKey: ({ symbol }: { symbol: string }) => symbol,
     selectRankedTrade: jest.fn(),
@@ -34,6 +35,7 @@ it('settles each purchase, doubles after a loss, and stops before risking more t
     });
     render(<RankedRunner currency='USD' stake={10} account='demo-test' block='' buy={buy} />);
     fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '35' } });
+    fireEvent.change(screen.getByLabelText('Contract ranking'), { target: { value: 'adjusted' } });
     fireEvent.click(screen.getByText('Start trading'));
     await screen.findByText('Run stopped. Session P/L -30 USD');
     expect(buy.mock.calls.map(([trade]) => trade.stake)).toEqual([10, 20]);
@@ -48,8 +50,9 @@ it('skips a contract without buying and waits for confirmation on the next one',
         },
     });
     const pick = (symbol: string) => ({
-        rate: 0.5,
-        expectedPayout: 9,
+        rate: 2 / 3,
+        expectedPayout: 12,
+        adjustedNet: 0.5,
         time: Date.now(),
         trade: { symbol, candidate: 'CALL', currency: 'USD', stake: 10, ticks: 1, payout: 18 },
     });
@@ -69,12 +72,13 @@ it('skips a contract without buying and waits for confirmation on the next one',
     fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '10' } });
     fireEvent.change(screen.getByLabelText(/Take profit/), { target: { value: '8' } });
     fireEvent.change(screen.getByLabelText('Execution mode'), { target: { value: 'semi-automatic' } });
+    fireEvent.change(screen.getByLabelText('Contract ranking'), { target: { value: 'adjusted' } });
     fireEvent.click(screen.getByText('Start trading'));
 
     expect(await screen.findByText(/R_50 .* CALL/)).toBeInTheDocument();
     expect(screen.getAllByRole('rowheader')).toHaveLength(3);
-    expect(screen.getAllByRole('cell', { name: '50%' })).toHaveLength(3);
-    expect(screen.getAllByRole('cell', { name: '9.00 USD' })).toHaveLength(3);
+    expect(screen.getAllByRole('cell', { name: '66.7%' })).toHaveLength(3);
+    expect(screen.getAllByRole('cell', { name: '12.00 USD' })).toHaveLength(3);
     expect(buy).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Skip' }));
     expect(await screen.findByText(/R_100 .* CALL/)).toBeInTheDocument();
@@ -83,4 +87,29 @@ it('skips a contract without buying and waits for confirmation on the next one',
     await screen.findByText('Run stopped. Session P/L 8 USD');
     expect(buy).toHaveBeenCalledTimes(1);
     expect(buy.mock.calls[0][0]).toMatchObject({ symbol: 'R_100' });
+});
+
+it('previews both methods before choosing a ranking and without buying', async () => {
+    const buy = jest.fn();
+    const quote = (symbol: string, expectedPayout: number, adjustedNet: number) => ({
+        rate: 0.7,
+        expectedPayout,
+        adjustedNet,
+        time: Date.now(),
+        trade: { symbol, candidate: 'CALL', currency: 'USD', stake: 10, ticks: 1, payout: 20 },
+    });
+    (selectRankedTrade as jest.Mock).mockImplementationOnce(
+        async (_send, _currency, _stake, _signal, _skipped, onCompared) => {
+            onCompared([quote('Adjusted market', 13, 2), quote('Standard market', 14, -1)]);
+        }
+    );
+    render(<RankedRunner currency='USD' stake={10} account='demo-preview' block='' buy={buy} />);
+    expect(screen.getByRole('button', { name: 'Start trading' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Preview both methods' }));
+    await screen.findByText('Preview complete.');
+    expect(screen.getAllByRole('definition').map(item => item.textContent)).toEqual([
+        expect.stringContaining('Adjusted market'),
+        expect.stringContaining('Standard market'),
+    ]);
+    expect(buy).not.toHaveBeenCalled();
 });

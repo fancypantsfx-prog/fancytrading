@@ -5,7 +5,7 @@ import { selectRankedTrade } from '../ranked-trade';
 jest.mock('@deriv/api', () => ({ fetchStrategyFinder: jest.fn() }));
 jest.mock('../tick-insights-data', () => ({ compareRecentTicks: jest.fn() }));
 
-it('chooses the highest expected payout with fresh data, even over a higher hit rate', async () => {
+it('ranks fresh contracts by conservative net and skips a positive raw estimate with a weak recent sample', async () => {
     const now = Date.now();
     const row = (symbol: string) => ({
         symbol,
@@ -23,20 +23,41 @@ it('chooses the highest expected payout with fresh data, even over a higher hit 
                 ...trade,
                 candidate: trade.candidates[0],
                 estimated: false,
-                historical: { hits: trade.symbol === 'A' ? 90 : 70, count: 100 },
-                payout: trade.ticks === 1 ? 100 : trade.symbol === 'A' ? 11 : 18,
+                historical: { hits: trade.symbol === 'A' ? 160 : 144, count: 200 },
+                older: { hits: trade.symbol === 'A' ? 95 : 72, count: 100 },
+                recent: { hits: trade.symbol === 'A' ? 65 : 72, count: 100 },
+                payout: trade.ticks === 1 ? 100 : trade.symbol === 'A' ? 18 : 19,
             },
         ],
     }));
     const pick = await selectRankedTrade(jest.fn(), 'USD', 10, new AbortController().signal);
-    expect(pick?.trade).toMatchObject({ symbol: 'B', ticks: 3, payout: 18 });
+    expect(pick?.trade).toMatchObject({ symbol: 'B', ticks: 3, payout: 19 });
+    const standard = await selectRankedTrade(
+        jest.fn(),
+        'USD',
+        10,
+        new AbortController().signal,
+        undefined,
+        undefined,
+        undefined,
+        'standard'
+    );
+    expect(standard?.trade).toMatchObject({ symbol: 'A', ticks: 3, payout: 18 });
     (compareRecentTicks as jest.Mock).mockResolvedValue({
         lastTick: Math.floor(now / 1000),
-        rows: [{ candidate: 'CALL', stake: 10, payout: 11, estimated: false, historical: { hits: 90, count: 100 } }],
+        rows: [
+            {
+                candidate: 'CALL',
+                stake: 10,
+                payout: 18,
+                estimated: false,
+                historical: { hits: 145, count: 200 },
+                older: { hits: 95, count: 100 },
+                recent: { hits: 50, count: 100 },
+            },
+        ],
     });
-    expect(await selectRankedTrade(jest.fn(), 'USD', 10, new AbortController().signal)).toMatchObject({
-        expectedPayout: 9.9,
-    });
+    expect(await selectRankedTrade(jest.fn(), 'USD', 10, new AbortController().signal)).toBeUndefined();
 });
 
 it('checks live contracts on the selected market when Finder has no rows', async () => {
@@ -49,7 +70,9 @@ it('checks live contracts on the selected market when Finder has no rows', async
                 stake: trade.stake,
                 payout: 19,
                 estimated: false,
-                historical: { hits: 62, count: 100 },
+                historical: { hits: 140, count: 200 },
+                older: { hits: 70, count: 100 },
+                recent: { hits: 70, count: 100 },
             },
         ],
     }));
@@ -63,4 +86,35 @@ it('checks live contracts on the selected market when Finder has no rows', async
         'R_100'
     );
     expect(pick?.trade).toMatchObject({ symbol: 'R_100', candidate: 'DIGITEVEN', payout: 19 });
+});
+
+it('loads all Finder shortlists concurrently and analyzes contracts on the same market and duration together', async () => {
+    const finder = fetchStrategyFinder as jest.Mock;
+    const compare = compareRecentTicks as jest.Mock;
+    finder.mockClear();
+    compare.mockClear();
+    let releaseScan!: (value: { rows: unknown[] }) => void;
+    const pendingScan = new Promise<{ rows: unknown[] }>(resolve => {
+        releaseScan = resolve;
+    });
+    finder.mockImplementation(() => pendingScan);
+    compare.mockResolvedValue(null);
+
+    const pending = selectRankedTrade(jest.fn(), 'USD', 10, new AbortController().signal);
+    expect(finder).toHaveBeenCalledTimes(8);
+
+    releaseScan({
+        rows: ['CALL', 'PUT'].map(candidate => ({
+            symbol: 'R_100',
+            candidate,
+            historical: { hits: 5, count: 10 },
+            sampleAt: Date.now(),
+        })),
+    });
+    await pending;
+    expect(compare).toHaveBeenCalledTimes(2);
+    expect(compare.mock.calls.map(([, setup]) => [setup.ticks, setup.candidates])).toEqual([
+        [1, ['CALL', 'PUT']],
+        [3, ['CALL', 'PUT']],
+    ]);
 });

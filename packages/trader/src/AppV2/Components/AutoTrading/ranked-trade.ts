@@ -6,7 +6,40 @@ export const rankedTradeKey = ({ symbol, candidate, ticks }: Pick<TInsightTrade,
     JSON.stringify([symbol, candidate, ticks]);
 
 type Row = { symbol: string; candidate: string; historical: { hits: number; count: number }; sampleAt: number };
-export type RankedQuote = { trade: TInsightTrade; expectedPayout: number; rate: number; time: number };
+export type RankedQuote = {
+    trade: TInsightTrade;
+    expectedPayout: number;
+    adjustedNet: number | null;
+    rate: number;
+    time: number;
+};
+export type RankingMethod = 'adjusted' | 'standard';
+
+export const rankQuotes = (quotes: RankedQuote[], method: RankingMethod) =>
+    [...quotes].sort((a, b) =>
+        method === 'standard'
+            ? b.expectedPayout - a.expectedPayout || b.rate - a.rate
+            : (b.adjustedNet ?? -Infinity) - (a.adjustedNet ?? -Infinity) || b.expectedPayout - a.expectedPayout
+    );
+
+export const qualifies = (quote: RankedQuote, method: RankingMethod) =>
+    method === 'standard' || (quote.adjustedNet !== null && quote.adjustedNet > 0);
+
+const minimumWindowSize = 50;
+const lowerWinRate = ({ hits, count }: Row['historical']) => {
+    const rate = hits / count;
+    // One-sided 95% Wilson lower bound for a binomial proportion.
+    const z = 1.6448536269514722;
+    const adjustment = (z * z) / count;
+    return (rate + adjustment / 2 - z * Math.sqrt((rate * (1 - rate) + adjustment / 4) / count)) / (1 + adjustment);
+};
+const validWindow = (sample?: Row['historical']): sample is Row['historical'] =>
+    !!sample &&
+    Number.isInteger(sample.count) &&
+    sample.count >= minimumWindowSize &&
+    Number.isInteger(sample.hits) &&
+    sample.hits >= 0 &&
+    sample.hits <= sample.count;
 export const fresh = (time: number) => time <= Date.now() && time >= Date.now() - 180000;
 const contractsByGroup = {
     rise_fall: ['CALL', 'PUT'],
@@ -23,22 +56,29 @@ export async function selectRankedTrade(
     signal: AbortSignal,
     skipped?: ReadonlySet<string>,
     onCompared?: (quotes: RankedQuote[]) => void,
-    fallbackSymbol?: string
+    fallbackSymbol?: string,
+    method: RankingMethod = 'adjusted'
 ) {
-    const candidates: (Row & { ticks: number })[] = [];
-    for (const ticks of durations) {
-        for (const contract of Object.keys(contractsByGroup)) {
-            const settings = new URLSearchParams({ contract, ticks: String(ticks), barrier: '5' });
-            const scan = await fetchStrategyFinder<{ rows: Row[] }>(settings, signal);
-            if (!scan) throw new Error('Strategy Finder access is required.');
-            candidates.push(
-                ...scan.rows
+    const shortlists = await Promise.all(
+        durations.flatMap(ticks =>
+            Object.keys(contractsByGroup).map(async contract => {
+                const settings = new URLSearchParams({ contract, ticks: String(ticks), barrier: '5' });
+                const scan = await fetchStrategyFinder<{ rows: Row[] }>(settings, signal);
+                if (!scan) throw new Error('Strategy Finder access is required.');
+                return scan.rows
                     .filter(row => row.historical.count > 0 && !skipped?.has(rankedTradeKey({ ...row, ticks })))
                     .sort((a, b) => Number(fresh(b.sampleAt)) - Number(fresh(a.sampleAt)))
                     .slice(0, 2)
-                    .map(row => ({ ...row, ticks }))
-            );
-        }
+                    .map(row => ({ ...row, ticks }));
+            })
+        )
+    );
+    const setups = new Map<string, { symbol: string; ticks: number; contracts: string[] }>();
+    for (const { symbol, ticks, candidate } of shortlists.flat()) {
+        const key = JSON.stringify([symbol, ticks]);
+        const existing = setups.get(key);
+        if (existing) existing.contracts.push(candidate);
+        else setups.set(key, { symbol, ticks, contracts: [candidate] });
     }
 
     const quotes: RankedQuote[] = [];
@@ -67,29 +107,42 @@ export async function selectRankedTrade(
             if (!available.includes(row.candidate) || row.estimated || row.stake !== stake || row.historical.count < 1)
                 continue;
             const rate = row.historical.hits / row.historical.count;
+            const adjustedNet =
+                validWindow(row.older) && validWindow(row.recent)
+                    ? Math.min(lowerWinRate(row.older), lowerWinRate(row.recent)) * row.payout - stake
+                    : null;
             const expectedPayout = rate * row.payout;
             if (rate >= 0 && rate <= 1 && Number.isFinite(expectedPayout) && row.payout > stake) {
                 quotes.push({
                     trade: { ...setup, candidate: row.candidate, payout: row.payout },
                     rate,
                     expectedPayout,
+                    adjustedNet,
                     time,
                 });
             }
         }
     };
 
-    for (const { symbol, ticks, candidate } of candidates) {
-        await compare(symbol, ticks, [candidate]);
-    }
-    if (fallbackSymbol && !quotes.some(quote => fresh(quote.time))) {
+    // The shared insights queue still paces Deriv requests across concurrent comparisons.
+    const compareSetups = async (batch: Iterable<{ symbol: string; ticks: number; contracts: string[] }>) => {
+        const results = await Promise.allSettled(
+            Array.from(batch, ({ symbol, ticks, contracts }) => compare(symbol, ticks, contracts))
+        );
+        const failure = results.find(result => result.status === 'rejected');
+        if (failure?.status === 'rejected') throw failure.reason;
+    };
+
+    await compareSetups(setups.values());
+    if (fallbackSymbol && !quotes.some(quote => qualifies(quote, method) && fresh(quote.time))) {
         const contracts = Object.values(contractsByGroup).flat();
-        for (const ticks of durations) await compare(fallbackSymbol, ticks, contracts);
+        await compareSetups(durations.map(ticks => ({ symbol: fallbackSymbol, ticks, contracts })));
     }
-    const ranked = quotes
-        .filter(quote => fresh(quote.time))
-        .sort((a, b) => b.expectedPayout - a.expectedPayout || b.rate - a.rate);
+    const ranked = rankQuotes(
+        quotes.filter(quote => fresh(quote.time)),
+        method
+    );
     if (signal.aborted) return undefined;
     onCompared?.(ranked);
-    return ranked[0];
+    return ranked.find(quote => qualifies(quote, method));
 }
