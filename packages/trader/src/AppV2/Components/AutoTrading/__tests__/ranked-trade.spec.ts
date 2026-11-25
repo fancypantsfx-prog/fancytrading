@@ -94,3 +94,29 @@ it('loads all Finder shortlists concurrently and analyzes contracts on the same 
         [3, ['CALL', 'PUT']],
     ]);
 });
+
+it('includes Digit Differs in live comparisons when Matches / Differs is selected', async () => {
+    const compare = compareRecentTicks as jest.Mock;
+    compare.mockClear();
+    (fetchStrategyFinder as jest.Mock).mockImplementation(async params => ({
+        rows:
+            params.get('contract') === 'match_diff'
+                ? [
+                      {
+                          symbol: 'R_100',
+                          candidate: 'DIGITDIFF:5',
+                          historical: { hits: 8, count: 10 },
+                          sampleAt: Date.now(),
+                      },
+                  ]
+                : [],
+    }));
+    compare.mockResolvedValue(null);
+    await selectRankedTrade(jest.fn(), 'USD', 10, new AbortController().signal, undefined, undefined, 'R_50', true);
+    expect(compare.mock.calls.map(([, setup]) => [setup.symbol, setup.candidates.includes('DIGITDIFF:5')])).toEqual([
+        ['R_100', true],
+        ['R_100', true],
+        ['R_50', true],
+        ['R_50', true],
+    ]);
+});

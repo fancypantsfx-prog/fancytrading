@@ -20,6 +20,7 @@ import RankedRunner from './ranked-runner';
 import MenuHelp from './menu-help';
 import InsightsCompare, { candidateLabel } from './insights-compare';
 import type { TCompareSetup } from './insights-compare';
+import { FINDER_SAMPLE_MAX_AGE, finderLiveSample, useFinderTicks } from './use-finder-ticks';
 import './tick-insights.scss';
 
 const percent = (value: number) => value.toLocaleString(undefined, { style: 'percent', maximumFractionDigits: 1 });
@@ -28,12 +29,14 @@ type TInsightRow = TTickInsights['rows'][number];
 type TFinderRow = Pick<TInsightRow, 'candidate' | 'historical'> & {
     symbol: string;
     label?: string;
+    sampleAt: number;
 };
 type TFinderReport = {
     access: TPremiumAccess;
     rows: TFinderRow[];
     ticks: number;
     settings?: string;
+    precisionBySymbol?: Record<string, number>;
 };
 const finderContracts = {
     rise_fall: ['CALL', 'PUT'],
@@ -139,12 +142,14 @@ const InsightsPanel = ({
         document.addEventListener('visibilitychange', resume);
         window.addEventListener('pageshow', resume);
         window.addEventListener('online', resume);
+        ws.setOnReconnect?.(resume);
         return () => {
             document.removeEventListener('visibilitychange', resume);
             window.removeEventListener('pageshow', resume);
             window.removeEventListener('online', resume);
+            ws.removeOnReconnect?.(resume);
         };
-    }, []);
+    }, [ws.setOnReconnect, ws.removeOnReconnect]);
 
     React.useEffect(() => {
         if (!open || view !== 'compare' || markets.length || typeof access === 'string' || access.access === 'locked') return;
@@ -204,11 +209,37 @@ const InsightsPanel = ({
     const hasScanAccess = typeof access !== 'string' && access.access !== 'locked';
 
     const report = snapshot?.settings === scanSettings ? snapshot : undefined;
-    const finderRows = finderGroup === 'rise_fall'
-        ? report?.rows.filter(({ historical }) => historical.hits / historical.count < 0.9)
-        : report?.rows;
-
     const scanPaused = !!draft || busy;
+    const finderVisible = open && view === 'finder' && pageVisible && hasScanAccess;
+    const finderMarkets = finderVisible && report
+        ? [...new Set(report.rows.map(row => row.symbol))].sort().join(',')
+        : '';
+    const liveWindows = useFinderTicks(ws.subscribeTicksHistory, finderMarkets, refreshVersion);
+    const [, checkSampleAge] = React.useReducer(version => version + 1, 0);
+    React.useEffect(() => {
+        if (!finderVisible) return;
+        const timer = window.setInterval(checkSampleAge, 1000);
+        return () => window.clearInterval(timer);
+    }, [finderVisible]);
+
+    const freshAfter = Date.now() - FINDER_SAMPLE_MAX_AGE;
+    const finderRows = report?.rows
+        .map(row => {
+            const sample = liveWindows.get(row.symbol);
+            if (!sample || sample.sampleAt < row.sampleAt) return row;
+            const historical = finderLiveSample(
+                { ...sample, precision: sample.precision ?? report.precisionBySymbol?.[row.symbol] },
+                report.ticks,
+                row.candidate
+            );
+            return historical ? { ...row, historical, sampleAt: sample.sampleAt } : row;
+        })
+        .filter(({ sampleAt, historical }) =>
+            sampleAt > freshAfter && historical.count > 0 &&
+            (finderGroup !== 'rise_fall' || historical.hits / historical.count < 0.9)
+        )
+        .sort((a, b) => b.historical.hits / b.historical.count - a.historical.hits / a.historical.count);
+
     React.useEffect(() => {
         if (
             view !== 'finder' ||

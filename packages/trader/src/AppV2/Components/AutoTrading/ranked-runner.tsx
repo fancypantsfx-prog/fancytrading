@@ -2,8 +2,8 @@ import React from 'react';
 import { getDecimalPlaces, useWS } from '@deriv/shared';
 import { localize } from '@deriv-com/translations';
 import { candidateLabel } from './insights-compare';
-import type { RankedQuote } from './ranked-trade';
-import { fresh, rankedTradeKey, selectRankedTrade } from './ranked-trade';
+import type { RankedContractGroup, RankedQuote } from './ranked-trade';
+import { fresh, rankedContractGroup, rankedTradeKey, selectRankedTrade } from './ranked-trade';
 import { InsightQuoteChanged, InsightRateLimitError, waitForInsightRequest } from './tick-insights-data';
 import type { TInsightTrade } from './tick-insights-data';
 
@@ -16,7 +16,22 @@ type Props = {
     buy: (trade: TInsightTrade, signal: AbortSignal, beforeBuy: () => void) => Promise<string>;
 };
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-type ReviewDecision = RankedQuote | 'all' | null;
+type ReviewDecision = RankedQuote | 'batch' | null;
+const rankSelections = { all: [0, 1, 2], topTwo: [0, 1], first: [0], second: [1], third: [2] };
+type RankSelection = keyof typeof rankSelections;
+const contractGroups: readonly RankedContractGroup[] = ['rise_fall', 'even_odd', 'over_under', 'match_diff'];
+const contractGroupLabel = (group: RankedContractGroup) => {
+    switch (group) {
+        case 'rise_fall':
+            return localize('Rise / Fall');
+        case 'even_odd':
+            return localize('Even / Odd');
+        case 'over_under':
+            return localize('Over / Under');
+        case 'match_diff':
+            return localize('Matches / Differs');
+    }
+};
 
 export default function RankedRunner({ currency, symbol, stake, account, block, buy }: Props) {
     const ws = useWS();
@@ -24,7 +39,10 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
     const [target, setTarget] = React.useState(String(3 * stake));
     const [method, setMethod] = React.useState('martingale');
     const [mode, setMode] = React.useState('automatic');
-    const [review, setReview] = React.useState<{ quotes: RankedQuote[]; canBuyAll: boolean }>();
+    const [rankSelection, setRankSelection] = React.useState<RankSelection>('all');
+    const [onlyGroup, setOnlyGroup] = React.useState<RankedContractGroup | ''>('');
+    const [excludeGroup, setExcludeGroup] = React.useState<RankedContractGroup | ''>('');
+    const [review, setReview] = React.useState<{ quotes: RankedQuote[]; batchSize: number }>();
     const reviewDecision = React.useRef<(decision?: ReviewDecision) => void>();
     const [rankings, setRankings] = React.useState<RankedQuote[]>();
     const [running, setRunning] = React.useState(false);
@@ -45,8 +63,21 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
         if (current.current || !ws || block) return;
         const sl = Number(loss),
             tp = Number(target);
-        if (!(stake > 0 && Number.isFinite(sl) && sl >= stake && Number.isFinite(tp) && tp > 0)) {
+        if (
+            !(
+                Number.isFinite(stake) &&
+                stake > 0 &&
+                Number.isFinite(sl) &&
+                sl >= stake &&
+                Number.isFinite(tp) &&
+                tp > 0
+            )
+        ) {
             setStatus('Enter a positive take profit and a stop loss covering at least the initial stake.');
+            return;
+        }
+        if (onlyGroup && onlyGroup === excludeGroup) {
+            setStatus(localize('Choose different contract types for Trade only and Do not trade.'));
             return;
         }
         const controller = new AbortController();
@@ -65,10 +96,18 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                 let net = 0,
                     amount = stake;
                 const skipped = new Set<string>();
-                const round = (value: number) => Number(value.toFixed(getDecimalPlaces(currency)));
+                const decimals = getDecimalPlaces(currency);
+                const round = (value: number) => Number(value.toFixed(decimals));
+                const floorStake = (value: number) => {
+                    const rounded = round(value);
+                    return rounded > value ? round(rounded - 10 ** -decimals) : rounded;
+                };
+                const stopLimit = floorStake(sl);
                 while (!signal.aborted && !stopping.current) {
                     if (latest.current.block) throw new Error(latest.current.block);
-                    if (net >= tp || round(net - amount) < -sl) break;
+                    const remaining = round(net + stopLimit);
+                    if (net >= tp || remaining < stake) break;
+                    amount = Math.min(amount, remaining);
                     setStatus('Comparing live contracts. Session P/L ' + net + ' ' + currency);
                     let pick: RankedQuote | undefined;
                     let topQuotes: RankedQuote[] = [];
@@ -83,7 +122,8 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                                 topQuotes = quotes.slice(0, 3);
                                 setRankings(topQuotes);
                             },
-                            symbol
+                            symbol,
+                            onlyGroup === 'match_diff'
                         );
                     } catch (error) {
                         if (!(error instanceof InsightRateLimitError)) throw error;
@@ -100,14 +140,42 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                         await delay(10000);
                         continue;
                     }
-                    const batchStake = topQuotes.reduce((total, quote) => total + quote.trade.stake, 0);
-                    const canBuyAll = topQuotes.length === 3 && round(net - batchStake) >= -sl;
-                    let batch = canBuyAll ? topQuotes : [pick];
+                    if (!topQuotes.length) topQuotes = [pick];
+                    const eligible = topQuotes.filter(({ trade }, index) => {
+                        const group = rankedContractGroup(trade.candidate);
+                        return (
+                            rankSelections[rankSelection].includes(index) &&
+                            (!onlyGroup || group === onlyGroup) &&
+                            group !== excludeGroup &&
+                            trade.stake <= remaining
+                        );
+                    });
+                    if (!eligible.length) {
+                        skipped.clear();
+                        setStatus(localize('No contract in the selected ranks meets your filters. Checking again.'));
+                        await delay(10000);
+                        continue;
+                    }
+                    const batchStake = round(eligible.reduce((total, quote) => total + quote.trade.stake, 0));
+                    if (batchStake > remaining) {
+                        const reducedStake = floorStake(remaining / eligible.length);
+                        if (reducedStake <= 0 || reducedStake >= amount) break;
+                        // The new stake needs fresh quotes before the selected ranks can be purchased.
+                        amount = reducedStake;
+                        continue;
+                    }
+                    let batch = eligible;
                     if (mode === 'semi-automatic') {
-                        setReview({ quotes: topQuotes, canBuyAll });
+                        const batchSize = batch.length;
+                        setReview({ quotes: eligible, batchSize });
+                        const session = { net: String(net), currency };
                         setStatus(
-                            (canBuyAll ? 'Choose a contract, buy all 3, or skip.' : 'Choose a contract or skip.') +
-                                ' Session P/L ' + net + ' ' + currency
+                            batchSize > 1
+                                ? localize(
+                                      'Choose one contract, buy the eligible batch, or skip. Session P/L {{net}} {{currency}}',
+                                      session
+                                  )
+                                : localize('Choose one contract or skip. Session P/L {{net}} {{currency}}', session)
                         );
                         const decision = await new Promise<ReviewDecision | undefined>(resolve => {
                             const timer = setTimeout(() => resolve(undefined), 30000);
@@ -119,12 +187,12 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                         reviewDecision.current = undefined;
                         if (signal.aborted || stopping.current) break;
                         setReview(undefined);
-                        if (decision === null) topQuotes.forEach(quote => skipped.add(rankedTradeKey(quote.trade)));
+                        if (decision === null) eligible.forEach(quote => skipped.add(rankedTradeKey(quote.trade)));
                         if (!decision) continue;
-                        if (decision === 'all') {
-                            if (!canBuyAll || !topQuotes.every(quote => fresh(quote.time))) continue;
+                        if (decision === 'batch') {
+                            if (batchSize < 2 || !batch.every(quote => fresh(quote.time))) continue;
                         } else {
-                            if (!fresh(decision.time)) continue;
+                            if (!eligible.includes(decision) || !fresh(decision.time)) continue;
                             batch = [decision];
                         }
                     }
@@ -251,6 +319,50 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                     <option value='semi-automatic'>Semi-automatic</option>
                 </select>
             </label>
+            <label>
+                {localize('Rank selection')}{' '}
+                <select
+                    disabled={running}
+                    value={rankSelection}
+                    onChange={e => setRankSelection(e.target.value as RankSelection)}
+                >
+                    <option value='all'>{localize('All three')}</option>
+                    <option value='topTwo'>{localize('First two')}</option>
+                    <option value='first'>{localize('First only')}</option>
+                    <option value='second'>{localize('Second only')}</option>
+                    <option value='third'>{localize('Third only')}</option>
+                </select>
+            </label>
+            <label>
+                {localize('Trade only')}{' '}
+                <select
+                    disabled={running}
+                    value={onlyGroup}
+                    onChange={e => setOnlyGroup(e.target.value as RankedContractGroup | '')}
+                >
+                    <option value=''>{localize('Any contract type')}</option>
+                    {contractGroups.map(group => (
+                        <option key={group} value={group}>
+                            {contractGroupLabel(group)}
+                        </option>
+                    ))}
+                </select>
+            </label>
+            <label>
+                {localize('Do not trade')}{' '}
+                <select
+                    disabled={running}
+                    value={excludeGroup}
+                    onChange={e => setExcludeGroup(e.target.value as RankedContractGroup | '')}
+                >
+                    <option value=''>{localize('No exclusions')}</option>
+                    {contractGroups.map(group => (
+                        <option key={group} value={group}>
+                            {contractGroupLabel(group)}
+                        </option>
+                    ))}
+                </select>
+            </label>
             <button
                 type='button'
                 disabled={!running && !!block}
@@ -268,9 +380,9 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
             <p role='status'>{block || status}</p>
             <section className='tick-insights__rankings'>
                 <h3>{localize('Top 3 contracts')}</h3>
-                {review?.quotes.length ? (
+                {rankings?.length ? (
                     <p>
-                        {localize('Stake per contract')} {review.quotes[0].trade.stake} {currency}
+                        {localize('Stake per contract')} {rankings[0].trade.stake} {currency}
                     </p>
                 ) : null}
                 {rankings?.length ? (
@@ -278,6 +390,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                         <table>
                             <thead>
                                 <tr>
+                                    <th scope='col'>{localize('Rank')}</th>
                                     <th scope='col'>{localize('Contract')}</th>
                                     <th scope='col'>{localize('Historical win probability')}</th>
                                     <th scope='col'>{localize('Expected payout')}</th>
@@ -286,11 +399,12 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                                 </tr>
                             </thead>
                             <tbody>
-                                {rankings.map(quote => {
+                                {rankings.map((quote, index) => {
                                     const { trade, rate, expectedPayout } = quote;
                                     const contract = `${trade.symbol} · ${candidateLabel(trade.candidate)} · ${trade.ticks} ${localize('ticks')}`;
                                     return (
                                         <tr key={rankedTradeKey(trade)}>
+                                            <td>{index + 1}</td>
                                             <th scope='row'>{contract}</th>
                                             <td>
                                                 {rate.toLocaleString(undefined, {
@@ -308,14 +422,16 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                                             )}
                                             {review && (
                                                 <td>
-                                                    <button
-                                                        type='button'
-                                                        disabled={!!block}
-                                                        aria-label={localize('Buy {{contract}}', { contract })}
-                                                        onClick={() => reviewDecision.current?.(quote)}
-                                                    >
-                                                        {localize('Buy')}
-                                                    </button>
+                                                    {review.quotes.includes(quote) && (
+                                                        <button
+                                                            type='button'
+                                                            disabled={!!block}
+                                                            aria-label={localize('Buy {{contract}}', { contract })}
+                                                            onClick={() => reviewDecision.current?.(quote)}
+                                                        >
+                                                            {localize('Buy')}
+                                                        </button>
+                                                    )}
                                                 </td>
                                             )}
                                         </tr>
@@ -327,9 +443,9 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                 ) : rankings ? (
                     <p>{localize('No live quotes to compare.')}</p>
                 ) : null}
-                {review?.canBuyAll && (
-                    <button type='button' disabled={!!block} onClick={() => reviewDecision.current?.('all')}>
-                        {localize('Buy all 3')}
+                {review && review.batchSize > 1 && (
+                    <button type='button' disabled={!!block} onClick={() => reviewDecision.current?.('batch')}>
+                        {review.batchSize === 3 ? localize('Buy all 3') : localize('Buy both')}
                     </button>
                 )}
                 {review && (

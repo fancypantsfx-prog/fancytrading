@@ -36,6 +36,8 @@ export const candidateLabel = (candidate: string) => {
             return localize('Digit Under {{digit}}', { digit: barrier ?? '' }).trim();
         case 'DIGITMATCH':
             return localize('Digit Matches {{digit}}', { digit: barrier ?? '' }).trim();
+        case 'DIGITDIFF':
+            return localize('Digit Differs {{digit}}', { digit: barrier ?? '' }).trim();
         default:
             return localize('{{rate}}% growth', { rate: candidate });
     }

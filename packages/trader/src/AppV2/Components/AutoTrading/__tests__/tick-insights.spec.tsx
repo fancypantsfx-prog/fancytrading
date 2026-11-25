@@ -9,6 +9,8 @@ jest.setTimeout(15000);
 
 let mockRateLimitProposal = false;
 let mockUnavailableSymbol = '';
+const mockSubscribeHistory = jest.fn();
+let mockLiveFinder = false;
 const mockSend = jest.fn(async (request: Record<string, unknown>) => {
     if (request.active_symbols)
         return { active_symbols: [{ underlying_symbol: 'R_50' }, { underlying_symbol: '1HZ100V' }] };
@@ -75,7 +77,7 @@ it('stars a finder result and applies multiple durations to both comparison setu
     expect(props.onBuy).not.toHaveBeenCalled();
 });
 jest.mock('@deriv/shared', () => ({
-    useWS: () => ({ send: mockSend }),
+    useWS: () => ({ send: mockSend, subscribeTicksHistory: mockLiveFinder ? mockSubscribeHistory : undefined }),
     getPlatformLogo: () => 'brand/platform-logo.svg',
     getDecimalPlaces: () => 2,
 }));
@@ -103,12 +105,13 @@ beforeEach(() => {
     jest.clearAllMocks();
     mockRateLimitProposal = false;
     mockUnavailableSymbol = '';
+    mockLiveFinder = false;
     (fetchStrategyFinder as jest.Mock).mockResolvedValue({
         access: { access: 'free' },
         ticks: 5,
         updatedAt: Date.now(),
         marketsScanned: 1,
-        rows: [{ sampleAt: Date.now() - 600000, candidate: 'PUT', symbol: '1HZ100V', historical: { hits: 6, count: 10 } }],
+        rows: [{ sampleAt: Date.now(), candidate: 'PUT', symbol: '1HZ100V', historical: { hits: 6, count: 10 } }],
     });
     localStorage.clear();
     HTMLDialogElement.prototype.showModal = function () {
@@ -143,7 +146,7 @@ it('removes a setup from its result and clears the remaining selections', async 
     expect(screen.getByRole('button', { name: 'Fancy Strategy Finder' })).toHaveAttribute('aria-pressed', 'true');
 });
 
-it('loads older cloud rankings without broker verification on load or refresh', async () => {
+it('loads fresh cloud rankings without requesting a proposal on load or refresh', async () => {
     (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
     render(
         <FancyTradingDialogContext.Provider
@@ -172,6 +175,42 @@ it('loads older cloud rankings without broker verification on load or refresh', 
     expect(screen.getByRole('button', { name: 'Confirm and start run' })).toBeDisabled();
     expect(props.onBuy).not.toHaveBeenCalled();
     expect(props.onStart).not.toHaveBeenCalled();
+});
+
+it('replaces stale rankings with live history, updates on ticks, and restarts the feed on refresh', async () => {
+    mockLiveFinder = true;
+    const unsubscribe = jest.fn();
+    mockSubscribeHistory.mockReturnValue({ unsubscribe });
+    (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
+    (fetchStrategyFinder as jest.Mock).mockResolvedValue({
+        ticks: 1,
+        rows: [{ sampleAt: Date.now() - 180001, candidate: 'PUT', symbol: '1HZ100V', historical: { hits: 6, count: 10 } }],
+    });
+    const { unmount } = render(
+        <FancyTradingDialogContext.Provider value={{ open: true, setOpen: jest.fn() }}>
+            <TickInsights {...props} initial_ticks={1} />
+        </FancyTradingDialogContext.Provider>
+    );
+    expect(await screen.findByText(/No ranked contracts are available/)).toBeInTheDocument();
+    await waitFor(() => expect(mockSubscribeHistory).toHaveBeenCalledTimes(1));
+    expect(mockSubscribeHistory).toHaveBeenCalledWith(
+        expect.objectContaining({ ticks_history: '1HZ100V', subscribe: 1, count: 400 }),
+        expect.any(Function)
+    );
+    const receive = mockSubscribeHistory.mock.calls[0][1];
+    const epoch = Math.floor(Date.now() / 1000);
+    receive({ history: { prices: Array.from({ length: 400 }, (_, i) => 100 + i), times: Array.from({ length: 400 }, (_, i) => epoch - 399 + i) } });
+    expect(await screen.findByRole('cell', { name: '0%' })).toBeInTheDocument();
+    receive({ tick: { epoch: epoch + 1, quote: 100 } });
+    expect(await screen.findByRole('cell', { name: '0.3%' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh rankings' }));
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mockSubscribeHistory).toHaveBeenCalledTimes(2));
+    expect(fetchStrategyFinder).toHaveBeenCalledTimes(2);
+    unmount();
+    expect(unsubscribe).toHaveBeenCalledTimes(2);
+    expect(mockSend).not.toHaveBeenCalled();
 });
 
 it('loads the saved automatic settings for the matching account and currency', async () => {
@@ -265,7 +304,7 @@ it('shows qualifying ranked rows beyond the first seven without requesting propo
             { candidate: 'CALL', symbol: 'AT_THRESHOLD', historical: { hits: 90, count: 100 } },
             { candidate: 'PUT', symbol: 'ABOVE_THRESHOLD', historical: { hits: 99, count: 100 } },
             { candidate: 'PUT', symbol: '1HZ100V', historical: { hits: 6, count: 10 } },
-        ],
+        ].map(row => ({ ...row, sampleAt: Date.now() })),
     });
     render(
         <FancyTradingDialogContext.Provider

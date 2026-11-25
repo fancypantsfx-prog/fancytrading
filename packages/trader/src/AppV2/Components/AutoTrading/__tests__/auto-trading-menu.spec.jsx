@@ -464,7 +464,7 @@ const reviewFancyTrade = async (candidate = 'CALL', automatic = true, recoverSta
         ticks: 5,
         updatedAt: Date.now(),
         marketsScanned: 1,
-        rows: [{ expiresAt: Date.now() + 180000, candidate, symbol, historical: { hits: 60, count: 78 } }],
+        rows: [{ sampleAt: Date.now(), candidate, symbol, historical: { hits: 60, count: 78 } }],
     });
     render(
         <FancyTradingDialogContext.Provider value={{ open: true, setOpen: jest.fn() }}>
