@@ -37,7 +37,16 @@ import {
 } from './automation';
 import TickInsights from './tick-insights';
 import { FancyTradingDialogContext } from './fancy-trading-dialog-context';
-import { getInsightContract, InsightQuoteChanged, sendInsightRequest, waitForInsightRequest } from './tick-insights-data';
+import {
+    getInsightContract,
+    InsightQuoteChanged,
+    InsightRateLimitError,
+    isInsightRateLimit,
+    noteInsightRateLimit,
+    sendInsightRequest,
+    waitForInsightRequest,
+    waitForInsightRequestSlot,
+} from './tick-insights-data';
 import type { TInsightRun, TInsightStrategyOption, TInsightTrade } from './tick-insights-data';
 import './auto-trading.scss';
 
@@ -789,14 +798,29 @@ const AutoTrading = observer(
                     setUnconfirmedPurchases(previous => [...previous, purchase_account_id]);
                     return new Error(unconfirmed_message);
                 };
-                beforeRuleBuy?.();
+                if (beforeRuleBuy) {
+                    await waitForInsightRequestSlot(signal);
+                    checkAccount();
+                    ensureInsightAccess(access);
+                    if (ws.getWSUrl?.() !== connection)
+                        throw new Error(localize('The market connection changed. Review the trade again.'));
+                    beforeRuleBuy();
+                }
+                const rateLimitError = () => {
+                    noteInsightRateLimit();
+                    return new InsightRateLimitError(localize('Deriv is temporarily limiting trades.'));
+                };
                 const response = await waitForInsightRequest(
-                    processPurchase(proposal.id, draft.stake),
+                    beforeRuleBuy
+                        ? processPurchase(proposal.id, draft.stake, { fancytrading_insights: true })
+                        : processPurchase(proposal.id, draft.stake),
                     unconfirmed_message
                 ).catch((failure: unknown) => {
+                    if (isInsightRateLimit(failure)) throw rateLimitError();
                     const rejection = (failure as { error?: { message?: string } } | null)?.error;
                     throw rejection?.message ? new Error(rejection.message) : markUnconfirmed();
                 });
+                if (isInsightRateLimit(response)) throw rateLimitError();
                 if (response?.error) throw new Error(response.error.message);
                 const purchase = response?.buy;
                 if (!purchase?.contract_id) throw markUnconfirmed();

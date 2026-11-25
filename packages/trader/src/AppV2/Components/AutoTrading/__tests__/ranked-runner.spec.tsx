@@ -2,7 +2,7 @@ import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import RankedRunner from '../ranked-runner';
 import { selectRankedTrade } from '../ranked-trade';
-import { InsightRateLimitError } from '../tick-insights-data';
+import { InsightRateLimitError, sendInsightRequest } from '../tick-insights-data';
 
 jest.mock('../ranked-trade', () => ({
     ...jest.requireActual('../ranked-trade'),
@@ -14,6 +14,7 @@ const mockSend = jest.fn();
 jest.mock('@deriv/shared', () => ({ getDecimalPlaces: () => 2, useWS: () => ({ send: mockSend }) }));
 jest.mock('../tick-insights-data', () => ({
     ...jest.requireActual('../tick-insights-data'),
+    sendInsightRequest: jest.fn((send, payload) => send(payload)),
     waitForInsightRequest: (request: Promise<unknown>) => request,
 }));
 
@@ -140,6 +141,53 @@ it('skips a shortlist and buys only the selected contract from the next top thre
     expect(buy.mock.calls[0][0]).toMatchObject({ symbol: 'R_300' });
 });
 
+it.each([true, false])(
+    'reuses the winning contract in its selected rank when a fresh quote is available (%s)',
+    async available => {
+        const contract = { symbol: 'R_25', candidate: 'DIGITOVER:5', currency: 'USD', stake: 10, ticks: 3, payout: 18 };
+        const quote = (symbol: string, payout = 18) => ({
+            rate: 0.6,
+            expectedPayout: payout * 0.6,
+            time: Date.now(),
+            trade: { ...contract, symbol, payout },
+        });
+        (selectRankedTrade as jest.Mock)
+            .mockImplementationOnce(async (_send, _currency, _stake, _signal, _skipped, onCompared) => {
+                const quotes = [quote('R_50'), quote(contract.symbol), quote('R_75')];
+                onCompared(quotes);
+                return quotes[0];
+            })
+            .mockImplementationOnce(
+                async (_send, _currency, _stake, _signal, _skipped, onCompared, _symbol, repeat) => {
+                    expect(repeat).toEqual([contract]);
+                    const quotes = [quote('R_10'), quote('R_100'), quote('R_200')];
+                    if (available) quotes.push(quote(contract.symbol, 16));
+                    onCompared(quotes);
+                    return quotes[0];
+                }
+            );
+        mockSend.mockImplementation(async ({ contract_id }) => ({
+            proposal_open_contract: { contract_id, is_sold: 1, profit: 2 },
+        }));
+        let id = 0;
+        const buy = jest.fn(async (_trade, _signal, guard) => {
+            guard();
+            return String(++id);
+        });
+        render(<RankedRunner currency='USD' stake={10} account='repeat-winner' block='' buy={buy} />);
+        fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '30' } });
+        fireEvent.change(screen.getByLabelText(/Take profit/), { target: { value: '4' } });
+        fireEvent.change(screen.getByLabelText('Rank selection'), { target: { value: 'second' } });
+        fireEvent.click(screen.getByText('Start trading'));
+
+        await screen.findByText('Run stopped. Session P/L 4 USD');
+        expect(buy.mock.calls.map(([trade]) => trade)).toEqual([
+            contract,
+            available ? { ...contract, payout: 16 } : { ...contract, symbol: 'R_100' },
+        ]);
+    }
+);
+
 const mockRankings = (candidates: string[], expectedReturns = candidates.map(() => 1.2)) => {
     (selectRankedTrade as jest.Mock).mockImplementation(
         async (_send, currency, stake, _signal, _skipped, onCompared) => {
@@ -219,27 +267,30 @@ it.each([
     expect(buy.mock.calls.map(([trade]) => trade.symbol)).toEqual(markets);
 });
 
-it.each(['automatic', 'semi-automatic'])('executes all selected contracts with a negative estimated net payout in %s mode', async mode => {
-    mockRankings(['CALL', 'DIGITOVER:5', 'DIGITEVEN'], [0.8, 0.7, 0.5]);
-    mockSend.mockImplementation(async ({ contract_id }) => ({
-        proposal_open_contract: { contract_id, is_sold: 1, profit: 10 },
-    }));
-    let id = 0;
-    const buy = jest.fn(async (_trade, _signal, guard) => {
-        guard();
-        return String(++id);
-    });
-    render(<RankedRunner currency='USD' stake={10} account='positive-batch' block='' buy={buy} />);
-    fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '40' } });
-    fireEvent.change(screen.getByLabelText(/Take profit/), { target: { value: '10' } });
-    fireEvent.change(screen.getByLabelText('Execution mode'), { target: { value: mode } });
-    fireEvent.click(screen.getByText('Start trading'));
-    if (mode === 'semi-automatic') {
-        fireEvent.click(await screen.findByRole('button', { name: 'Buy all 3' }));
+it.each(['automatic', 'semi-automatic'])(
+    'executes all selected contracts with a negative estimated net payout in %s mode',
+    async mode => {
+        mockRankings(['CALL', 'DIGITOVER:5', 'DIGITEVEN'], [0.8, 0.7, 0.5]);
+        mockSend.mockImplementation(async ({ contract_id }) => ({
+            proposal_open_contract: { contract_id, is_sold: 1, profit: 10 },
+        }));
+        let id = 0;
+        const buy = jest.fn(async (_trade, _signal, guard) => {
+            guard();
+            return String(++id);
+        });
+        render(<RankedRunner currency='USD' stake={10} account='positive-batch' block='' buy={buy} />);
+        fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '40' } });
+        fireEvent.change(screen.getByLabelText(/Take profit/), { target: { value: '10' } });
+        fireEvent.change(screen.getByLabelText('Execution mode'), { target: { value: mode } });
+        fireEvent.click(screen.getByText('Start trading'));
+        if (mode === 'semi-automatic') {
+            fireEvent.click(await screen.findByRole('button', { name: 'Buy all 3' }));
+        }
+        await screen.findByText('Run stopped. Session P/L 30 USD');
+        expect(buy.mock.calls.map(([trade]) => trade.symbol)).toEqual(['Market 1', 'Market 2', 'Market 3']);
     }
-    await screen.findByText('Run stopped. Session P/L 30 USD');
-    expect(buy.mock.calls.map(([trade]) => trade.symbol)).toEqual(['Market 1', 'Market 2', 'Market 3']);
-});
+);
 
 it('keeps the combined stake below the stop loss after a profitable round', async () => {
     mockRankings(['CALL', 'DIGITOVER:5', 'DIGITEVEN']);
@@ -259,19 +310,49 @@ it('keeps the combined stake below the stop loss after a profitable round', asyn
     expect(buy.mock.calls.map(([trade]) => trade.stake)).toEqual(Array(6).fill(9.99));
 });
 
-it('pauses on a rate-limited purchase quote without creating an unresolved purchase', async () => {
+it.each([false, true])(
+    'pauses on a rate limit without leaving an unresolved purchase (submitted: %s)',
+    async submitted => {
+        jest.useFakeTimers();
+        try {
+            mockRankings(['CALL']);
+            const buy = jest.fn(async (_trade, _signal, guard) => {
+                if (submitted) guard();
+                throw new InsightRateLimitError();
+            });
+            const { unmount } = render(
+                <RankedRunner currency='USD' stake={10} account='quote-limit' block='' buy={buy} />
+            );
+            fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '20' } });
+            fireEvent.click(screen.getByText('Start trading'));
+            await screen.findByText('Deriv is limiting quotes. Retrying when the limit clears.');
+            expect(buy).toHaveBeenCalledTimes(1);
+            expect(localStorage.getItem('fancy-ranked-purchase:quote-limit')).toBeNull();
+            unmount();
+            await jest.runOnlyPendingTimersAsync();
+        } finally {
+            jest.useRealTimers();
+        }
+    }
+);
+
+it('checks an open contract again after a settlement rate limit before continuing', async () => {
     jest.useFakeTimers();
     try {
         mockRankings(['CALL']);
-        const buy = jest.fn().mockRejectedValue(new InsightRateLimitError());
-        const { unmount } = render(<RankedRunner currency='USD' stake={10} account='quote-limit' block='' buy={buy} />);
+        (sendInsightRequest as jest.Mock).mockRejectedValueOnce(new InsightRateLimitError());
+        mockSend.mockResolvedValue({ proposal_open_contract: { contract_id: 1, is_sold: 1, profit: 10 } });
+        const buy = jest.fn(async (_trade, _signal, guard) => {
+            guard();
+            return '1';
+        });
+        render(<RankedRunner currency='USD' stake={10} account='settlement-limit' block='' buy={buy} />);
         fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '20' } });
+        fireEvent.change(screen.getByLabelText(/Take profit/), { target: { value: '10' } });
         fireEvent.click(screen.getByText('Start trading'));
-        await screen.findByText('Deriv is limiting quotes. Retrying when the limit clears.');
+        await screen.findByText('Run stopped. Session P/L 10 USD');
         expect(buy).toHaveBeenCalledTimes(1);
-        expect(localStorage.getItem('fancy-ranked-purchase:quote-limit')).toBeNull();
-        unmount();
-        await jest.runOnlyPendingTimersAsync();
+        expect(localStorage.getItem('fancy-ranked-purchase:settlement-limit')).toBeNull();
     } finally {
         jest.useRealTimers();
     }

@@ -24,15 +24,11 @@ export const onRequestGet = async ({ request, env }) => {
         const snapshot = await env.STRATEGY_FINDER_CACHE?.get(SCAN_CACHE_KEY, { type: 'json', cacheTtl: 30 });
 
         const markets = (snapshot?.markets ?? []).filter(market => market.groups.includes(contract));
-        const precisionBySymbol = Object.fromEntries(
-            markets.filter(market => Number.isInteger(market.precision)).map(market => [market.symbol, market.precision])
-        );
         const prepared = snapshot?.rankings?.[finderRankingKey(contract, ticks, barrier)];
         if (prepared) {
             return premiumResponse({
                 access, rows: prepared, ticks, updatedAt: snapshot.updatedAt, marketsScanned: markets.length,
                 instrumentsTotal: snapshot.instrumentsByGroup?.[contract] ?? markets.length,
-                precisionBySymbol,
             });
         }
         const now = Date.now();
@@ -89,7 +85,6 @@ export const onRequestGet = async ({ request, env }) => {
             updatedAt: snapshot?.updatedAt ?? 0,
             marketsScanned: new Set(rows.map(row => row.symbol)).size,
             instrumentsTotal: snapshot?.instrumentsByGroup?.[contract] ?? markets.length,
-            precisionBySymbol,
         });
     } catch {
         return premiumResponse({ error: 'Market data is unavailable' }, 503);

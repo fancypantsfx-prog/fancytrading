@@ -8,6 +8,7 @@ import {
     getInsightCooldown,
     InsightQuoteChanged,
     InsightRateLimitError,
+    sendInsightRequest,
     waitForInsightRequest,
 } from './tick-insights-data';
 import type { TInsightTrade } from './tick-insights-data';
@@ -22,6 +23,7 @@ type Props = {
 };
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 type ReviewDecision = RankedQuote | 'batch' | null;
+type RankedSlot = { rank: number; quote: RankedQuote };
 const rankSelections = { all: [0, 1, 2], topTwo: [0, 1], first: [0], second: [1], third: [2] };
 type RankSelection = keyof typeof rankSelections;
 const contractGroups: readonly RankedContractGroup[] = ['rise_fall', 'even_odd', 'over_under'];
@@ -47,7 +49,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
     const [excludeGroup, setExcludeGroup] = React.useState<RankedContractGroup | ''>('');
     const [review, setReview] = React.useState<{ quotes: RankedQuote[]; batchSize: number }>();
     const reviewDecision = React.useRef<(decision?: ReviewDecision) => void>();
-    const [rankings, setRankings] = React.useState<RankedQuote[]>();
+    const [rankings, setRankings] = React.useState<RankedSlot[]>();
     const [running, setRunning] = React.useState(false);
     const [status, setStatus] = React.useState('');
     const current = React.useRef<AbortController>();
@@ -66,16 +68,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
         if (current.current || !ws || block) return;
         const sl = Number(loss),
             tp = Number(target);
-        if (
-            !(
-                Number.isFinite(stake) &&
-                stake > 0 &&
-                Number.isFinite(sl) &&
-                sl > 0 &&
-                Number.isFinite(tp) &&
-                tp > 0
-            )
-        ) {
+        if (!(Number.isFinite(stake) && stake > 0 && Number.isFinite(sl) && sl > 0 && Number.isFinite(tp) && tp > 0)) {
             setStatus(localize('Enter a positive stake, take profit and stop loss.'));
             return;
         }
@@ -94,6 +87,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                     );
                 let net = 0,
                     amount = stake;
+                let winners = new Map<number, TInsightTrade>();
                 const skipped = new Set<string>();
                 const decimals = getDecimalPlaces(currency);
                 const round = (value: number) => Number(value.toFixed(decimals));
@@ -116,7 +110,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                     amount = Math.min(amount, remaining);
                     setStatus('Comparing live contracts. Session P/L ' + net + ' ' + currency);
                     let pick: RankedQuote | undefined;
-                    let topQuotes: RankedQuote[] = [];
+                    let topQuotes: RankedSlot[] = [];
                     try {
                         pick = await selectRankedTrade(
                             ws.send,
@@ -125,10 +119,22 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                             signal,
                             skipped,
                             quotes => {
-                                topQuotes = quotes.slice(0, 3);
+                                const repeatQuotes = new Map<number, RankedQuote>();
+                                winners.forEach((trade, rank) => {
+                                    const key = rankedTradeKey(trade);
+                                    const quote = quotes.find(item => rankedTradeKey(item.trade) === key);
+                                    if (quote) repeatQuotes.set(rank, quote);
+                                });
+                                const reserved = new Set(repeatQuotes.values());
+                                const alternatives = quotes.filter(quote => !reserved.has(quote));
+                                topQuotes = rankSelections.all.flatMap(rank => {
+                                    const quote = repeatQuotes.get(rank) ?? alternatives.shift();
+                                    return quote ? [{ rank, quote }] : [];
+                                });
                                 setRankings(topQuotes);
                             },
-                            symbol
+                            symbol,
+                            [...winners.values()]
                         );
                     } catch (error) {
                         if (!(error instanceof InsightRateLimitError)) throw error;
@@ -145,17 +151,19 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                         await delay(10000);
                         continue;
                     }
-                    if (!topQuotes.length) topQuotes = [pick];
-                    const eligible = topQuotes.filter(({ trade }, index) => {
-                        const group = rankedContractGroup(trade.candidate);
-                        return (
-                            !!group &&
-                            rankSelections[rankSelection].includes(index) &&
-                            (!onlyGroup || group === onlyGroup) &&
-                            group !== excludeGroup &&
-                            trade.stake <= remaining
-                        );
-                    });
+                    if (!topQuotes.length) topQuotes = [{ rank: 0, quote: pick }];
+                    const eligible = topQuotes
+                        .filter(({ rank, quote: { trade } }) => {
+                            const group = rankedContractGroup(trade.candidate);
+                            return (
+                                !!group &&
+                                rankSelections[rankSelection].includes(rank) &&
+                                (!onlyGroup || group === onlyGroup) &&
+                                group !== excludeGroup &&
+                                trade.stake <= remaining
+                            );
+                        })
+                        .map(({ quote }) => quote);
                     if (!eligible.length) {
                         skipped.clear();
                         setStatus(localize('No contract in the selected ranks meets your filters. Checking again.'));
@@ -202,29 +210,42 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                             batch = [decision];
                         }
                     }
-                    const open = new Set<string>();
+                    const open = new Map<string, RankedQuote>();
                     let pending = 0;
                     const saveOutstanding = () => {
                         if (open.size || pending) {
-                            localStorage.setItem(key, JSON.stringify([...open, ...(pending ? ['pending'] : [])]));
+                            localStorage.setItem(
+                                key,
+                                JSON.stringify([...open.keys(), ...(pending ? ['pending'] : [])])
+                            );
                         } else {
                             localStorage.removeItem(key);
                         }
                     };
                     const purchases = await Promise.allSettled(
                         batch.map(async quote => {
-                            const id = await latest.current.buy(quote.trade, signal, () => {
-                                if (signal.aborted || stopping.current || latest.current.block)
-                                    throw new Error('Trading conditions changed before purchase.');
-                                if (!fresh(quote.time))
-                                    throw new InsightQuoteChanged(
-                                        'The comparison expired. Checking live contracts again.',
-                                        quote.trade.payout
-                                    );
-                                localStorage.setItem(key, JSON.stringify([...open, 'pending']));
-                                pending++;
-                            });
-                            open.add(id);
+                            let submitted = false;
+                            const id = await latest.current
+                                .buy(quote.trade, signal, () => {
+                                    if (signal.aborted || stopping.current || latest.current.block)
+                                        throw new Error('Trading conditions changed before purchase.');
+                                    if (!fresh(quote.time))
+                                        throw new InsightQuoteChanged(
+                                            'The comparison expired. Checking live contracts again.',
+                                            quote.trade.payout
+                                        );
+                                    localStorage.setItem(key, JSON.stringify([...open.keys(), 'pending']));
+                                    pending++;
+                                    submitted = true;
+                                })
+                                .catch(error => {
+                                    if (submitted && error instanceof InsightRateLimitError) {
+                                        pending--;
+                                        saveOutstanding();
+                                    }
+                                    throw error;
+                                });
+                            open.set(id, quote);
                             pending--;
                             saveOutstanding();
                         })
@@ -251,22 +272,37 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                         await delay(1000);
                     }
                     let batchProfit = 0;
+                    const nextWinners = new Map<number, TInsightTrade>();
                     while (open.size && !signal.aborted) {
-                        for (const id of open) {
+                        const settlementCooldown = getInsightCooldown();
+                        if (settlementCooldown > 0) {
+                            setStatus(localize('Deriv is limiting requests. Waiting to check open contracts.'));
+                            await delay(Math.min(settlementCooldown, 10000));
+                            continue;
+                        }
+                        for (const [id, quote] of open) {
                             if (signal.aborted) break;
-                            const response = await waitForInsightRequest<{
+                            const response = await sendInsightRequest<{
                                 error?: { message: string };
                                 proposal_open_contract?: { contract_id: number; is_sold: number; profit: number };
                             }>(
-                                ws.send({ proposal_open_contract: 1, contract_id: Number(id) }),
-                                'Settlement request timed out.'
-                            );
+                                payload => waitForInsightRequest(ws.send(payload), 'Settlement request timed out.'),
+                                { proposal_open_contract: 1, contract_id: Number(id) },
+                                signal
+                            ).catch(error => {
+                                if (!(error instanceof InsightRateLimitError)) throw error;
+                                return undefined;
+                            });
+                            if (!response) break;
                             const position = response?.proposal_open_contract;
                             if (response?.error) throw new Error(response.error.message);
                             if (position && String(position.contract_id) === id && Number(position.is_sold) === 1) {
                                 if (position.profit == null || !Number.isFinite(Number(position.profit)))
                                     throw new Error('Invalid settlement amount.');
-                                batchProfit = round(batchProfit + Number(position.profit));
+                                const profit = Number(position.profit);
+                                batchProfit = round(batchProfit + profit);
+                                const rank = topQuotes.find(slot => slot.quote === quote)?.rank;
+                                if (profit > 0 && rank !== undefined) nextWinners.set(rank, quote.trade);
                                 open.delete(id);
                                 saveOutstanding();
                             }
@@ -276,6 +312,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                     if (failure?.status === 'rejected' && (pending || !stopping.current)) throw failure.reason;
                     if (purchased && !signal.aborted) {
                         net = round(net + batchProfit);
+                        winners = nextWinners;
                         amount = method === 'martingale' && batchProfit < 0 ? round(amount * 2) : stake;
                     }
                     if (rateLimited && !signal.aborted && !stopping.current) {
@@ -402,7 +439,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                 <h3>{localize('Top 3 contracts')}</h3>
                 {rankings?.length ? (
                     <p>
-                        {localize('Stake per contract')} {rankings[0].trade.stake} {currency}
+                        {localize('Stake per contract')} {rankings[0].quote.trade.stake} {currency}
                     </p>
                 ) : null}
                 {rankings?.length ? (
@@ -419,12 +456,12 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                                 </tr>
                             </thead>
                             <tbody>
-                                {rankings.map((quote, index) => {
+                                {rankings.map(({ rank, quote }) => {
                                     const { trade, rate, expectedPayout } = quote;
                                     const contract = `${trade.symbol} · ${candidateLabel(trade.candidate)} · ${trade.ticks} ${localize('ticks')}`;
                                     return (
                                         <tr key={rankedTradeKey(trade)}>
-                                            <td>{index + 1}</td>
+                                            <td>{rank + 1}</td>
                                             <th scope='row'>{contract}</th>
                                             <td>
                                                 {rate.toLocaleString(undefined, {

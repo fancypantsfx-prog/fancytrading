@@ -86,10 +86,7 @@ const BinarySocketGeneral = (() => {
                 }
                 break;
             case 'RateLimit':
-                if (response.echo_req?.passthrough?.fancytrading_insights === true) break;
-                common_store.setError(true, {
-                    message: localize('You have reached the rate limit of requests per second. Please try later.'),
-                });
+                // The request handler receives this response and can back off without blocking the page.
                 break;
             case 'InvalidAppID':
                 common_store.setError(true, { message: mapErrorMessage(response.error) });

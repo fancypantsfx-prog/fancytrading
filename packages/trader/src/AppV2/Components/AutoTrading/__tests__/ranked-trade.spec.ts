@@ -5,6 +5,36 @@ import { selectRankedTrade } from '../ranked-trade';
 jest.mock('@deriv/api', () => ({ fetchStrategyFinder: jest.fn() }));
 jest.mock('../tick-insights-data', () => ({ compareRecentTicks: jest.fn() }));
 
+it('compares a previous winner at the new stake even when Finder omits it', async () => {
+    const trade = {
+        family: 'digital' as const,
+        symbol: 'R_25',
+        candidate: 'DIGITOVER:5',
+        currency: 'USD',
+        stake: 10,
+        ticks: 3,
+        payout: 18,
+    };
+    (fetchStrategyFinder as jest.Mock).mockResolvedValue({ rows: [] });
+    (compareRecentTicks as jest.Mock).mockResolvedValue({
+        lastTick: Math.floor(Date.now() / 1000),
+        rows: [{ candidate: trade.candidate, historical: { hits: 5, count: 10 }, stake: 5, payout: 9 }],
+    });
+
+    const pick = await selectRankedTrade(
+        jest.fn(),
+        'USD',
+        5,
+        new AbortController().signal,
+        undefined,
+        undefined,
+        undefined,
+        [trade]
+    );
+
+    expect(pick?.trade).toEqual({ ...trade, stake: 5, payout: 9 });
+});
+
 it('ranks fresh contracts by historical expected payout', async () => {
     const now = Date.now();
     const row = (symbol: string) => ({

@@ -22,7 +22,7 @@ const mockSend = jest.fn(async (request: Record<string, unknown>) => {
             pip_size: 2,
             history: {
                 prices: Array.from({ length: count }, (_, i) => 100 + i),
-                times: Array.from({ length: count }, (_, i) => Math.floor(Date.now() / 1000) - count + 1 + i),
+                times: Array.from({ length: count }, (_, i) => 1800000000 + i),
             },
         };
     }
@@ -108,14 +108,11 @@ beforeEach(() => {
         ticks: 5,
         updatedAt: Date.now(),
         marketsScanned: 1,
-        rows: [{ sampleAt: Math.floor(Date.now() / 1000) * 1000, candidate: 'PUT', symbol: '1HZ100V', historical: { hits: 6, count: 10 } }],
+        rows: [{ sampleAt: Date.now() - 600000, candidate: 'PUT', symbol: '1HZ100V', historical: { hits: 6, count: 10 } }],
     });
     localStorage.clear();
     HTMLDialogElement.prototype.showModal = function () {
         this.setAttribute('open', '');
-    };
-    HTMLDialogElement.prototype.close = function () {
-        this.removeAttribute('open');
     };
 });
 
@@ -146,7 +143,7 @@ it('removes a setup from its result and clears the remaining selections', async 
     expect(screen.getByRole('button', { name: 'Fancy Strategy Finder' })).toHaveAttribute('aria-pressed', 'true');
 });
 
-it('loads fresh cloud rankings without requesting a proposal on load or refresh', async () => {
+it('loads older cloud rankings without broker verification on load or refresh', async () => {
     (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
     render(
         <FancyTradingDialogContext.Provider
@@ -166,9 +163,7 @@ it('loads fresh cloud rankings without requesting a proposal on load or refresh'
     fireEvent.click(screen.getByRole('button', { name: 'Refresh rankings' }));
     await waitFor(() => expect(fetchStrategyFinder).toHaveBeenCalledTimes(initialRequests + 1));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh rankings' })).toBeEnabled());
-    expect(mockSend).toHaveBeenCalledWith(expect.objectContaining({ ticks_history: '1HZ100V' }));
-    expect(mockSend.mock.calls.some(([payload]) => payload.proposal)).toBe(false);
-    mockSend.mockClear();
+    expect(mockSend).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: 'Review automatic' }));
     expect(await screen.findByRole('region', { name: 'Review automatic run' })).toBeInTheDocument();
@@ -177,22 +172,6 @@ it('loads fresh cloud rankings without requesting a proposal on load or refresh'
     expect(screen.getByRole('button', { name: 'Confirm and start run' })).toBeDisabled();
     expect(props.onBuy).not.toHaveBeenCalled();
     expect(props.onStart).not.toHaveBeenCalled();
-});
-
-it('updates rankings with one history request when Refresh rankings is pressed', async () => {
-    (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
-    render(
-        <FancyTradingDialogContext.Provider value={{ open: true, setOpen: jest.fn() }}>
-            <TickInsights {...props} />
-        </FancyTradingDialogContext.Provider>
-    );
-    expect(await screen.findByRole('cell', { name: '60%' })).toBeInTheDocument();
-    expect(mockSend).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh rankings' }));
-    expect(await screen.findByRole('cell', { name: '0%' })).toBeInTheDocument();
-    expect(mockSend).toHaveBeenCalledTimes(1);
-    expect(mockSend.mock.calls[0][0]).toMatchObject({ ticks_history: '1HZ100V', count: 400 });
-    expect(mockSend.mock.calls[0][0]).not.toHaveProperty('subscribe');
 });
 
 it('loads the saved automatic settings for the matching account and currency', async () => {
@@ -257,43 +236,23 @@ it('waits for the next cloud snapshot without starting a local scan', async () =
     expect(mockSend).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Refresh rankings' }));
     expect(await screen.findByRole('rowheader', { name: /Fall/ })).toBeInTheDocument();
-    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend).not.toHaveBeenCalled();
 });
 
-it('starts the three-minute window on refresh and does not fetch again when it expires', async () => {
-    const clock = jest.spyOn(Date, 'now');
-    const start = Date.now();
+it('refreshes the cloud snapshot when a mobile browser restores the page', async () => {
     (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
-    const panel = (open: boolean) => (
-        <FancyTradingDialogContext.Provider value={{ open, setOpen: jest.fn() }}>
+    render(
+        <FancyTradingDialogContext.Provider
+            value={{ open: true, setOpen: jest.fn() }}
+        >
             <TickInsights {...props} />
         </FancyTradingDialogContext.Provider>
     );
-    try {
-        const { rerender } = render(panel(true));
-        expect(await screen.findByRole('cell', { name: '60%' })).toBeInTheDocument();
-        clock.mockReturnValue(start + 60000);
-        fireEvent.click(screen.getByRole('button', { name: 'Refresh rankings' }));
-        clock.mockReturnValue(start + 65000);
-        expect(await screen.findByRole('cell', { name: '0%' })).toBeInTheDocument();
-        clock.mockReturnValue(start + 181000);
-        rerender(panel(false));
-        rerender(panel(true));
-        expect(screen.getByRole('cell', { name: '0%' })).toBeInTheDocument();
-        expect(fetchStrategyFinder).toHaveBeenCalledTimes(2);
-        clock.mockReturnValue(start + 240000);
-        rerender(panel(false));
-        rerender(panel(true));
-        expect(screen.getByText(/Rankings expired/)).toBeInTheDocument();
-        expect(screen.queryByRole('cell', { name: '0%' })).not.toBeInTheDocument();
-        expect(fetchStrategyFinder).toHaveBeenCalledTimes(2);
-        expect(mockSend).toHaveBeenCalledTimes(1);
-        fireEvent.click(screen.getByRole('button', { name: 'Refresh rankings' }));
-        expect(await screen.findByRole('cell', { name: '0%' })).toBeInTheDocument();
-        expect(fetchStrategyFinder).toHaveBeenCalledTimes(3);
-    } finally {
-        clock.mockRestore();
-    }
+    expect(await screen.findByRole('rowheader', { name: /Fall/ })).toBeInTheDocument();
+    fireEvent(window, new Event('pageshow'));
+    expect(screen.getByRole('rowheader', { name: /Fall/ })).toBeInTheDocument();
+    await waitFor(() => expect(fetchStrategyFinder).toHaveBeenCalledTimes(2));
+    expect(mockSend).not.toHaveBeenCalled();
 });
 
 it('shows qualifying ranked rows beyond the first seven without requesting proposals', async () => {
@@ -306,7 +265,7 @@ it('shows qualifying ranked rows beyond the first seven without requesting propo
             { candidate: 'CALL', symbol: 'AT_THRESHOLD', historical: { hits: 90, count: 100 } },
             { candidate: 'PUT', symbol: 'ABOVE_THRESHOLD', historical: { hits: 99, count: 100 } },
             { candidate: 'PUT', symbol: '1HZ100V', historical: { hits: 6, count: 10 } },
-        ].map(row => ({ ...row, sampleAt: Date.now() })),
+        ],
     });
     render(
         <FancyTradingDialogContext.Provider

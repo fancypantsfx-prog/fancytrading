@@ -646,8 +646,8 @@ it('submits all three ranked purchases before confirmation and tracks a partiall
         purchases.get('R_25').reject(new Error('Connection interrupted'));
         purchases.get('R_50').resolve({ buy: { contract_id: 1 } });
         await panel.findByText(/Deriv did not confirm the purchase/);
-        expect(mockSend).toHaveBeenCalledWith({ proposal_open_contract: 1, contract_id: 1 });
-        expect(mockSend).toHaveBeenCalledWith({ proposal_open_contract: 1, contract_id: 3 });
+        expect(mockSend).toHaveBeenCalledWith(expect.objectContaining({ proposal_open_contract: 1, contract_id: 1 }));
+        expect(mockSend).toHaveBeenCalledWith(expect.objectContaining({ proposal_open_contract: 1, contract_id: 3 }));
         const key = Object.keys(localStorage).find(key => key.startsWith('fancy-ranked-purchase:'));
         expect(JSON.parse(localStorage.getItem(key))).toEqual(['pending']);
     } finally {

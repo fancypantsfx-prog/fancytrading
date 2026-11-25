@@ -31,7 +31,8 @@ export async function selectRankedTrade(
     signal: AbortSignal,
     skipped?: ReadonlySet<string>,
     onCompared?: (quotes: RankedQuote[]) => void,
-    fallbackSymbol?: string
+    fallbackSymbol?: string,
+    repeat: readonly TInsightTrade[] = []
 ) {
     const shortlists = await Promise.all(
         durations.flatMap(ticks =>
@@ -53,7 +54,7 @@ export async function selectRankedTrade(
         )
     );
     const setups = new Map<string, { symbol: string; ticks: number; contracts: string[] }>();
-    for (const { symbol, ticks, candidate } of shortlists.flat()) {
+    for (const { symbol, ticks, candidate } of [...repeat, ...shortlists.flat()]) {
         const key = JSON.stringify([symbol, ticks]);
         const existing = setups.get(key);
         if (existing) existing.contracts.push(candidate);
