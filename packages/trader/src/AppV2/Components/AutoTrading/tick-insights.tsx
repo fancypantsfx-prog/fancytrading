@@ -20,7 +20,7 @@ import RankedRunner from './ranked-runner';
 import MenuHelp from './menu-help';
 import InsightsCompare, { candidateLabel } from './insights-compare';
 import type { TCompareSetup } from './insights-compare';
-import { FINDER_SAMPLE_MAX_AGE, finderLiveSample, useFinderTicks } from './use-finder-ticks';
+import { fetchFinderWindows, FINDER_SAMPLE_MAX_AGE, finderLiveSample } from './finder-ticks';
 import './tick-insights.scss';
 
 const percent = (value: number) => value.toLocaleString(undefined, { style: 'percent', maximumFractionDigits: 1 });
@@ -125,31 +125,13 @@ const InsightsPanel = ({
     const [snapshot, setReport] = React.useState<TFinderReport>();
     const [loadingScan, setLoadingScan] = React.useState(false);
     const [refreshVersion, refreshRankings] = React.useReducer(version => version + 1, 0);
+    const lastScan = React.useRef<{ settings: string; refreshVersion: number; time: number }>();
     const [error, setError] = React.useState('');
     const [scanError, setScanError] = React.useState('');
     const [busy, setBusy] = React.useState(false);
     const [view, setView] = React.useState<'finder' | 'compare' | 'trade'>('finder');
     const [markets, setMarkets] = React.useState<{ symbol: string; label: string }[]>([]);
     const request = React.useRef<AbortController>();
-    const [pageVisible, setPageVisible] = React.useState(() => !document.hidden);
-
-    React.useEffect(() => {
-        const resume = () => {
-            setPageVisible(!document.hidden);
-            if (document.hidden) return;
-            refreshRankings();
-        };
-        document.addEventListener('visibilitychange', resume);
-        window.addEventListener('pageshow', resume);
-        window.addEventListener('online', resume);
-        ws.setOnReconnect?.(resume);
-        return () => {
-            document.removeEventListener('visibilitychange', resume);
-            window.removeEventListener('pageshow', resume);
-            window.removeEventListener('online', resume);
-            ws.removeOnReconnect?.(resume);
-        };
-    }, [ws.setOnReconnect, ws.removeOnReconnect]);
 
     React.useEffect(() => {
         if (!open || view !== 'compare' || markets.length || typeof access === 'string' || access.access === 'locked') return;
@@ -183,6 +165,7 @@ const InsightsPanel = ({
                 request.current?.abort();
                 setBusy(false);
                 setReport(undefined);
+                lastScan.current = undefined;
                 setDraft(undefined);
                 setAccess('checking');
                 setCheck(value => value + 1);
@@ -209,93 +192,76 @@ const InsightsPanel = ({
     const hasScanAccess = typeof access !== 'string' && access.access !== 'locked';
 
     const report = snapshot?.settings === scanSettings ? snapshot : undefined;
-    const scanPaused = !!draft || busy;
-    const finderVisible = open && view === 'finder' && pageVisible && hasScanAccess;
-    const finderMarkets = finderVisible && report
-        ? [...new Set(report.rows.map(row => row.symbol))].sort().join(',')
-        : '';
-    const liveWindows = useFinderTicks(ws.subscribeTicksHistory, finderMarkets, refreshVersion);
-    const [, checkSampleAge] = React.useReducer(version => version + 1, 0);
-    React.useEffect(() => {
-        if (!finderVisible) return;
-        const timer = window.setInterval(checkSampleAge, 1000);
-        return () => window.clearInterval(timer);
-    }, [finderVisible]);
-
-    const freshAfter = Date.now() - FINDER_SAMPLE_MAX_AGE;
-    const finderRows = report?.rows
-        .map(row => {
-            const sample = liveWindows.get(row.symbol);
-            if (!sample || sample.sampleAt < row.sampleAt) return row;
-            const historical = finderLiveSample(
-                { ...sample, precision: sample.precision ?? report.precisionBySymbol?.[row.symbol] },
-                report.ticks,
-                row.candidate
-            );
-            return historical ? { ...row, historical, sampleAt: sample.sampleAt } : row;
-        })
-        .filter(({ sampleAt, historical }) =>
-            sampleAt > freshAfter && historical.count > 0 &&
-            (finderGroup !== 'rise_fall' || historical.hits / historical.count < 0.9)
-        )
-        .sort((a, b) => b.historical.hits / b.historical.count - a.historical.hits / a.historical.count);
+    const finderRows = report?.rows;
+    const send = ws.send;
 
     React.useEffect(() => {
-        if (
-            view !== 'finder' ||
-            !pageVisible ||
-            scanPaused ||
-            !hasScanAccess ||
-            !/^([1-9]|1[0-9]|20)$/.test(ticks)
-        ) {
-            setLoadingScan(false);
-            return;
-        }
+        setLoadingScan(false);
+        if (view !== 'finder' || !hasScanAccess || !/^([1-9]|1[0-9]|20)$/.test(ticks)) return;
+        const previous = lastScan.current;
+        const manual = refreshVersion !== (previous?.refreshVersion ?? 0);
+        if (manual && !open) return;
+        const reopened = open && previous?.settings === scanSettings && Date.now() - previous.time >= FINDER_SAMPLE_MAX_AGE;
+        if (!manual && !reopened && previous?.settings === scanSettings) return;
+
         const controller = new AbortController();
-        let timer: number;
+        const { signal } = controller;
         const refresh = async () => {
             setLoadingScan(true);
+            setScanError('');
             try {
                 const fetchController = new AbortController();
                 const abortFetch = () => fetchController.abort();
-                controller.signal.addEventListener('abort', abortFetch, { once: true });
+                signal.addEventListener('abort', abortFetch, { once: true });
                 const timeout = window.setTimeout(abortFetch, 6000);
                 const next = await fetchStrategyFinder<TFinderReport>(
                     new URLSearchParams(scanSettings),
                     fetchController.signal
                 ).finally(() => {
                     window.clearTimeout(timeout);
-                    controller.signal.removeEventListener('abort', abortFetch);
+                    signal.removeEventListener('abort', abortFetch);
                 });
-                if (controller.signal.aborted) return;
+                if (signal.aborted) return;
                 if (next === null) {
                     setReport(undefined);
                     setAccess({ access: 'locked' });
                     return;
                 }
-
-                setReport({
-                    ...next,
-                    rows: next.rows.filter(row => row.candidate.split(':')[0] !== 'DIGITDIFF'),
-                    settings: scanSettings,
-                });
-                setScanError('');
+                let rows = next.rows.filter(row => row.candidate.split(':')[0] !== 'DIGITDIFF');
+                if ((manual || reopened) && rows.length) {
+                    const symbols = [...new Set(rows.map(row => row.symbol))];
+                    const windows = await fetchFinderWindows(send, symbols, signal);
+                    if (signal.aborted) return;
+                    if (!windows.size) throw new Error('No live tick history');
+                    rows = rows.map(row => {
+                        const sample = windows.get(row.symbol);
+                        if (!sample || sample.sampleAt < row.sampleAt) return row;
+                        const historical = finderLiveSample(
+                            { ...sample, precision: sample.precision ?? next.precisionBySymbol?.[row.symbol] },
+                            next.ticks,
+                            row.candidate
+                        );
+                        return historical ? { ...row, historical, sampleAt: sample.sampleAt } : row;
+                    });
+                }
+                const freshAfter = Date.now() - FINDER_SAMPLE_MAX_AGE;
+                rows = rows.filter(({ sampleAt, historical }) =>
+                    sampleAt > freshAfter && historical.count > 0 &&
+                    (finderGroup !== 'rise_fall' || historical.hits / historical.count < 0.9)
+                ).sort((a, b) => b.historical.hits / b.historical.count - a.historical.hits / a.historical.count);
+                setReport({ ...next, rows, settings: scanSettings });
             } catch {
-                if (controller.signal.aborted) return;
-                setScanError(localize('Rankings are temporarily unavailable. Fancy Strategy Finder will retry automatically.'));
+                if (!signal.aborted) setScanError(localize('Rankings are temporarily unavailable. Select Refresh rankings to try again.'));
             } finally {
-                if (!controller.signal.aborted) {
+                if (!signal.aborted) {
+                    lastScan.current = { settings: scanSettings, refreshVersion, time: Date.now() };
                     setLoadingScan(false);
-                    timer = window.setTimeout(refresh, 15000);
                 }
             }
         };
-        void refresh();
-        return () => {
-            controller.abort();
-            window.clearTimeout(timer);
-        };
-    }, [view, scanPaused, hasScanAccess, ticks, scanSettings, refreshVersion, pageVisible]);
+        refresh();
+        return () => controller.abort();
+    }, [open, view, hasScanAccess, ticks, finderGroup, scanSettings, refreshVersion, send]);
 
     const is_reviewing = !!draft;
     React.useEffect(() => {
@@ -421,7 +387,6 @@ const InsightsPanel = ({
             if (!controller.signal.aborted) {
                 setResult({ id, automatic: !!draft.run });
                 setDraft(undefined);
-                setReport(undefined);
                 try {
                     await onShowTrade?.(draft.trade);
                 } catch {
@@ -455,6 +420,7 @@ const InsightsPanel = ({
                     type='button'
                     onClick={() => {
                         setAccess('checking');
+                        lastScan.current = undefined;
                         setCheck(value => value + 1);
                     }}
                 >
@@ -723,7 +689,6 @@ const InsightsPanel = ({
                                 value={finderGroup}
                                 onChange={e => {
                                     setFinderGroup(e.target.value as TFinderContract);
-                                    setReport(undefined);
                                 }}
                                 disabled={busy}
                             >
@@ -747,7 +712,6 @@ const InsightsPanel = ({
                                     disabled={busy}
                                     onChange={e => {
                                         setFinderBarrier(e.target.value);
-                                        setReport(undefined);
                                     }}
                                 >
                                     {Array.from({ length: 10 }, (_, value) => (
@@ -896,7 +860,6 @@ const InsightsPanel = ({
                     onStake={value => {
                         setStake(value);
                         setPresetSaved(false);
-                        setReport(undefined);
                     }}
                     setups={starred}
                     onSetups={setStarred}

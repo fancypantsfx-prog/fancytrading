@@ -37,7 +37,7 @@ import {
 } from './automation';
 import TickInsights from './tick-insights';
 import { FancyTradingDialogContext } from './fancy-trading-dialog-context';
-import { getInsightContract, InsightQuoteChanged, waitForInsightRequest } from './tick-insights-data';
+import { getInsightContract, InsightQuoteChanged, sendInsightRequest, waitForInsightRequest } from './tick-insights-data';
 import type { TInsightRun, TInsightStrategyOption, TInsightTrade } from './tick-insights-data';
 import './auto-trading.scss';
 
@@ -758,18 +758,22 @@ const AutoTrading = observer(
                 ensureInsightAccess(access);
                 checkAccount();
                 // Only streaming proposal IDs can be bought with the current Deriv API.
-                const { proposal, error } = await waitForInsightRequest(
-                    new Promise<{
-                        proposal?: { id?: string; ask_price?: number | string; payout?: number | string };
-                        error?: { message?: string };
-                    }>(resolve => {
-                        subscription = ws.subscribeProposal({
-                            ...template, subscribe: 1,
-                            ...(beforeRuleBuy && { passthrough: { fancytrading_insights: true } }),
-                        }, resolve);
-                    }),
-                    localize('The quote request timed out. Refresh the comparison and try again.')
-                );
+                const requestQuote = (payload: Record<string, unknown>) => {
+                    checkAccount();
+                    ensureInsightAccess(access);
+                    return waitForInsightRequest(
+                        new Promise<{
+                            proposal?: { id?: string; ask_price?: number | string; payout?: number | string };
+                            error?: { message?: string };
+                        }>(resolve => {
+                            subscription = ws.subscribeProposal({ ...payload, subscribe: 1 }, resolve);
+                        }),
+                        localize('The quote request timed out. Refresh the comparison and try again.')
+                    );
+                };
+                const { proposal, error } = await (beforeRuleBuy
+                    ? sendInsightRequest(requestQuote, template, signal)
+                    : requestQuote(template));
                 if (!proposal?.id || error)
                     throw new Error(error?.message || localize('No purchasable quote is available.'));
                 checkAccount();

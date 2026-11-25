@@ -173,6 +173,8 @@ export const noteInsightRateLimit = () => {
     cooldownUntil = performance.now() + RATE_LIMIT_COOLDOWN_MS;
 };
 
+export const getInsightCooldown = () => Math.max(0, cooldownUntil - performance.now());
+
 export const waitForInsightRequestSlot = (signal: AbortSignal) => {
     const turn = requestQueue.then(async () => {
         if (signal.aborted) throw new DOMException('Comparison cancelled', 'AbortError');
@@ -187,8 +189,8 @@ export const waitForInsightRequestSlot = (signal: AbortSignal) => {
     return turn;
 };
 
-const sendInsightRequest = async (
-    send: (payload: Record<string, unknown>) => Promise<TMarketData>,
+export const sendInsightRequest = async <T extends TMarketData>(
+    send: (payload: Record<string, unknown>) => Promise<T>,
     payload: Record<string, unknown>,
     signal: AbortSignal
 ) => {

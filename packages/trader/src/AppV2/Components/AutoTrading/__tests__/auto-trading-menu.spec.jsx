@@ -603,10 +603,11 @@ it('submits all three ranked purchases before confirmation and tracks a partiall
         expectedPayout: 12.6,
         trade: { family: 'digital', symbol, candidate: 'CALL', currency: 'USD', stake: 10, ticks: 3, payout: 18 },
     }));
-    const select = jest.spyOn(rankedTrade, 'selectRankedTrade').mockImplementationOnce(
-        async (_send, _currency, _stake, _signal, _skipped, onCompared) => {
-            onCompared(quotes);
-            return quotes[0];
+    const select = jest.spyOn(rankedTrade, 'selectRankedTrade').mockImplementation(
+        async (_send, _currency, stake, _signal, _skipped, onCompared) => {
+            const sizedQuotes = quotes.map(quote => ({ ...quote, trade: { ...quote.trade, stake } }));
+            onCompared(sizedQuotes);
+            return sizedQuotes[0];
         }
     );
     const locks = Object.getOwnPropertyDescriptor(navigator, 'locks');
@@ -640,6 +641,7 @@ it('submits all three ranked purchases before confirmation and tracks a partiall
         fireEvent.change(panel.getByLabelText(/Stop loss/), { target: { value: '30' } });
         fireEvent.click(panel.getByRole('button', { name: 'Start trading' }));
         await waitFor(() => expect([...purchases.keys()].sort()).toEqual([...markets].sort()));
+        expect(select.mock.calls.map(([, , stake]) => stake)).toEqual([10, 9.99]);
         purchases.get('R_75').resolve({ buy: { contract_id: 3 } });
         purchases.get('R_25').reject(new Error('Connection interrupted'));
         purchases.get('R_50').resolve({ buy: { contract_id: 1 } });

@@ -12,14 +12,11 @@ const contractsByGroup = {
     rise_fall: ['CALL', 'PUT'],
     even_odd: ['DIGITEVEN', 'DIGITODD'],
     over_under: ['DIGITOVER:5', 'DIGITUNDER:5'],
-    match_diff: ['DIGITMATCH:5'],
 };
 export type RankedContractGroup = keyof typeof contractsByGroup;
-const differs = 'DIGITDIFF:5';
 
 export const rankedContractGroup = (candidate: string) => {
     const type = candidate.split(':')[0];
-    if (type === 'DIGITDIFF') return 'match_diff';
     return (Object.keys(contractsByGroup) as RankedContractGroup[]).find(group =>
         contractsByGroup[group].some(contract => contract.split(':')[0] === type)
     );
@@ -34,8 +31,7 @@ export async function selectRankedTrade(
     signal: AbortSignal,
     skipped?: ReadonlySet<string>,
     onCompared?: (quotes: RankedQuote[]) => void,
-    fallbackSymbol?: string,
-    includeDiffers = false
+    fallbackSymbol?: string
 ) {
     const shortlists = await Promise.all(
         durations.flatMap(ticks =>
@@ -46,7 +42,7 @@ export async function selectRankedTrade(
                 return scan.rows
                     .filter(
                         row =>
-                            (includeDiffers || row.candidate.split(':')[0] !== 'DIGITDIFF') &&
+                            rankedContractGroup(row.candidate) === contract &&
                             row.historical.count > 0 &&
                             !skipped?.has(rankedTradeKey({ ...row, ticks }))
                     )
@@ -114,7 +110,6 @@ export async function selectRankedTrade(
     await compareSetups(setups.values());
     if (fallbackSymbol && !quotes.some(quote => fresh(quote.time))) {
         const contracts = Object.values(contractsByGroup).flat();
-        if (includeDiffers) contracts.push(differs);
         await compareSetups(durations.map(ticks => ({ symbol: fallbackSymbol, ticks, contracts })));
     }
     const ranked = quotes

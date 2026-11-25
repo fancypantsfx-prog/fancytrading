@@ -9,8 +9,6 @@ jest.setTimeout(15000);
 
 let mockRateLimitProposal = false;
 let mockUnavailableSymbol = '';
-const mockSubscribeHistory = jest.fn();
-let mockLiveFinder = false;
 const mockSend = jest.fn(async (request: Record<string, unknown>) => {
     if (request.active_symbols)
         return { active_symbols: [{ underlying_symbol: 'R_50' }, { underlying_symbol: '1HZ100V' }] };
@@ -24,7 +22,7 @@ const mockSend = jest.fn(async (request: Record<string, unknown>) => {
             pip_size: 2,
             history: {
                 prices: Array.from({ length: count }, (_, i) => 100 + i),
-                times: Array.from({ length: count }, (_, i) => 1800000000 + i),
+                times: Array.from({ length: count }, (_, i) => Math.floor(Date.now() / 1000) - count + 1 + i),
             },
         };
     }
@@ -77,7 +75,7 @@ it('stars a finder result and applies multiple durations to both comparison setu
     expect(props.onBuy).not.toHaveBeenCalled();
 });
 jest.mock('@deriv/shared', () => ({
-    useWS: () => ({ send: mockSend, subscribeTicksHistory: mockLiveFinder ? mockSubscribeHistory : undefined }),
+    useWS: () => ({ send: mockSend }),
     getPlatformLogo: () => 'brand/platform-logo.svg',
     getDecimalPlaces: () => 2,
 }));
@@ -105,17 +103,19 @@ beforeEach(() => {
     jest.clearAllMocks();
     mockRateLimitProposal = false;
     mockUnavailableSymbol = '';
-    mockLiveFinder = false;
     (fetchStrategyFinder as jest.Mock).mockResolvedValue({
         access: { access: 'free' },
         ticks: 5,
         updatedAt: Date.now(),
         marketsScanned: 1,
-        rows: [{ sampleAt: Date.now(), candidate: 'PUT', symbol: '1HZ100V', historical: { hits: 6, count: 10 } }],
+        rows: [{ sampleAt: Math.floor(Date.now() / 1000) * 1000, candidate: 'PUT', symbol: '1HZ100V', historical: { hits: 6, count: 10 } }],
     });
     localStorage.clear();
     HTMLDialogElement.prototype.showModal = function () {
         this.setAttribute('open', '');
+    };
+    HTMLDialogElement.prototype.close = function () {
+        this.removeAttribute('open');
     };
 });
 
@@ -166,7 +166,9 @@ it('loads fresh cloud rankings without requesting a proposal on load or refresh'
     fireEvent.click(screen.getByRole('button', { name: 'Refresh rankings' }));
     await waitFor(() => expect(fetchStrategyFinder).toHaveBeenCalledTimes(initialRequests + 1));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh rankings' })).toBeEnabled());
-    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledWith(expect.objectContaining({ ticks_history: '1HZ100V' }));
+    expect(mockSend.mock.calls.some(([payload]) => payload.proposal)).toBe(false);
+    mockSend.mockClear();
 
     fireEvent.click(screen.getByRole('button', { name: 'Review automatic' }));
     expect(await screen.findByRole('region', { name: 'Review automatic run' })).toBeInTheDocument();
@@ -177,40 +179,20 @@ it('loads fresh cloud rankings without requesting a proposal on load or refresh'
     expect(props.onStart).not.toHaveBeenCalled();
 });
 
-it('replaces stale rankings with live history, updates on ticks, and restarts the feed on refresh', async () => {
-    mockLiveFinder = true;
-    const unsubscribe = jest.fn();
-    mockSubscribeHistory.mockReturnValue({ unsubscribe });
+it('updates rankings with one history request when Refresh rankings is pressed', async () => {
     (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
-    (fetchStrategyFinder as jest.Mock).mockResolvedValue({
-        ticks: 1,
-        rows: [{ sampleAt: Date.now() - 180001, candidate: 'PUT', symbol: '1HZ100V', historical: { hits: 6, count: 10 } }],
-    });
-    const { unmount } = render(
+    render(
         <FancyTradingDialogContext.Provider value={{ open: true, setOpen: jest.fn() }}>
-            <TickInsights {...props} initial_ticks={1} />
+            <TickInsights {...props} />
         </FancyTradingDialogContext.Provider>
     );
-    expect(await screen.findByText(/No ranked contracts are available/)).toBeInTheDocument();
-    await waitFor(() => expect(mockSubscribeHistory).toHaveBeenCalledTimes(1));
-    expect(mockSubscribeHistory).toHaveBeenCalledWith(
-        expect.objectContaining({ ticks_history: '1HZ100V', subscribe: 1, count: 400 }),
-        expect.any(Function)
-    );
-    const receive = mockSubscribeHistory.mock.calls[0][1];
-    const epoch = Math.floor(Date.now() / 1000);
-    receive({ history: { prices: Array.from({ length: 400 }, (_, i) => 100 + i), times: Array.from({ length: 400 }, (_, i) => epoch - 399 + i) } });
-    expect(await screen.findByRole('cell', { name: '0%' })).toBeInTheDocument();
-    receive({ tick: { epoch: epoch + 1, quote: 100 } });
-    expect(await screen.findByRole('cell', { name: '0.3%' })).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh rankings' }));
-    expect(unsubscribe).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(mockSubscribeHistory).toHaveBeenCalledTimes(2));
-    expect(fetchStrategyFinder).toHaveBeenCalledTimes(2);
-    unmount();
-    expect(unsubscribe).toHaveBeenCalledTimes(2);
+    expect(await screen.findByRole('cell', { name: '60%' })).toBeInTheDocument();
     expect(mockSend).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh rankings' }));
+    expect(await screen.findByRole('cell', { name: '0%' })).toBeInTheDocument();
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0][0]).toMatchObject({ ticks_history: '1HZ100V', count: 400 });
+    expect(mockSend.mock.calls[0][0]).not.toHaveProperty('subscribe');
 });
 
 it('loads the saved automatic settings for the matching account and currency', async () => {
@@ -275,23 +257,37 @@ it('waits for the next cloud snapshot without starting a local scan', async () =
     expect(mockSend).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Refresh rankings' }));
     expect(await screen.findByRole('rowheader', { name: /Fall/ })).toBeInTheDocument();
-    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledTimes(1);
 });
 
-it('refreshes the cloud snapshot when a mobile browser restores the page', async () => {
+it('keeps rankings while open and refreshes only when reopening an aged snapshot', async () => {
+    const clock = jest.spyOn(Date, 'now');
+    const start = Date.now();
     (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
-    render(
-        <FancyTradingDialogContext.Provider
-            value={{ open: true, setOpen: jest.fn() }}
-        >
+    const panel = (open: boolean) => (
+        <FancyTradingDialogContext.Provider value={{ open, setOpen: jest.fn() }}>
             <TickInsights {...props} />
         </FancyTradingDialogContext.Provider>
     );
-    expect(await screen.findByRole('rowheader', { name: /Fall/ })).toBeInTheDocument();
-    fireEvent(window, new Event('pageshow'));
-    expect(screen.getByRole('rowheader', { name: /Fall/ })).toBeInTheDocument();
-    await waitFor(() => expect(fetchStrategyFinder).toHaveBeenCalledTimes(2));
-    expect(mockSend).not.toHaveBeenCalled();
+    try {
+        const { rerender } = render(panel(true));
+        expect(await screen.findByRole('cell', { name: '60%' })).toBeInTheDocument();
+        clock.mockReturnValue(start + 60000);
+        rerender(panel(false));
+        rerender(panel(true));
+        expect(fetchStrategyFinder).toHaveBeenCalledTimes(1);
+        clock.mockReturnValue(start + 181000);
+        fireEvent(window, new Event('pageshow'));
+        expect(screen.getByRole('cell', { name: '60%' })).toBeInTheDocument();
+        expect(fetchStrategyFinder).toHaveBeenCalledTimes(1);
+        rerender(panel(false));
+        rerender(panel(true));
+        expect(await screen.findByRole('cell', { name: '0%' })).toBeInTheDocument();
+        expect(fetchStrategyFinder).toHaveBeenCalledTimes(2);
+        expect(mockSend).toHaveBeenCalledTimes(1);
+    } finally {
+        clock.mockRestore();
+    }
 });
 
 it('shows qualifying ranked rows beyond the first seven without requesting proposals', async () => {

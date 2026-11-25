@@ -2,6 +2,7 @@ import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import RankedRunner from '../ranked-runner';
 import { selectRankedTrade } from '../ranked-trade';
+import { InsightRateLimitError } from '../tick-insights-data';
 
 jest.mock('../ranked-trade', () => ({
     ...jest.requireActual('../ranked-trade'),
@@ -25,30 +26,37 @@ beforeEach(() => {
     });
 });
 
-it('settles each purchase, doubles after a loss, and stops before risking more than the session budget', async () => {
+it.each([
+    ['fixed', [10, 10, 10]],
+    ['martingale', [10, 20]],
+])('settles each purchase and adjusts the stake using %s', async (method, expectedStakes) => {
     (selectRankedTrade as jest.Mock).mockImplementation(async (_, currency, stake) => ({
         rate: 0.7,
+        expectedPayout: stake * 1.4,
         time: Date.now(),
         trade: { symbol: 'R_50', candidate: 'CALL', currency, stake, ticks: 1, payout: stake * 2 },
     }));
+    const stakes: number[] = [];
     mockSend.mockImplementation(async ({ contract_id }) => ({
-        proposal_open_contract: { contract_id, is_sold: 1, profit: contract_id === 1 ? -10 : -20 },
+        proposal_open_contract: { contract_id, is_sold: 1, profit: -stakes[contract_id - 1] },
     }));
-    let count = 0;
-    const buy = jest.fn(async (_trade, _signal, guard) => {
+    const buy = jest.fn(async (trade, _signal, guard) => {
         guard();
-        return String(++count);
+        stakes.push(trade.stake);
+        return String(stakes.length);
     });
     render(<RankedRunner currency='USD' stake={10} account='demo-test' block='' buy={buy} />);
+    expect(screen.getByLabelText('Strategy')).toHaveValue('fixed');
+    fireEvent.change(screen.getByLabelText('Strategy'), { target: { value: method } });
     fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '35' } });
     fireEvent.click(screen.getByText('Start trading'));
     await screen.findByText('Run stopped. Session P/L -30 USD');
-    expect(buy.mock.calls.map(([trade]) => trade.stake)).toEqual([10, 20]);
+    expect(stakes).toEqual(expectedStakes);
     expect(localStorage.getItem('fancy-ranked-purchase:demo-test')).toBeNull();
 });
 
 it.each([
-    ['automatic', 30, 10],
+    ['automatic', 30, 9.99],
     ['automatic', 29, 9.66],
     ['semi-automatic', 29, 9.66],
 ] as const)('%s buys within the stop loss of %i before checking settlement', async (mode, loss, expectedStake) => {
@@ -111,7 +119,7 @@ it('skips a shortlist and buys only the selected contract from the next top thre
         return '1';
     });
     render(<RankedRunner currency='USD' stake={10} account='demo-review' block='' buy={buy} />);
-    fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '30' } });
+    fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '31' } });
     fireEvent.change(screen.getByLabelText(/Take profit/), { target: { value: '8' } });
     fireEvent.change(screen.getByLabelText('Execution mode'), { target: { value: 'semi-automatic' } });
     fireEvent.click(screen.getByText('Start trading'));
@@ -131,12 +139,12 @@ it('skips a shortlist and buys only the selected contract from the next top thre
     expect(buy.mock.calls[0][0]).toMatchObject({ symbol: 'R_300' });
 });
 
-const mockRankings = (candidates: string[]) => {
+const mockRankings = (candidates: string[], expectedReturns = candidates.map(() => 1.2)) => {
     (selectRankedTrade as jest.Mock).mockImplementation(
         async (_send, currency, stake, _signal, _skipped, onCompared) => {
             const quotes = candidates.map((candidate, index) => ({
                 rate: 0.6,
-                expectedPayout: stake * 1.2,
+                expectedPayout: stake * expectedReturns[index],
                 time: Date.now(),
                 trade: { symbol: `Market ${index + 1}`, candidate, currency, stake, ticks: 1, payout: stake * 2 },
             }));
@@ -147,12 +155,12 @@ const mockRankings = (candidates: string[]) => {
 };
 
 it.each([
-    ['all', 45, 5, ['Market 1', 'Market 2', 'Market 3']],
-    ['topTwo', 35, 7.5, ['Market 1', 'Market 2']],
-    ['third', 25, 15, ['Market 3']],
+    ['all', 45, 4.99, -44.97, ['Market 1', 'Market 2', 'Market 3']],
+    ['topTwo', 35, 7.49, -34.98, ['Market 1', 'Market 2']],
+    ['third', 25, 10, -20, ['Market 3']],
 ] as const)(
     'preserves the %s selection after settlement and adjusts only the stake',
-    async (ranks, loss, nextStake, markets) => {
+    async (ranks, loss, nextStake, net, markets) => {
         mockRankings(['CALL', 'DIGITEVEN', 'DIGITOVER:5']);
         const purchased: [string, number][] = [];
         mockSend.mockImplementation(async ({ contract_id }) => ({
@@ -167,7 +175,7 @@ it.each([
         fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: String(loss) } });
         fireEvent.change(screen.getByLabelText('Rank selection'), { target: { value: ranks } });
         fireEvent.click(screen.getByText('Start trading'));
-        await screen.findByText(`Run stopped. Session P/L -${loss} USD`);
+        await screen.findByText(`Run stopped. Session P/L ${net} USD`);
         expect(purchased).toEqual([
             ...markets.map(market => [market, 10]),
             ...markets.map(market => [market, nextStake]),
@@ -178,12 +186,12 @@ it.each([
 it.each([
     ['first', '', '', ['Market 1']],
     ['second', '', '', ['Market 2']],
-    ['third', 'match_diff', '', ['Market 3']],
+    ['third', 'even_odd', '', ['Market 3']],
     ['topTwo', '', '', ['Market 1', 'Market 2']],
     ['topTwo', '', 'rise_fall', ['Market 2']],
-    ['all', 'over_under', 'rise_fall', ['Market 2']],
+    ['all', 'over_under', '', ['Market 2']],
 ])('enforces the %s rank selection with include %s and exclude %s', async (ranks, only, exclude, markets) => {
-    mockRankings(['CALL', 'DIGITOVER:5', 'DIGITDIFF:5']);
+    mockRankings(['CALL', 'DIGITOVER:5', 'DIGITEVEN']);
     mockSend.mockImplementation(async ({ contract_id }) => ({
         proposal_open_contract: { contract_id, is_sold: 1, profit: 10 },
     }));
@@ -193,12 +201,73 @@ it.each([
         return String(++id);
     });
     render(<RankedRunner currency='USD' stake={10} account='rank-filter' block='' buy={buy} />);
+    expect(screen.queryByRole('option', { name: 'Matches / Differs' })).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '30' } });
     fireEvent.change(screen.getByLabelText(/Take profit/), { target: { value: '10' } });
     fireEvent.change(screen.getByLabelText('Rank selection'), { target: { value: ranks } });
-    fireEvent.change(screen.getByLabelText('Trade only'), { target: { value: only } });
-    fireEvent.change(screen.getByLabelText('Do not trade'), { target: { value: exclude } });
+    if (only) {
+        fireEvent.change(screen.getByLabelText('Trade only'), { target: { value: only } });
+        expect(screen.queryByLabelText('Do not trade')).not.toBeInTheDocument();
+    }
+    if (exclude) {
+        fireEvent.change(screen.getByLabelText('Do not trade'), { target: { value: exclude } });
+        expect(screen.queryByLabelText('Trade only')).not.toBeInTheDocument();
+    }
     fireEvent.click(screen.getByText('Start trading'));
     await screen.findByText(`Run stopped. Session P/L ${markets.length * 10} USD`);
     expect(buy.mock.calls.map(([trade]) => trade.symbol)).toEqual(markets);
+});
+
+it('reduces the selected batch when the full batch has a negative estimated net payout', async () => {
+    mockRankings(['CALL', 'DIGITOVER:5', 'DIGITEVEN'], [1.2, 1.1, 0.5]);
+    mockSend.mockImplementation(async ({ contract_id }) => ({
+        proposal_open_contract: { contract_id, is_sold: 1, profit: 10 },
+    }));
+    let id = 0;
+    const buy = jest.fn(async (_trade, _signal, guard) => {
+        guard();
+        return String(++id);
+    });
+    render(<RankedRunner currency='USD' stake={10} account='positive-batch' block='' buy={buy} />);
+    fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '40' } });
+    fireEvent.change(screen.getByLabelText(/Take profit/), { target: { value: '10' } });
+    fireEvent.click(screen.getByText('Start trading'));
+    await screen.findByText('Run stopped. Session P/L 20 USD');
+    expect(buy.mock.calls.map(([trade]) => trade.symbol)).toEqual(['Market 1', 'Market 2']);
+});
+
+it('keeps the combined stake below the stop loss after a profitable round', async () => {
+    mockRankings(['CALL', 'DIGITOVER:5', 'DIGITEVEN']);
+    mockSend.mockImplementation(async ({ contract_id }) => ({
+        proposal_open_contract: { contract_id, is_sold: 1, profit: 2 },
+    }));
+    let id = 0;
+    const buy = jest.fn(async (_trade, _signal, guard) => {
+        guard();
+        return String(++id);
+    });
+    render(<RankedRunner currency='USD' stake={10} account='absolute-limit' block='' buy={buy} />);
+    fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '30' } });
+    fireEvent.change(screen.getByLabelText(/Take profit/), { target: { value: '10' } });
+    fireEvent.click(screen.getByText('Start trading'));
+    await screen.findByText('Run stopped. Session P/L 12 USD');
+    expect(buy.mock.calls.map(([trade]) => trade.stake)).toEqual(Array(6).fill(9.99));
+});
+
+it('pauses on a rate-limited purchase quote without creating an unresolved purchase', async () => {
+    jest.useFakeTimers();
+    try {
+        mockRankings(['CALL']);
+        const buy = jest.fn().mockRejectedValue(new InsightRateLimitError());
+        const { unmount } = render(<RankedRunner currency='USD' stake={10} account='quote-limit' block='' buy={buy} />);
+        fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '20' } });
+        fireEvent.click(screen.getByText('Start trading'));
+        await screen.findByText('Deriv is limiting quotes. Retrying when the limit clears.');
+        expect(buy).toHaveBeenCalledTimes(1);
+        expect(localStorage.getItem('fancy-ranked-purchase:quote-limit')).toBeNull();
+        unmount();
+        await jest.runOnlyPendingTimersAsync();
+    } finally {
+        jest.useRealTimers();
+    }
 });

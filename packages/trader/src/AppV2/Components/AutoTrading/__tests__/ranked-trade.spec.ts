@@ -61,6 +61,7 @@ it('checks live contracts on the selected market when Finder has no rows', async
     );
     expect(pick?.trade).toMatchObject({ symbol: 'R_100', candidate: 'DIGITEVEN', payout: 19 });
     const comparisons = (compareRecentTicks as jest.Mock).mock.calls;
+    expect(comparisons.at(-1)?.[1].candidates).not.toContain('DIGITMATCH:5');
     expect(comparisons.at(-1)?.[1].candidates).not.toContain('DIGITDIFF:5');
 });
 
@@ -77,10 +78,11 @@ it('loads all Finder shortlists concurrently and analyzes contracts on the same 
     compare.mockResolvedValue(null);
 
     const pending = selectRankedTrade(jest.fn(), 'USD', 10, new AbortController().signal);
-    expect(finder).toHaveBeenCalledTimes(8);
+    expect(finder).toHaveBeenCalledTimes(6);
+    expect(finder.mock.calls.map(([params]) => params.get('contract'))).not.toContain('match_diff');
 
     releaseScan({
-        rows: ['DIGITDIFF:5', 'CALL', 'PUT'].map(candidate => ({
+        rows: ['DIGITMATCH:5', 'DIGITDIFF:5', 'CALL', 'PUT'].map(candidate => ({
             symbol: 'R_100',
             candidate,
             historical: { hits: 5, count: 10 },
@@ -92,31 +94,5 @@ it('loads all Finder shortlists concurrently and analyzes contracts on the same 
     expect(compare.mock.calls.map(([, setup]) => [setup.ticks, setup.candidates])).toEqual([
         [1, ['CALL', 'PUT']],
         [3, ['CALL', 'PUT']],
-    ]);
-});
-
-it('includes Digit Differs in live comparisons when Matches / Differs is selected', async () => {
-    const compare = compareRecentTicks as jest.Mock;
-    compare.mockClear();
-    (fetchStrategyFinder as jest.Mock).mockImplementation(async params => ({
-        rows:
-            params.get('contract') === 'match_diff'
-                ? [
-                      {
-                          symbol: 'R_100',
-                          candidate: 'DIGITDIFF:5',
-                          historical: { hits: 8, count: 10 },
-                          sampleAt: Date.now(),
-                      },
-                  ]
-                : [],
-    }));
-    compare.mockResolvedValue(null);
-    await selectRankedTrade(jest.fn(), 'USD', 10, new AbortController().signal, undefined, undefined, 'R_50', true);
-    expect(compare.mock.calls.map(([, setup]) => [setup.symbol, setup.candidates.includes('DIGITDIFF:5')])).toEqual([
-        ['R_100', true],
-        ['R_100', true],
-        ['R_50', true],
-        ['R_50', true],
     ]);
 });

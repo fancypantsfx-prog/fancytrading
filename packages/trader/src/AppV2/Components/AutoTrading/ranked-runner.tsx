@@ -4,7 +4,12 @@ import { localize } from '@deriv-com/translations';
 import { candidateLabel } from './insights-compare';
 import type { RankedContractGroup, RankedQuote } from './ranked-trade';
 import { fresh, rankedContractGroup, rankedTradeKey, selectRankedTrade } from './ranked-trade';
-import { InsightQuoteChanged, InsightRateLimitError, waitForInsightRequest } from './tick-insights-data';
+import {
+    getInsightCooldown,
+    InsightQuoteChanged,
+    InsightRateLimitError,
+    waitForInsightRequest,
+} from './tick-insights-data';
 import type { TInsightTrade } from './tick-insights-data';
 
 type Props = {
@@ -19,7 +24,7 @@ const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 type ReviewDecision = RankedQuote | 'batch' | null;
 const rankSelections = { all: [0, 1, 2], topTwo: [0, 1], first: [0], second: [1], third: [2] };
 type RankSelection = keyof typeof rankSelections;
-const contractGroups: readonly RankedContractGroup[] = ['rise_fall', 'even_odd', 'over_under', 'match_diff'];
+const contractGroups: readonly RankedContractGroup[] = ['rise_fall', 'even_odd', 'over_under'];
 const contractGroupLabel = (group: RankedContractGroup) => {
     switch (group) {
         case 'rise_fall':
@@ -28,8 +33,6 @@ const contractGroupLabel = (group: RankedContractGroup) => {
             return localize('Even / Odd');
         case 'over_under':
             return localize('Over / Under');
-        case 'match_diff':
-            return localize('Matches / Differs');
     }
 };
 
@@ -37,7 +40,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
     const ws = useWS();
     const [loss, setLoss] = React.useState('');
     const [target, setTarget] = React.useState(String(3 * stake));
-    const [method, setMethod] = React.useState('martingale');
+    const [method, setMethod] = React.useState('fixed');
     const [mode, setMode] = React.useState('automatic');
     const [rankSelection, setRankSelection] = React.useState<RankSelection>('all');
     const [onlyGroup, setOnlyGroup] = React.useState<RankedContractGroup | ''>('');
@@ -76,10 +79,6 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
             setStatus('Enter a positive take profit and a stop loss covering at least the initial stake.');
             return;
         }
-        if (onlyGroup && onlyGroup === excludeGroup) {
-            setStatus(localize('Choose different contract types for Trade only and Do not trade.'));
-            return;
-        }
         const controller = new AbortController();
         const { signal } = controller;
         current.current = controller;
@@ -102,11 +101,18 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                     const rounded = round(value);
                     return rounded > value ? round(rounded - 10 ** -decimals) : rounded;
                 };
-                const stopLimit = floorStake(sl);
+                const budgetLimit = floorStake(sl);
+                const stopLimit = budgetLimit < sl ? budgetLimit : round(budgetLimit - 10 ** -decimals);
                 while (!signal.aborted && !stopping.current) {
                     if (latest.current.block) throw new Error(latest.current.block);
-                    const remaining = round(net + stopLimit);
-                    if (net >= tp || remaining < stake) break;
+                    const remaining = Math.min(stopLimit, round(net + stopLimit));
+                    if (net >= tp || remaining <= 0 || round(net + budgetLimit) < stake) break;
+                    const cooldown = getInsightCooldown();
+                    if (cooldown > 0) {
+                        setStatus(localize('Deriv is limiting quotes. Retrying when the limit clears.'));
+                        await delay(Math.min(cooldown, 10000));
+                        continue;
+                    }
                     amount = Math.min(amount, remaining);
                     setStatus('Comparing live contracts. Session P/L ' + net + ' ' + currency);
                     let pick: RankedQuote | undefined;
@@ -122,8 +128,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                                 topQuotes = quotes.slice(0, 3);
                                 setRankings(topQuotes);
                             },
-                            symbol,
-                            onlyGroup === 'match_diff'
+                            symbol
                         );
                     } catch (error) {
                         if (!(error instanceof InsightRateLimitError)) throw error;
@@ -144,6 +149,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                     const eligible = topQuotes.filter(({ trade }, index) => {
                         const group = rankedContractGroup(trade.candidate);
                         return (
+                            !!group &&
                             rankSelections[rankSelection].includes(index) &&
                             (!onlyGroup || group === onlyGroup) &&
                             group !== excludeGroup &&
@@ -156,18 +162,34 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                         await delay(10000);
                         continue;
                     }
-                    const batchStake = round(eligible.reduce((total, quote) => total + quote.trade.stake, 0));
+                    let batch = eligible.slice();
+                    while (
+                        batch.length &&
+                        batch.reduce((total, quote) => total + quote.expectedPayout - quote.trade.stake, 0) <= 0
+                    ) {
+                        batch.pop();
+                    }
+                    if (!batch.length) {
+                        setStatus(
+                            localize(
+                                'The selected ranks have no batch with positive estimated net payout. Checking again.'
+                            )
+                        );
+                        await delay(10000);
+                        continue;
+                    }
+                    const batchStake = round(batch.reduce((total, quote) => total + quote.trade.stake, 0));
                     if (batchStake > remaining) {
-                        const reducedStake = floorStake(remaining / eligible.length);
+                        const reducedStake = floorStake(remaining / batch.length);
                         if (reducedStake <= 0 || reducedStake >= amount) break;
                         // The new stake needs fresh quotes before the selected ranks can be purchased.
                         amount = reducedStake;
                         continue;
                     }
-                    let batch = eligible;
                     if (mode === 'semi-automatic') {
                         const batchSize = batch.length;
-                        setReview({ quotes: eligible, batchSize });
+                        const individualQuotes = batch.filter(quote => quote.expectedPayout > quote.trade.stake);
+                        setReview({ quotes: individualQuotes, batchSize });
                         const session = { net: String(net), currency };
                         setStatus(
                             batchSize > 1
@@ -192,7 +214,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                         if (decision === 'batch') {
                             if (batchSize < 2 || !batch.every(quote => fresh(quote.time))) continue;
                         } else {
-                            if (!eligible.includes(decision) || !fresh(decision.time)) continue;
+                            if (!individualQuotes.includes(decision) || !fresh(decision.time)) continue;
                             batch = [decision];
                         }
                     }
@@ -223,8 +245,14 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                             saveOutstanding();
                         })
                     );
+                    const rateLimited = purchases.some(
+                        result => result.status === 'rejected' && result.reason instanceof InsightRateLimitError
+                    );
                     const failure = purchases.find(
-                        result => result.status === 'rejected' && !(result.reason instanceof InsightQuoteChanged)
+                        result =>
+                            result.status === 'rejected' &&
+                            !(result.reason instanceof InsightQuoteChanged) &&
+                            !(result.reason instanceof InsightRateLimitError)
                     );
                     const purchased = open.size > 0;
                     if (purchased) {
@@ -234,7 +262,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                                 ? localize('Awaiting settlement for 1 contract.')
                                 : localize('Awaiting settlement for {{count}} contracts.', { count: String(open.size) })
                         );
-                    } else if (!failure && !signal.aborted && !stopping.current) {
+                    } else if (!failure && !rateLimited && !signal.aborted && !stopping.current) {
                         setStatus('Quote changed. Checking live contracts again.');
                         await delay(1000);
                     }
@@ -265,6 +293,10 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                     if (purchased && !signal.aborted) {
                         net = round(net + batchProfit);
                         amount = method === 'martingale' && batchProfit < 0 ? round(amount * 2) : stake;
+                    }
+                    if (rateLimited && !signal.aborted && !stopping.current) {
+                        setStatus(localize('Deriv is limiting quotes. Retrying when the limit clears.'));
+                        await delay(10000);
                     }
                 }
                 if (!signal.aborted) setStatus('Run stopped. Session P/L ' + net + ' ' + currency);
@@ -306,10 +338,10 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                 />
             </label>
             <label>
-                Strategy{' '}
+                {localize('Strategy')}{' '}
                 <select value={method} disabled={running} onChange={e => setMethod(e.target.value)}>
-                    <option value='martingale'>Martingale (2× after a loss)</option>
-                    <option value='fixed'>Fixed stake</option>
+                    <option value='fixed'>{localize('Fixed stake')}</option>
+                    <option value='martingale'>{localize('Martingale (2x after a loss)')}</option>
                 </select>
             </label>
             <label>
@@ -333,36 +365,40 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                     <option value='third'>{localize('Third only')}</option>
                 </select>
             </label>
-            <label>
-                {localize('Trade only')}{' '}
-                <select
-                    disabled={running}
-                    value={onlyGroup}
-                    onChange={e => setOnlyGroup(e.target.value as RankedContractGroup | '')}
-                >
-                    <option value=''>{localize('Any contract type')}</option>
-                    {contractGroups.map(group => (
-                        <option key={group} value={group}>
-                            {contractGroupLabel(group)}
-                        </option>
-                    ))}
-                </select>
-            </label>
-            <label>
-                {localize('Do not trade')}{' '}
-                <select
-                    disabled={running}
-                    value={excludeGroup}
-                    onChange={e => setExcludeGroup(e.target.value as RankedContractGroup | '')}
-                >
-                    <option value=''>{localize('No exclusions')}</option>
-                    {contractGroups.map(group => (
-                        <option key={group} value={group}>
-                            {contractGroupLabel(group)}
-                        </option>
-                    ))}
-                </select>
-            </label>
+            {!excludeGroup && (
+                <label>
+                    {localize('Trade only')}{' '}
+                    <select
+                        disabled={running}
+                        value={onlyGroup}
+                        onChange={e => setOnlyGroup(e.target.value as RankedContractGroup | '')}
+                    >
+                        <option value=''>{localize('Any contract type')}</option>
+                        {contractGroups.map(group => (
+                            <option key={group} value={group}>
+                                {contractGroupLabel(group)}
+                            </option>
+                        ))}
+                    </select>
+                </label>
+            )}
+            {!onlyGroup && (
+                <label>
+                    {localize('Do not trade')}{' '}
+                    <select
+                        disabled={running}
+                        value={excludeGroup}
+                        onChange={e => setExcludeGroup(e.target.value as RankedContractGroup | '')}
+                    >
+                        <option value=''>{localize('No exclusions')}</option>
+                        {contractGroups.map(group => (
+                            <option key={group} value={group}>
+                                {contractGroupLabel(group)}
+                            </option>
+                        ))}
+                    </select>
+                </label>
+            )}
             <button
                 type='button'
                 disabled={!running && !!block}
