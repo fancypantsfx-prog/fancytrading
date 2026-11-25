@@ -8,6 +8,7 @@ import {
     getInsightCooldown,
     InsightQuoteChanged,
     InsightRateLimitError,
+    REQUEST_SPACING_MS,
     sendInsightRequest,
     waitForInsightRequest,
 } from './tick-insights-data';
@@ -21,7 +22,6 @@ type Props = {
     block: string;
     buy: (trade: TInsightTrade, signal: AbortSignal, beforeBuy: () => void) => Promise<string>;
 };
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 type ReviewDecision = RankedQuote | 'batch' | null;
 type RankedSlot = { rank: number; quote: RankedQuote };
 const rankSelections = { all: [0, 1, 2], topTwo: [0, 1], first: [0], second: [1], third: [2] };
@@ -52,6 +52,8 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
     const [rankings, setRankings] = React.useState<RankedSlot[]>();
     const [running, setRunning] = React.useState(false);
     const [status, setStatus] = React.useState('');
+    const [cooldownSeconds, setCooldownSeconds] = React.useState<number>();
+    const cancelCooldown = React.useRef<() => void>();
     const current = React.useRef<AbortController>();
     const stopping = React.useRef(false);
     const latest = React.useRef({ block, buy });
@@ -78,6 +80,34 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
         stopping.current = false;
         setRankings(undefined);
         setRunning(true);
+
+        const waitWithCountdown = (ms: number, settling = false) =>
+            new Promise<void>(resolve => {
+                const deadline = performance.now() + ms;
+                let timer: ReturnType<typeof setTimeout>;
+                const finish = () => {
+                    clearTimeout(timer);
+                    signal.removeEventListener('abort', finish);
+                    cancelCooldown.current = undefined;
+                    if (!signal.aborted) setCooldownSeconds(undefined);
+                    resolve();
+                };
+                const update = () => {
+                    const remaining = deadline - performance.now();
+                    if (signal.aborted || (!settling && stopping.current) || remaining <= 0) {
+                        finish();
+                        return;
+                    }
+                    setCooldownSeconds(
+                        remaining <= 1000 ? Math.ceil(remaining / 100) / 10 : Math.ceil(remaining / 1000)
+                    );
+                    timer = setTimeout(update, Math.min(remaining, remaining > 1000 ? 1000 : 100));
+                };
+                if (!settling) cancelCooldown.current = finish;
+                signal.addEventListener('abort', finish, { once: true });
+                update();
+            });
+
         try {
             await navigator.locks.request(key, { ifAvailable: true }, async lock => {
                 if (!lock) throw new Error('A ranked run is active in another tab.');
@@ -88,6 +118,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                 let net = 0,
                     amount = stake;
                 let winners = new Map<number, TInsightTrade>();
+                let nextComparisonAt = 0;
                 const skipped = new Set<string>();
                 const decimals = getDecimalPlaces(currency);
                 const round = (value: number) => Number(value.toFixed(decimals));
@@ -104,7 +135,13 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                     const cooldown = getInsightCooldown();
                     if (cooldown > 0) {
                         setStatus(localize('Deriv is limiting quotes. Retrying when the limit clears.'));
-                        await delay(Math.min(cooldown, 10000));
+                        await waitWithCountdown(cooldown);
+                        continue;
+                    }
+                    const spacing = nextComparisonAt - performance.now();
+                    if (spacing > 0) {
+                        setStatus(localize('Preparing the next comparison.'));
+                        await waitWithCountdown(spacing);
                         continue;
                     }
                     amount = Math.min(amount, remaining);
@@ -139,7 +176,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                     } catch (error) {
                         if (!(error instanceof InsightRateLimitError)) throw error;
                         setStatus('Deriv is limiting quotes. Retrying when the limit clears.');
-                        await delay(10000);
+                        await waitWithCountdown(Math.max(getInsightCooldown(), REQUEST_SPACING_MS));
                         continue;
                     }
                     if (signal.aborted || stopping.current) break;
@@ -148,7 +185,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                         setStatus(
                             'No eligible live quote at this stake. Retrying. Session P/L ' + net + ' ' + currency
                         );
-                        await delay(10000);
+                        await waitWithCountdown(10000);
                         continue;
                     }
                     if (!topQuotes.length) topQuotes = [{ rank: 0, quote: pick }];
@@ -167,7 +204,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                     if (!eligible.length) {
                         skipped.clear();
                         setStatus(localize('No contract in the selected ranks meets your filters. Checking again.'));
-                        await delay(10000);
+                        await waitWithCountdown(10000);
                         continue;
                     }
                     let batch = eligible;
@@ -177,6 +214,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                         if (reducedStake <= 0 || reducedStake >= amount) break;
                         // The new stake needs fresh quotes before the selected ranks can be purchased.
                         amount = reducedStake;
+                        nextComparisonAt = performance.now() + REQUEST_SPACING_MS;
                         continue;
                     }
                     if (mode === 'semi-automatic') {
@@ -269,7 +307,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                         );
                     } else if (!failure && !rateLimited && !signal.aborted && !stopping.current) {
                         setStatus('Quote changed. Checking live contracts again.');
-                        await delay(1000);
+                        await waitWithCountdown(REQUEST_SPACING_MS);
                     }
                     let batchProfit = 0;
                     const nextWinners = new Map<number, TInsightTrade>();
@@ -277,7 +315,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                         const settlementCooldown = getInsightCooldown();
                         if (settlementCooldown > 0) {
                             setStatus(localize('Deriv is limiting requests. Waiting to check open contracts.'));
-                            await delay(Math.min(settlementCooldown, 10000));
+                            await waitWithCountdown(settlementCooldown, true);
                             continue;
                         }
                         for (const [id, quote] of open) {
@@ -307,17 +345,20 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                                 saveOutstanding();
                             }
                         }
-                        if (open.size && !signal.aborted) await delay(750);
+                        if (open.size && !signal.aborted && getInsightCooldown() === 0) {
+                            await waitWithCountdown(750, true);
+                        }
                     }
                     if (failure?.status === 'rejected' && (pending || !stopping.current)) throw failure.reason;
                     if (purchased && !signal.aborted) {
                         net = round(net + batchProfit);
                         winners = nextWinners;
                         amount = method === 'martingale' && batchProfit < 0 ? round(amount * 2) : stake;
+                        nextComparisonAt = performance.now() + REQUEST_SPACING_MS;
                     }
                     if (rateLimited && !signal.aborted && !stopping.current) {
                         setStatus(localize('Deriv is limiting quotes. Retrying when the limit clears.'));
-                        await delay(10000);
+                        await waitWithCountdown(Math.max(getInsightCooldown(), REQUEST_SPACING_MS));
                     }
                 }
                 if (!signal.aborted) setStatus('Run stopped. Session P/L ' + net + ' ' + currency);
@@ -426,6 +467,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                 onClick={() => {
                     if (running) {
                         stopping.current = true;
+                        cancelCooldown.current?.();
                         reviewDecision.current?.();
                         setReview(undefined);
                         setStatus('Stopping after any open contract settles.');
@@ -435,6 +477,9 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                 {running ? 'Stop run' : 'Start trading'}
             </button>
             <p role='status'>{block || status}</p>
+            {cooldownSeconds !== undefined && (
+                <p role='timer'>{localize('Next request in {{seconds}} s', { seconds: String(cooldownSeconds) })}</p>
+            )}
             <section className='tick-insights__rankings'>
                 <h3>{localize('Top 3 contracts')}</h3>
                 {rankings?.length ? (

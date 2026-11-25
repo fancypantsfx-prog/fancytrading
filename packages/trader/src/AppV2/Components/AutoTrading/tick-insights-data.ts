@@ -163,7 +163,7 @@ export const isInsightRateLimit = (response: unknown): boolean => {
 export class InsightRateLimitError extends Error {}
 export class IncompleteInsightHistory extends Error {}
 
-const REQUEST_SPACING_MS = 400;
+export const REQUEST_SPACING_MS = 400;
 const RATE_LIMIT_COOLDOWN_MS = 60000;
 let nextRequestAt = 0;
 let cooldownUntil = 0;

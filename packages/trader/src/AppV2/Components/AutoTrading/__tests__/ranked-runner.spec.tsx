@@ -1,8 +1,8 @@
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, configure, fireEvent, render, screen } from '@testing-library/react';
 import RankedRunner from '../ranked-runner';
 import { selectRankedTrade } from '../ranked-trade';
-import { InsightRateLimitError, sendInsightRequest } from '../tick-insights-data';
+import { getInsightCooldown, InsightRateLimitError, sendInsightRequest } from '../tick-insights-data';
 
 jest.mock('../ranked-trade', () => ({
     ...jest.requireActual('../ranked-trade'),
@@ -14,9 +14,12 @@ const mockSend = jest.fn();
 jest.mock('@deriv/shared', () => ({ getDecimalPlaces: () => 2, useWS: () => ({ send: mockSend }) }));
 jest.mock('../tick-insights-data', () => ({
     ...jest.requireActual('../tick-insights-data'),
+    getInsightCooldown: jest.fn(jest.requireActual('../tick-insights-data').getInsightCooldown),
     sendInsightRequest: jest.fn((send, payload) => send(payload)),
     waitForInsightRequest: (request: Promise<unknown>) => request,
 }));
+
+configure({ asyncUtilTimeout: 5000 });
 
 beforeEach(() => {
     Object.defineProperty(navigator, 'locks', {
@@ -354,6 +357,51 @@ it('checks an open contract again after a settlement rate limit before continuin
         expect(buy).toHaveBeenCalledTimes(1);
         expect(localStorage.getItem('fancy-ranked-purchase:settlement-limit')).toBeNull();
     } finally {
+        jest.useRealTimers();
+    }
+});
+
+it.each([false, true])('counts down the exact cooldown and handles stopping during the wait (%s)', async stop => {
+    jest.useFakeTimers();
+    const cooldown = jest.mocked(getInsightCooldown);
+    let deadline = 0;
+    cooldown.mockImplementation(() => Math.max(0, deadline - performance.now()));
+    try {
+        mockRankings(['CALL']);
+        const buy = jest
+            .fn(async (_trade, _signal, guard) => {
+                guard();
+                return '1';
+            })
+            .mockImplementationOnce(async () => {
+                deadline = performance.now() + 2500;
+                throw new InsightRateLimitError();
+            });
+        mockSend.mockResolvedValue({ proposal_open_contract: { contract_id: 1, is_sold: 1, profit: 2 } });
+        render(<RankedRunner currency='USD' stake={10} account='countdown' block='' buy={buy} />);
+        fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '20' } });
+        fireEvent.change(screen.getByLabelText(/Take profit/), { target: { value: '2' } });
+        await act(async () => fireEvent.click(screen.getByText('Start trading')));
+        expect(screen.getByRole('timer')).toHaveTextContent('Next request in 3 s');
+
+        await act(async () => jest.advanceTimersByTimeAsync(1000));
+        expect(screen.getByRole('timer')).toHaveTextContent('Next request in 2 s');
+        expect(buy).toHaveBeenCalledTimes(1);
+        if (stop) {
+            await act(async () => fireEvent.click(screen.getByText('Stop run')));
+            expect(screen.getByText('Run stopped. Session P/L 0 USD')).toBeInTheDocument();
+            await act(async () => jest.advanceTimersByTimeAsync(1500));
+            expect(buy).toHaveBeenCalledTimes(1);
+        } else {
+            await act(async () => jest.advanceTimersByTimeAsync(1499));
+            expect(buy).toHaveBeenCalledTimes(1);
+            await act(async () => jest.advanceTimersByTimeAsync(1));
+            expect(buy).toHaveBeenCalledTimes(2);
+            expect(screen.getByText('Run stopped. Session P/L 2 USD')).toBeInTheDocument();
+        }
+        expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+    } finally {
+        cooldown.mockImplementation(jest.requireActual('../tick-insights-data').getInsightCooldown);
         jest.useRealTimers();
     }
 });
