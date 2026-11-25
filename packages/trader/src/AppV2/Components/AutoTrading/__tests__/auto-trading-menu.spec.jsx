@@ -4,6 +4,7 @@ import { fetchPremiumAccess, fetchStrategyFinder } from '@deriv/api';
 import { processPurchase } from 'Stores/Modules/Trading/Actions/purchase';
 import AutoTrading from '../auto-trading';
 import { FancyTradingDialogContext } from '../fancy-trading-dialog-context';
+import * as rankedTrade from '../ranked-trade';
 
 configure({ asyncUtilTimeout: 8000 });
 jest.setTimeout(15000);
@@ -592,6 +593,68 @@ it('blocks a second one-off purchase after an unconfirmed broker response', asyn
     );
     expect(screen.getByRole('button', { name: 'Confirm and buy once' })).toBeDisabled();
     expect(processPurchase).toHaveBeenCalledTimes(1);
+});
+
+it('submits all three ranked purchases before confirmation and tracks a partially unconfirmed batch', async () => {
+    const markets = ['R_50', 'R_25', 'R_75'];
+    const quotes = markets.map(symbol => ({
+        time: Date.now(),
+        rate: 0.7,
+        expectedPayout: 12.6,
+        trade: { family: 'digital', symbol, candidate: 'CALL', currency: 'USD', stake: 10, ticks: 3, payout: 18 },
+    }));
+    const select = jest.spyOn(rankedTrade, 'selectRankedTrade').mockImplementationOnce(
+        async (_send, _currency, _stake, _signal, _skipped, onCompared) => {
+            onCompared(quotes);
+            return quotes[0];
+        }
+    );
+    const locks = Object.getOwnPropertyDescriptor(navigator, 'locks');
+    Object.defineProperty(navigator, 'locks', { configurable: true, value: {
+        request: (_key, _options, run) => run({}),
+    } });
+    fetchStrategyFinder.mockResolvedValue({ rows: [], marketsScanned: 0 });
+    const subscribe = mockWS.subscribeProposal.getMockImplementation();
+    mockWS.subscribeProposal.mockImplementation((request, respond) => {
+        respond({ proposal: { id: request.underlying_symbol, ask_price: request.amount, payout: 18 } });
+        return { unsubscribe: mockUnsubscribe };
+    });
+    const send = mockSend.getMockImplementation();
+    mockSend.mockImplementation(request => request.proposal_open_contract
+        ? Promise.resolve({ proposal_open_contract: { ...request, is_sold: 1, profit: 8 } })
+        : send(request)
+    );
+    const purchases = new Map();
+    processPurchase.mockImplementation(symbol => new Promise((resolve, reject) => {
+        purchases.set(symbol, { resolve, reject });
+    }));
+    try {
+        render(
+            <FancyTradingDialogContext.Provider value={{ open: true, setOpen: jest.fn() }}>
+                <AutoTrading />
+            </FancyTradingDialogContext.Provider>
+        );
+        const panel = within(await screen.findByRole('dialog', { name: 'FancyTrading' }));
+        fireEvent.click(panel.getByRole('button', { name: 'FancyTrading', exact: true }));
+        await waitFor(() => expect(panel.getByRole('button', { name: 'Start trading' })).toBeEnabled());
+        fireEvent.change(panel.getByLabelText(/Stop loss/), { target: { value: '30' } });
+        fireEvent.click(panel.getByRole('button', { name: 'Start trading' }));
+        await waitFor(() => expect([...purchases.keys()].sort()).toEqual([...markets].sort()));
+        purchases.get('R_75').resolve({ buy: { contract_id: 3 } });
+        purchases.get('R_25').reject(new Error('Connection interrupted'));
+        purchases.get('R_50').resolve({ buy: { contract_id: 1 } });
+        await panel.findByText(/Deriv did not confirm the purchase/);
+        expect(mockSend).toHaveBeenCalledWith({ proposal_open_contract: 1, contract_id: 1 });
+        expect(mockSend).toHaveBeenCalledWith({ proposal_open_contract: 1, contract_id: 3 });
+        const key = Object.keys(localStorage).find(key => key.startsWith('fancy-ranked-purchase:'));
+        expect(JSON.parse(localStorage.getItem(key))).toEqual(['pending']);
+    } finally {
+        if (locks) Object.defineProperty(navigator, 'locks', locks);
+        else delete navigator.locks;
+        mockWS.subscribeProposal.mockImplementation(subscribe);
+        mockSend.mockImplementation(send);
+        select.mockRestore();
+    }
 });
 
 it('recovers automatic status and starts the explicitly selected strategy with Deriv’s required limits', async () => {

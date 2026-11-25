@@ -4,6 +4,7 @@ import { createBrowserHistory } from 'history';
 import { StoreProvider, mockStore } from '@deriv/stores';
 import { render, screen } from '@testing-library/react';
 import { useDevice } from '@deriv-com/ui';
+import { getBrandLogo, getBrandLogoDark, getBrandName } from '@deriv/shared';
 import HeaderLegacy from '../header-legacy';
 
 jest.mock('react-router-dom', () => ({
@@ -30,11 +31,6 @@ jest.mock('App/Components/Layout/Header/Components/Preloader', () => ({
 jest.mock('App/Containers/new-version-notification', () =>
     jest.fn(() => <div data-testid='dt_new_version_notification'>New Version Notification</div>)
 );
-
-jest.mock('@deriv/quill-icons', () => ({
-    ...jest.requireActual('@deriv/quill-icons'),
-    DerivProductBrandLightDerivTraderLogoIcon: jest.fn(() => <div data-testid='dt_dtrader_logo'>DTrader Logo</div>),
-}));
 
 describe('HeaderLegacy', () => {
     const history = createBrowserHistory();
@@ -101,10 +97,10 @@ describe('HeaderLegacy', () => {
             (useDevice as jest.Mock).mockReturnValue({ isDesktop: true, isMobile: false });
         });
 
-        it('should not render DTrader logo on desktop', () => {
+        it('leaves the logo in the desktop sidebar', () => {
             renderComponent();
 
-            expect(screen.queryByTestId('dt_dtrader_logo')).not.toBeInTheDocument();
+            expect(screen.queryByRole('img', { name: getBrandName() })).not.toBeInTheDocument();
         });
     });
 
@@ -113,10 +109,11 @@ describe('HeaderLegacy', () => {
             (useDevice as jest.Mock).mockReturnValue({ isDesktop: false, isMobile: true });
         });
 
-        it('should render DTrader logo on mobile', () => {
-            renderComponent();
+        it.each([false, true])('uses the configured mobile logo with dark mode set to %s', dark => {
+            renderComponent({ ui: { ...default_mock_store.ui, is_dark_mode_on: dark } });
 
-            expect(screen.getByTestId('dt_dtrader_logo')).toBeInTheDocument();
+            const logo = screen.getByRole('img', { name: getBrandName() });
+            expect(logo).toHaveAttribute('src', '/' + (dark ? getBrandLogoDark() : getBrandLogo()));
         });
     });
 

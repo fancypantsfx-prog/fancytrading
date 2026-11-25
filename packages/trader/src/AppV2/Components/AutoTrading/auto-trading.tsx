@@ -366,6 +366,11 @@ const AutoTrading = observer(
         const [pending_start, setPendingStart] = React.useState<PendingStart>();
         const [unconfirmed_purchases, setUnconfirmedPurchases] = React.useState<string[]>([]);
         const starting = React.useRef(false);
+        const rankedPurchases = React.useRef<{
+            signal: AbortSignal;
+            active: number;
+            access: ReturnType<typeof fetchPremiumAccess>;
+        }>();
         const warning_dialog = React.useRef<HTMLDialogElement>(null);
         const warning_title = React.useId();
         const controller = React.useRef<AutomationController>();
@@ -725,7 +730,8 @@ const AutoTrading = observer(
         );
 
         const buyFromInsights = async (draft: TInsightTrade, signal: AbortSignal, beforeRuleBuy?: () => void) => {
-            if (starting.current) throw new Error(localize('A trade request is already in progress.'));
+            const batch = beforeRuleBuy && rankedPurchases.current?.signal === signal ? rankedPurchases.current : undefined;
+            if (starting.current && !batch) throw new Error(localize('A trade request is already in progress.'));
             if (unconfirmed_buy) throw new Error(unconfirmed_message);
             const checkAccount = () => {
                 const id = ensureInsightTrade(draft, signal);
@@ -740,9 +746,15 @@ const AutoTrading = observer(
             const template = buildInsightTemplate(draft);
             const connection = ws.getWSUrl?.();
             let subscription: { unsubscribe: () => void } | undefined;
+            const accessRequest = batch?.access ?? fetchPremiumAccess('tick-insights', signal);
+            const rankedBatch = beforeRuleBuy ? (batch ?? { signal, active: 0, access: accessRequest }) : undefined;
+            if (rankedBatch) {
+                rankedBatch.active++;
+                rankedPurchases.current = rankedBatch;
+            }
             starting.current = true;
             try {
-                const access = await fetchPremiumAccess('tick-insights', signal);
+                const access = await accessRequest;
                 ensureInsightAccess(access);
                 checkAccount();
                 // Only streaming proposal IDs can be bought with the current Deriv API.
@@ -797,7 +809,10 @@ const AutoTrading = observer(
                 }
                 return String(purchase.contract_id);
             } finally {
-                starting.current = false;
+                if (!rankedBatch || --rankedBatch.active === 0) {
+                    rankedPurchases.current = undefined;
+                    starting.current = false;
+                }
                 try {
                     subscription?.unsubscribe();
                 } catch {

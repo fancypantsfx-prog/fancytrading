@@ -16,6 +16,7 @@ type Props = {
     buy: (trade: TInsightTrade, signal: AbortSignal, beforeBuy: () => void) => Promise<string>;
 };
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+type ReviewDecision = RankedQuote | 'all' | null;
 
 export default function RankedRunner({ currency, symbol, stake, account, block, buy }: Props) {
     const ws = useWS();
@@ -23,8 +24,8 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
     const [target, setTarget] = React.useState(String(3 * stake));
     const [method, setMethod] = React.useState('martingale');
     const [mode, setMode] = React.useState('automatic');
-    const [review, setReview] = React.useState<RankedQuote[]>();
-    const reviewDecision = React.useRef<(decision?: RankedQuote | null) => void>();
+    const [review, setReview] = React.useState<{ quotes: RankedQuote[]; canBuyAll: boolean }>();
+    const reviewDecision = React.useRef<(decision?: ReviewDecision) => void>();
     const [rankings, setRankings] = React.useState<RankedQuote[]>();
     const [running, setRunning] = React.useState(false);
     const [status, setStatus] = React.useState('');
@@ -99,10 +100,16 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                         await delay(10000);
                         continue;
                     }
+                    const batchStake = topQuotes.reduce((total, quote) => total + quote.trade.stake, 0);
+                    const canBuyAll = topQuotes.length === 3 && round(net - batchStake) >= -sl;
+                    let batch = canBuyAll ? topQuotes : [pick];
                     if (mode === 'semi-automatic') {
-                        setReview(topQuotes);
-                        setStatus('Choose a contract or skip. Session P/L ' + net + ' ' + currency);
-                        const decision = await new Promise<RankedQuote | null | undefined>(resolve => {
+                        setReview({ quotes: topQuotes, canBuyAll });
+                        setStatus(
+                            (canBuyAll ? 'Choose a contract, buy all 3, or skip.' : 'Choose a contract or skip.') +
+                                ' Session P/L ' + net + ' ' + currency
+                        );
+                        const decision = await new Promise<ReviewDecision | undefined>(resolve => {
                             const timer = setTimeout(() => resolve(undefined), 30000);
                             reviewDecision.current = value => {
                                 clearTimeout(timer);
@@ -113,64 +120,83 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                         if (signal.aborted || stopping.current) break;
                         setReview(undefined);
                         if (decision === null) topQuotes.forEach(quote => skipped.add(rankedTradeKey(quote.trade)));
-                        if (!decision || !fresh(decision.time)) continue;
-                        pick = decision;
-                    }
-                    const selected = pick;
-                    let id: string;
-                    try {
-                        id = await latest.current.buy(selected.trade, signal, () => {
-                            if (signal.aborted || stopping.current || latest.current.block)
-                                throw new Error('Trading conditions changed before purchase.');
-                            if (!fresh(selected.time))
-                                throw new InsightQuoteChanged(
-                                    'The comparison expired. Checking live contracts again.',
-                                    selected.trade.payout
-                                );
-                            localStorage.setItem(key, 'pending');
-                        });
-                    } catch (error) {
-                        if (error instanceof InsightQuoteChanged) {
-                            setStatus('Quote changed. Checking live contracts again.');
-                            await delay(1000);
-                            continue;
+                        if (!decision) continue;
+                        if (decision === 'all') {
+                            if (!canBuyAll || !topQuotes.every(quote => fresh(quote.time))) continue;
+                        } else {
+                            if (!fresh(decision.time)) continue;
+                            batch = [decision];
                         }
-                        throw error;
                     }
-                    skipped.clear();
-                    localStorage.setItem(key, id);
-                    setStatus(
-                        pick.trade.symbol +
-                            ' ' +
-                            pick.trade.candidate +
-                            ' · ' +
-                            (100 * pick.rate).toFixed(1) +
-                            '% historical wins · stake ' +
-                            amount +
-                            ' ' +
-                            currency +
-                            ' · awaiting settlement'
-                    );
-                    while (!signal.aborted) {
-                        const response = await waitForInsightRequest<{
-                            error?: { message: string };
-                            proposal_open_contract?: { contract_id: number; is_sold: number; profit: number };
-                        }>(
-                            ws.send({ proposal_open_contract: 1, contract_id: Number(id) }),
-                            'Settlement request timed out.'
-                        );
-                        const position = response?.proposal_open_contract;
-                        if (response?.error) throw new Error(response.error.message);
-                        if (position && String(position.contract_id) === id && Number(position.is_sold) === 1) {
-                            if (position.profit == null || !Number.isFinite(Number(position.profit)))
-                                throw new Error('Invalid settlement amount.');
-                            const profit = Number(position.profit);
-                            net = round(net + profit);
-                            amount = method === 'martingale' && profit < 0 ? round(amount * 2) : stake;
+                    const open = new Set<string>();
+                    let pending = 0;
+                    const saveOutstanding = () => {
+                        if (open.size || pending) {
+                            localStorage.setItem(key, JSON.stringify([...open, ...(pending ? ['pending'] : [])]));
+                        } else {
                             localStorage.removeItem(key);
-                            break;
                         }
-                        await delay(750);
+                    };
+                    const purchases = await Promise.allSettled(
+                        batch.map(async quote => {
+                            const id = await latest.current.buy(quote.trade, signal, () => {
+                                if (signal.aborted || stopping.current || latest.current.block)
+                                    throw new Error('Trading conditions changed before purchase.');
+                                if (!fresh(quote.time))
+                                    throw new InsightQuoteChanged(
+                                        'The comparison expired. Checking live contracts again.',
+                                        quote.trade.payout
+                                    );
+                                localStorage.setItem(key, JSON.stringify([...open, 'pending']));
+                                pending++;
+                            });
+                            open.add(id);
+                            pending--;
+                            saveOutstanding();
+                        })
+                    );
+                    const failure = purchases.find(
+                        result => result.status === 'rejected' && !(result.reason instanceof InsightQuoteChanged)
+                    );
+                    const purchased = open.size > 0;
+                    if (purchased) {
+                        skipped.clear();
+                        setStatus(
+                            open.size === 1
+                                ? localize('Awaiting settlement for 1 contract.')
+                                : localize('Awaiting settlement for {{count}} contracts.', { count: String(open.size) })
+                        );
+                    } else if (!failure && !signal.aborted && !stopping.current) {
+                        setStatus('Quote changed. Checking live contracts again.');
+                        await delay(1000);
+                    }
+                    let batchProfit = 0;
+                    while (open.size && !signal.aborted) {
+                        for (const id of open) {
+                            if (signal.aborted) break;
+                            const response = await waitForInsightRequest<{
+                                error?: { message: string };
+                                proposal_open_contract?: { contract_id: number; is_sold: number; profit: number };
+                            }>(
+                                ws.send({ proposal_open_contract: 1, contract_id: Number(id) }),
+                                'Settlement request timed out.'
+                            );
+                            const position = response?.proposal_open_contract;
+                            if (response?.error) throw new Error(response.error.message);
+                            if (position && String(position.contract_id) === id && Number(position.is_sold) === 1) {
+                                if (position.profit == null || !Number.isFinite(Number(position.profit)))
+                                    throw new Error('Invalid settlement amount.');
+                                batchProfit = round(batchProfit + Number(position.profit));
+                                open.delete(id);
+                                saveOutstanding();
+                            }
+                        }
+                        if (open.size && !signal.aborted) await delay(750);
+                    }
+                    if (failure?.status === 'rejected' && (pending || !stopping.current)) throw failure.reason;
+                    if (purchased && !signal.aborted) {
+                        net = round(net + batchProfit);
+                        amount = method === 'martingale' && batchProfit < 0 ? round(amount * 2) : stake;
                     }
                 }
                 if (!signal.aborted) setStatus('Run stopped. Session P/L ' + net + ' ' + currency);
@@ -242,9 +268,9 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
             <p role='status'>{block || status}</p>
             <section className='tick-insights__rankings'>
                 <h3>{localize('Top 3 contracts')}</h3>
-                {review?.length ? (
+                {review?.quotes.length ? (
                     <p>
-                        {localize('Stake per contract')} {review[0].trade.stake} {currency}
+                        {localize('Stake per contract')} {review.quotes[0].trade.stake} {currency}
                     </p>
                 ) : null}
                 {rankings?.length ? (
@@ -301,6 +327,11 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                 ) : rankings ? (
                     <p>{localize('No live quotes to compare.')}</p>
                 ) : null}
+                {review?.canBuyAll && (
+                    <button type='button' disabled={!!block} onClick={() => reviewDecision.current?.('all')}>
+                        {localize('Buy all 3')}
+                    </button>
+                )}
                 {review && (
                     <button type='button' onClick={() => reviewDecision.current?.(null)}>
                         {localize('Skip')}
@@ -315,7 +346,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                         setStatus('Previous purchase reviewed. Ready for a new session.');
                     }}
                 >
-                    I checked the previous purchase and confirmed it is settled
+                    I reviewed the previous purchases and confirmed none are open
                 </button>
             )}
         </section>
