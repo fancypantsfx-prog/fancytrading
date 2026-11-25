@@ -87,7 +87,7 @@ export async function selectRankedTrade(
                 continue;
             const rate = row.historical.hits / row.historical.count;
             const expectedPayout = rate * row.payout;
-            if (rate >= 0 && rate <= 1 && Number.isFinite(expectedPayout) && row.payout > stake) {
+            if (rate >= 0 && rate <= 1 && Number.isFinite(expectedPayout) && row.payout > 0) {
                 quotes.push({
                     trade: { ...setup, candidate: row.candidate, payout: row.payout },
                     rate,

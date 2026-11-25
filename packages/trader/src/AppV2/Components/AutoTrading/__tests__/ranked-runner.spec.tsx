@@ -27,8 +27,8 @@ beforeEach(() => {
 });
 
 it.each([
-    ['fixed', [10, 10, 10]],
-    ['martingale', [10, 20]],
+    ['fixed', [10, 10, 10, 4.99]],
+    ['martingale', [10, 20, 4.99]],
 ])('settles each purchase and adjusts the stake using %s', async (method, expectedStakes) => {
     (selectRankedTrade as jest.Mock).mockImplementation(async (_, currency, stake) => ({
         rate: 0.7,
@@ -50,7 +50,7 @@ it.each([
     fireEvent.change(screen.getByLabelText('Strategy'), { target: { value: method } });
     fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '35' } });
     fireEvent.click(screen.getByText('Start trading'));
-    await screen.findByText('Run stopped. Session P/L -30 USD');
+    await screen.findByText('Run stopped. Session P/L -34.99 USD');
     expect(stakes).toEqual(expectedStakes);
     expect(localStorage.getItem('fancy-ranked-purchase:demo-test')).toBeNull();
 });
@@ -58,6 +58,7 @@ it.each([
 it.each([
     ['automatic', 30, 9.99],
     ['automatic', 29, 9.66],
+    ['automatic', 5, 1.66],
     ['semi-automatic', 29, 9.66],
 ] as const)('%s buys within the stop loss of %i before checking settlement', async (mode, loss, expectedStake) => {
     const markets = ['Market 1', 'Market 2', 'Market 3'];
@@ -155,12 +156,12 @@ const mockRankings = (candidates: string[], expectedReturns = candidates.map(() 
 };
 
 it.each([
-    ['all', 45, 4.99, -44.97, ['Market 1', 'Market 2', 'Market 3']],
-    ['topTwo', 35, 7.49, -34.98, ['Market 1', 'Market 2']],
-    ['third', 25, 10, -20, ['Market 3']],
+    ['all', 45, [4.99], -44.97, ['Market 1', 'Market 2', 'Market 3']],
+    ['topTwo', 35, [7.49], -34.98, ['Market 1', 'Market 2']],
+    ['third', 25, [10, 4.99], -24.99, ['Market 3']],
 ] as const)(
     'preserves the %s selection after settlement and adjusts only the stake',
-    async (ranks, loss, nextStake, net, markets) => {
+    async (ranks, loss, nextStakes, net, markets) => {
         mockRankings(['CALL', 'DIGITEVEN', 'DIGITOVER:5']);
         const purchased: [string, number][] = [];
         mockSend.mockImplementation(async ({ contract_id }) => ({
@@ -178,7 +179,7 @@ it.each([
         await screen.findByText(`Run stopped. Session P/L ${net} USD`);
         expect(purchased).toEqual([
             ...markets.map(market => [market, 10]),
-            ...markets.map(market => [market, nextStake]),
+            ...nextStakes.flatMap(next => markets.map(market => [market, next])),
         ]);
     }
 );
@@ -218,8 +219,8 @@ it.each([
     expect(buy.mock.calls.map(([trade]) => trade.symbol)).toEqual(markets);
 });
 
-it('reduces the selected batch when the full batch has a negative estimated net payout', async () => {
-    mockRankings(['CALL', 'DIGITOVER:5', 'DIGITEVEN'], [1.2, 1.1, 0.5]);
+it.each(['automatic', 'semi-automatic'])('executes all selected contracts with a negative estimated net payout in %s mode', async mode => {
+    mockRankings(['CALL', 'DIGITOVER:5', 'DIGITEVEN'], [0.8, 0.7, 0.5]);
     mockSend.mockImplementation(async ({ contract_id }) => ({
         proposal_open_contract: { contract_id, is_sold: 1, profit: 10 },
     }));
@@ -231,9 +232,13 @@ it('reduces the selected batch when the full batch has a negative estimated net 
     render(<RankedRunner currency='USD' stake={10} account='positive-batch' block='' buy={buy} />);
     fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '40' } });
     fireEvent.change(screen.getByLabelText(/Take profit/), { target: { value: '10' } });
+    fireEvent.change(screen.getByLabelText('Execution mode'), { target: { value: mode } });
     fireEvent.click(screen.getByText('Start trading'));
-    await screen.findByText('Run stopped. Session P/L 20 USD');
-    expect(buy.mock.calls.map(([trade]) => trade.symbol)).toEqual(['Market 1', 'Market 2']);
+    if (mode === 'semi-automatic') {
+        fireEvent.click(await screen.findByRole('button', { name: 'Buy all 3' }));
+    }
+    await screen.findByText('Run stopped. Session P/L 30 USD');
+    expect(buy.mock.calls.map(([trade]) => trade.symbol)).toEqual(['Market 1', 'Market 2', 'Market 3']);
 });
 
 it('keeps the combined stake below the stop loss after a profitable round', async () => {

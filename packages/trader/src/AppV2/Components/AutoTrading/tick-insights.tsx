@@ -35,9 +35,9 @@ type TFinderReport = {
     access: TPremiumAccess;
     rows: TFinderRow[];
     ticks: number;
-    settings?: string;
     precisionBySymbol?: Record<string, number>;
 };
+type TFinderSnapshot = TFinderReport & { settings: string; expiresAt: number };
 const finderContracts = {
     rise_fall: ['CALL', 'PUT'],
     even_odd: ['DIGITEVEN', 'DIGITODD'],
@@ -122,10 +122,11 @@ const InsightsPanel = ({
     const [ticks, setTicks] = React.useState(String(preset?.ticks ?? initial_ticks));
     const [access, setAccess] = React.useState<TPremiumAccess | 'checking' | 'error'>('checking');
     const [check, setCheck] = React.useState(0);
-    const [snapshot, setReport] = React.useState<TFinderReport>();
+    const [snapshot, setReport] = React.useState<TFinderSnapshot>();
     const [loadingScan, setLoadingScan] = React.useState(false);
-    const [refreshVersion, refreshRankings] = React.useReducer(version => version + 1, 0);
-    const lastScan = React.useRef<{ settings: string; refreshVersion: number; time: number }>();
+    const [refreshRequest, setRefreshRequest] = React.useState<{ settings: string; startedAt: number }>();
+    const lastScan = React.useRef<{ settings: string; request: typeof refreshRequest }>();
+    const [, expireRankings] = React.useReducer(version => version + 1, 0);
     const [error, setError] = React.useState('');
     const [scanError, setScanError] = React.useState('');
     const [busy, setBusy] = React.useState(false);
@@ -191,18 +192,23 @@ const InsightsPanel = ({
     const scanSettings = new URLSearchParams({ contract: finderGroup, ticks, barrier: finderBarrier }).toString();
     const hasScanAccess = typeof access !== 'string' && access.access !== 'locked';
 
-    const report = snapshot?.settings === scanSettings ? snapshot : undefined;
+    const selectedSnapshot = snapshot?.settings === scanSettings ? snapshot : undefined;
+    const report = selectedSnapshot && Date.now() < selectedSnapshot.expiresAt ? selectedSnapshot : undefined;
     const finderRows = report?.rows;
     const send = ws.send;
 
     React.useEffect(() => {
+        if (!selectedSnapshot) return;
+        const timer = window.setTimeout(expireRankings, Math.max(0, selectedSnapshot.expiresAt - Date.now()));
+        return () => window.clearTimeout(timer);
+    }, [selectedSnapshot]);
+
+    React.useEffect(() => {
         setLoadingScan(false);
-        if (view !== 'finder' || !hasScanAccess || !/^([1-9]|1[0-9]|20)$/.test(ticks)) return;
+        if (!hasScanAccess || !/^([1-9]|1[0-9]|20)$/.test(ticks)) return;
         const previous = lastScan.current;
-        const manual = refreshVersion !== (previous?.refreshVersion ?? 0);
-        if (manual && !open) return;
-        const reopened = open && previous?.settings === scanSettings && Date.now() - previous.time >= FINDER_SAMPLE_MAX_AGE;
-        if (!manual && !reopened && previous?.settings === scanSettings) return;
+        const manual = refreshRequest?.settings === scanSettings && refreshRequest !== previous?.request;
+        if (!manual && previous?.settings === scanSettings) return;
 
         const controller = new AbortController();
         const { signal } = controller;
@@ -228,7 +234,7 @@ const InsightsPanel = ({
                     return;
                 }
                 let rows = next.rows.filter(row => row.candidate.split(':')[0] !== 'DIGITDIFF');
-                if ((manual || reopened) && rows.length) {
+                if (manual && rows.length) {
                     const symbols = [...new Set(rows.map(row => row.symbol))];
                     const windows = await fetchFinderWindows(send, symbols, signal);
                     if (signal.aborted) return;
@@ -249,19 +255,20 @@ const InsightsPanel = ({
                     sampleAt > freshAfter && historical.count > 0 &&
                     (finderGroup !== 'rise_fall' || historical.hits / historical.count < 0.9)
                 ).sort((a, b) => b.historical.hits / b.historical.count - a.historical.hits / a.historical.count);
-                setReport({ ...next, rows, settings: scanSettings });
+                const startedAt = manual ? refreshRequest.startedAt : Date.now();
+                setReport({ ...next, rows, settings: scanSettings, expiresAt: startedAt + FINDER_SAMPLE_MAX_AGE });
             } catch {
                 if (!signal.aborted) setScanError(localize('Rankings are temporarily unavailable. Select Refresh rankings to try again.'));
             } finally {
                 if (!signal.aborted) {
-                    lastScan.current = { settings: scanSettings, refreshVersion, time: Date.now() };
+                    lastScan.current = { settings: scanSettings, request: refreshRequest };
                     setLoadingScan(false);
                 }
             }
         };
         refresh();
         return () => controller.abort();
-    }, [open, view, hasScanAccess, ticks, finderGroup, scanSettings, refreshVersion, send]);
+    }, [hasScanAccess, ticks, finderGroup, scanSettings, refreshRequest, send]);
 
     const is_reviewing = !!draft;
     React.useEffect(() => {
@@ -331,7 +338,7 @@ const InsightsPanel = ({
     };
 
     const quoteFinderRow = async (row: TFinderRow, automatic: boolean) => {
-        if (!report || busy || purchase_block) return;
+        if (!report || Date.now() >= report.expiresAt || busy || purchase_block) return;
         const amount = Number(stake);
         if (!Number.isFinite(amount) || amount < 0.01 || amount > 1000000) {
             setError(localize('Enter a valid stake before requesting a live quote.'));
@@ -680,6 +687,9 @@ const InsightsPanel = ({
                 </button>
             )}
             {view === 'finder' && loadingScan && !report && <p role='status'>{localize('Loading market rankings�')}</p>}
+            {view === 'finder' && selectedSnapshot && !report && !loadingScan && (
+                <p role='status'>{localize('Rankings expired. Select Refresh rankings for new results.')}</p>
+            )}
             {view === 'finder' && (
                 <div className='tick-insights__fields'>
                     <div className='tick-insights__field-help'>
@@ -776,7 +786,7 @@ const InsightsPanel = ({
                     <button
                         type='button'
                         disabled={busy || loadingScan || !/^([1-9]|1[0-9]|20)$/.test(ticks)}
-                        onClick={refreshRankings}
+                        onClick={() => setRefreshRequest({ settings: scanSettings, startedAt: Date.now() })}
                     >
                         {loadingScan ? localize('Refreshing rankings…') : localize('Refresh rankings')}
                     </button>

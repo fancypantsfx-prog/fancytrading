@@ -71,12 +71,12 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                 Number.isFinite(stake) &&
                 stake > 0 &&
                 Number.isFinite(sl) &&
-                sl >= stake &&
+                sl > 0 &&
                 Number.isFinite(tp) &&
                 tp > 0
             )
         ) {
-            setStatus('Enter a positive take profit and a stop loss covering at least the initial stake.');
+            setStatus(localize('Enter a positive stake, take profit and stop loss.'));
             return;
         }
         const controller = new AbortController();
@@ -106,7 +106,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                 while (!signal.aborted && !stopping.current) {
                     if (latest.current.block) throw new Error(latest.current.block);
                     const remaining = Math.min(stopLimit, round(net + stopLimit));
-                    if (net >= tp || remaining <= 0 || round(net + budgetLimit) < stake) break;
+                    if (net >= tp || remaining <= 0) break;
                     const cooldown = getInsightCooldown();
                     if (cooldown > 0) {
                         setStatus(localize('Deriv is limiting quotes. Retrying when the limit clears.'));
@@ -162,22 +162,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                         await delay(10000);
                         continue;
                     }
-                    let batch = eligible.slice();
-                    while (
-                        batch.length &&
-                        batch.reduce((total, quote) => total + quote.expectedPayout - quote.trade.stake, 0) <= 0
-                    ) {
-                        batch.pop();
-                    }
-                    if (!batch.length) {
-                        setStatus(
-                            localize(
-                                'The selected ranks have no batch with positive estimated net payout. Checking again.'
-                            )
-                        );
-                        await delay(10000);
-                        continue;
-                    }
+                    let batch = eligible;
                     const batchStake = round(batch.reduce((total, quote) => total + quote.trade.stake, 0));
                     if (batchStake > remaining) {
                         const reducedStake = floorStake(remaining / batch.length);
@@ -188,8 +173,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                     }
                     if (mode === 'semi-automatic') {
                         const batchSize = batch.length;
-                        const individualQuotes = batch.filter(quote => quote.expectedPayout > quote.trade.stake);
-                        setReview({ quotes: individualQuotes, batchSize });
+                        setReview({ quotes: eligible, batchSize });
                         const session = { net: String(net), currency };
                         setStatus(
                             batchSize > 1
@@ -214,7 +198,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                         if (decision === 'batch') {
                             if (batchSize < 2 || !batch.every(quote => fresh(quote.time))) continue;
                         } else {
-                            if (!individualQuotes.includes(decision) || !fresh(decision.time)) continue;
+                            if (!eligible.includes(decision) || !fresh(decision.time)) continue;
                             batch = [decision];
                         }
                     }

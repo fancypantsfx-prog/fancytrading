@@ -260,7 +260,7 @@ it('waits for the next cloud snapshot without starting a local scan', async () =
     expect(mockSend).toHaveBeenCalledTimes(1);
 });
 
-it('keeps rankings while open and refreshes only when reopening an aged snapshot', async () => {
+it('starts the three-minute window on refresh and does not fetch again when it expires', async () => {
     const clock = jest.spyOn(Date, 'now');
     const start = Date.now();
     (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
@@ -273,18 +273,24 @@ it('keeps rankings while open and refreshes only when reopening an aged snapshot
         const { rerender } = render(panel(true));
         expect(await screen.findByRole('cell', { name: '60%' })).toBeInTheDocument();
         clock.mockReturnValue(start + 60000);
-        rerender(panel(false));
-        rerender(panel(true));
-        expect(fetchStrategyFinder).toHaveBeenCalledTimes(1);
-        clock.mockReturnValue(start + 181000);
-        fireEvent(window, new Event('pageshow'));
-        expect(screen.getByRole('cell', { name: '60%' })).toBeInTheDocument();
-        expect(fetchStrategyFinder).toHaveBeenCalledTimes(1);
-        rerender(panel(false));
-        rerender(panel(true));
+        fireEvent.click(screen.getByRole('button', { name: 'Refresh rankings' }));
+        clock.mockReturnValue(start + 65000);
         expect(await screen.findByRole('cell', { name: '0%' })).toBeInTheDocument();
+        clock.mockReturnValue(start + 181000);
+        rerender(panel(false));
+        rerender(panel(true));
+        expect(screen.getByRole('cell', { name: '0%' })).toBeInTheDocument();
+        expect(fetchStrategyFinder).toHaveBeenCalledTimes(2);
+        clock.mockReturnValue(start + 240000);
+        rerender(panel(false));
+        rerender(panel(true));
+        expect(screen.getByText(/Rankings expired/)).toBeInTheDocument();
+        expect(screen.queryByRole('cell', { name: '0%' })).not.toBeInTheDocument();
         expect(fetchStrategyFinder).toHaveBeenCalledTimes(2);
         expect(mockSend).toHaveBeenCalledTimes(1);
+        fireEvent.click(screen.getByRole('button', { name: 'Refresh rankings' }));
+        expect(await screen.findByRole('cell', { name: '0%' })).toBeInTheDocument();
+        expect(fetchStrategyFinder).toHaveBeenCalledTimes(3);
     } finally {
         clock.mockRestore();
     }
