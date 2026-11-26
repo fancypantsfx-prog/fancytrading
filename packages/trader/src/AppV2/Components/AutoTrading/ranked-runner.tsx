@@ -8,6 +8,7 @@ import {
     getInsightCooldown,
     InsightQuoteChanged,
     InsightRateLimitError,
+    InsightRequestTimeout,
     REQUEST_SPACING_MS,
     sendInsightRequest,
     waitForInsightRequest,
@@ -20,11 +21,21 @@ type Props = {
     stake: number;
     account: string;
     block: string;
-    buy: (trade: TInsightTrade, signal: AbortSignal, beforeBuy: () => void) => Promise<string>;
+    buy: (
+        trade: TInsightTrade,
+        signal: AbortSignal,
+        beforeBuy: () => void,
+        acceptUpdatedPayout: boolean
+    ) => Promise<string>;
 };
 type ReviewDecision = RankedQuote | 'batch' | null;
 type RankedSlot = { rank: number; quote: RankedQuote };
 const rankSelections = { all: [0, 1, 2], topTwo: [0, 1], first: [0], second: [1], third: [2] };
+const ROUND_SPACING_MS = 1000;
+const ROUNDS_PER_ANALYSIS = 3;
+const ANALYSIS_COOLDOWN_MS = 5000;
+const INITIAL_TIMEOUT_RETRY_MS = 2000;
+const MAX_TIMEOUT_RETRY_MS = 15000;
 type RankSelection = keyof typeof rankSelections;
 const contractGroups: readonly RankedContractGroup[] = ['rise_fall', 'even_odd', 'over_under'];
 const contractGroupLabel = (group: RankedContractGroup) => {
@@ -45,6 +56,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
     const [method, setMethod] = React.useState('fixed');
     const [mode, setMode] = React.useState('automatic');
     const [rankSelection, setRankSelection] = React.useState<RankSelection>('all');
+    const [alternateLosers, setAlternateLosers] = React.useState(false);
     const [onlyGroup, setOnlyGroup] = React.useState<RankedContractGroup | ''>('');
     const [excludeGroup, setExcludeGroup] = React.useState<RankedContractGroup | ''>('');
     const [review, setReview] = React.useState<{ quotes: RankedQuote[]; batchSize: number }>();
@@ -118,7 +130,17 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                 let net = 0,
                     amount = stake;
                 let winners = new Map<number, TInsightTrade>();
-                let nextComparisonAt = 0;
+                let nextRoundAt = 0;
+                let rounds = 0;
+                let topQuotes: RankedSlot[] = [];
+                let reserves: RankedQuote[] = [];
+                let timeoutRetryMs = INITIAL_TIMEOUT_RETRY_MS;
+                const retryAfterTimeout = async (message: string, settling = false) => {
+                    setStatus(message);
+                    const delay = timeoutRetryMs;
+                    timeoutRetryMs = Math.min(delay * 2, MAX_TIMEOUT_RETRY_MS);
+                    await waitWithCountdown(Math.max(delay, getInsightCooldown()), settling);
+                };
                 const skipped = new Set<string>();
                 const decimals = getDecimalPlaces(currency);
                 const round = (value: number) => Number(value.toFixed(decimals));
@@ -128,6 +150,10 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                 };
                 const budgetLimit = floorStake(sl);
                 const stopLimit = budgetLimit < sl ? budgetLimit : round(budgetLimit - 10 ** -decimals);
+                const matchesFilter = ({ trade }: RankedQuote) => {
+                    const group = rankedContractGroup(trade.candidate);
+                    return !!group && (!onlyGroup || group === onlyGroup) && group !== excludeGroup;
+                };
                 while (!signal.aborted && !stopping.current) {
                     if (latest.current.block) throw new Error(latest.current.block);
                     const remaining = Math.min(stopLimit, round(net + stopLimit));
@@ -138,88 +164,104 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                         await waitWithCountdown(cooldown);
                         continue;
                     }
-                    const spacing = nextComparisonAt - performance.now();
+                    const spacing = nextRoundAt - performance.now();
                     if (spacing > 0) {
-                        setStatus(localize('Preparing the next comparison.'));
+                        setStatus(
+                            rounds === ROUNDS_PER_ANALYSIS
+                                ? localize('Three rounds complete. Cooling down before the next analysis.')
+                                : localize('Preparing the next trade round.')
+                        );
                         await waitWithCountdown(spacing);
                         continue;
                     }
                     amount = Math.min(amount, remaining);
-                    setStatus('Comparing live contracts. Session P/L ' + net + ' ' + currency);
-                    let pick: RankedQuote | undefined;
-                    let topQuotes: RankedSlot[] = [];
-                    try {
-                        pick = await selectRankedTrade(
-                            ws.send,
-                            currency,
-                            amount,
-                            signal,
-                            skipped,
-                            quotes => {
-                                const repeatQuotes = new Map<number, RankedQuote>();
-                                winners.forEach((trade, rank) => {
-                                    const key = rankedTradeKey(trade);
-                                    const quote = quotes.find(item => rankedTradeKey(item.trade) === key);
-                                    if (quote) repeatQuotes.set(rank, quote);
-                                });
-                                const reserved = new Set(repeatQuotes.values());
-                                const alternatives = quotes.filter(quote => !reserved.has(quote));
-                                topQuotes = rankSelections.all.flatMap(rank => {
-                                    const quote = repeatQuotes.get(rank) ?? alternatives.shift();
-                                    return quote ? [{ rank, quote }] : [];
-                                });
-                                setRankings(topQuotes);
-                            },
-                            symbol,
-                            [...winners.values()]
-                        );
-                    } catch (error) {
-                        if (!(error instanceof InsightRateLimitError)) throw error;
-                        setStatus('Deriv is limiting quotes. Retrying when the limit clears.');
-                        await waitWithCountdown(Math.max(getInsightCooldown(), REQUEST_SPACING_MS));
-                        continue;
+                    if (rounds === ROUNDS_PER_ANALYSIS || topQuotes.some(({ quote }) => !fresh(quote.time))) {
+                        rounds = 0;
+                        topQuotes = [];
                     }
-                    if (signal.aborted || stopping.current) break;
-                    if (!pick) {
-                        skipped.clear();
-                        setStatus(
-                            'No eligible live quote at this stake. Retrying. Session P/L ' + net + ' ' + currency
-                        );
-                        await waitWithCountdown(10000);
-                        continue;
-                    }
-                    if (!topQuotes.length) topQuotes = [{ rank: 0, quote: pick }];
-                    const eligible = topQuotes
-                        .filter(({ rank, quote: { trade } }) => {
-                            const group = rankedContractGroup(trade.candidate);
-                            return (
-                                !!group &&
-                                rankSelections[rankSelection].includes(rank) &&
-                                (!onlyGroup || group === onlyGroup) &&
-                                group !== excludeGroup &&
-                                trade.stake <= remaining
+                    if (!topQuotes.length) {
+                        setStatus('Comparing live contracts. Session P/L ' + net + ' ' + currency);
+                        let pick: RankedQuote | undefined;
+                        let compared: RankedQuote[] = [];
+                        try {
+                            pick = await selectRankedTrade(
+                                payload => waitForInsightRequest(ws.send(payload), 'Comparison request timed out.'),
+                                currency,
+                                amount,
+                                signal,
+                                skipped,
+                                quotes => {
+                                    compared = quotes;
+                                },
+                                symbol,
+                                [...winners.values()]
                             );
-                        })
-                        .map(({ quote }) => quote);
+                        } catch (error) {
+                            if (error instanceof InsightRequestTimeout) {
+                                await retryAfterTimeout(localize('Comparison timed out. Retrying shortly.'));
+                                continue;
+                            }
+                            if (!(error instanceof InsightRateLimitError)) throw error;
+                            setStatus('Deriv is limiting quotes. Retrying when the limit clears.');
+                            await waitWithCountdown(Math.max(getInsightCooldown(), REQUEST_SPACING_MS));
+                            continue;
+                        }
+                        if (signal.aborted || stopping.current) break;
+                        if (!pick) {
+                            skipped.clear();
+                            setStatus(
+                                'No eligible live quote at this stake. Retrying. Session P/L ' + net + ' ' + currency
+                            );
+                            await waitWithCountdown(10000);
+                            continue;
+                        }
+                        const repeatQuotes = new Map<number, RankedQuote>();
+                        for (const [rank, trade] of winners) {
+                            const quote = compared.find(item => rankedTradeKey(item.trade) === rankedTradeKey(trade));
+                            if (quote) repeatQuotes.set(rank, quote);
+                        }
+                        const repeatSet = new Set(repeatQuotes.values());
+                        reserves = (compared.length ? compared : [pick]).filter(quote => !repeatSet.has(quote));
+                        topQuotes = rankSelections.all.flatMap(rank => {
+                            const quote = repeatQuotes.get(rank) ?? reserves.shift();
+                            return quote ? [{ rank, quote }] : [];
+                        });
+                    }
+                    const eligible = topQuotes.filter(
+                        ({ rank, quote }) => rankSelections[rankSelection].includes(rank) && matchesFilter(quote)
+                    );
                     if (!eligible.length) {
+                        setRankings(topQuotes);
+                        topQuotes = [];
+                        rounds = 0;
                         skipped.clear();
                         setStatus(localize('No contract in the selected ranks meets your filters. Checking again.'));
                         await waitWithCountdown(10000);
                         continue;
                     }
-                    let batch = eligible;
-                    const batchStake = round(batch.reduce((total, quote) => total + quote.trade.stake, 0));
-                    if (batchStake > remaining) {
-                        const reducedStake = floorStake(remaining / batch.length);
-                        if (reducedStake <= 0 || reducedStake >= amount) break;
-                        // The new stake needs fresh quotes before the selected ranks can be purchased.
-                        amount = reducedStake;
-                        nextComparisonAt = performance.now() + REQUEST_SPACING_MS;
-                        continue;
+                    const roundStake = Math.min(amount, floorStake(remaining / eligible.length));
+                    if (roundStake <= 0) break;
+                    for (const slot of topQuotes) {
+                        const { quote } = slot;
+                        if (quote.trade.stake === roundStake) continue;
+                        const payout = round((quote.trade.payout / quote.trade.stake) * roundStake);
+                        slot.quote = {
+                            ...quote,
+                            trade: { ...quote.trade, stake: roundStake, payout },
+                            expectedPayout: quote.rate * payout,
+                        };
                     }
+                    setRankings(topQuotes.map(slot => ({ ...slot })));
+                    let batch = eligible.map(({ quote }) => quote);
+                    setStatus(
+                        localize('Preparing quotes for round {{round}} of {{total}}.', {
+                            round: String(rounds + 1),
+                            total: String(ROUNDS_PER_ANALYSIS),
+                        })
+                    );
                     if (mode === 'semi-automatic') {
                         const batchSize = batch.length;
-                        setReview({ quotes: eligible, batchSize });
+                        setReview({ quotes: batch, batchSize });
                         const session = { net: String(net), currency };
                         setStatus(
                             batchSize > 1
@@ -239,17 +281,22 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                         reviewDecision.current = undefined;
                         if (signal.aborted || stopping.current) break;
                         setReview(undefined);
-                        if (decision === null) eligible.forEach(quote => skipped.add(rankedTradeKey(quote.trade)));
+                        if (decision === null) {
+                            batch.forEach(quote => skipped.add(rankedTradeKey(quote.trade)));
+                            topQuotes = [];
+                            rounds = 0;
+                        }
                         if (!decision) continue;
                         if (decision === 'batch') {
                             if (batchSize < 2 || !batch.every(quote => fresh(quote.time))) continue;
                         } else {
-                            if (!eligible.includes(decision) || !fresh(decision.time)) continue;
+                            if (!batch.includes(decision) || !fresh(decision.time)) continue;
                             batch = [decision];
                         }
                     }
                     const open = new Map<string, RankedQuote>();
                     let pending = 0;
+                    let quoteTimedOut = false;
                     const saveOutstanding = () => {
                         if (open.size || pending) {
                             localStorage.setItem(
@@ -263,8 +310,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                     const purchases = await Promise.allSettled(
                         batch.map(async quote => {
                             let submitted = false;
-                            const id = await latest.current
-                                .buy(quote.trade, signal, () => {
+                            const beforeBuy = () => {
                                     if (signal.aborted || stopping.current || latest.current.block)
                                         throw new Error('Trading conditions changed before purchase.');
                                     if (!fresh(quote.time))
@@ -275,14 +321,31 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                                     localStorage.setItem(key, JSON.stringify([...open.keys(), 'pending']));
                                     pending++;
                                     submitted = true;
-                                })
+                            };
+                            const id = await latest.current
+                                .buy(quote.trade, signal, beforeBuy, mode === 'automatic')
                                 .catch(error => {
+                                    if (!submitted && error instanceof InsightQuoteChanged && fresh(quote.time)) {
+                                        const slot = topQuotes.find(item => item.quote === quote);
+                                        if (slot) {
+                                            slot.quote = {
+                                                ...quote,
+                                                trade: { ...quote.trade, payout: error.payout },
+                                                expectedPayout: quote.rate * error.payout,
+                                            };
+                                        }
+                                    }
+                                    if (!submitted && error instanceof InsightRequestTimeout) {
+                                        quoteTimedOut = true;
+                                        return undefined;
+                                    }
                                     if (submitted && error instanceof InsightRateLimitError) {
                                         pending--;
                                         saveOutstanding();
                                     }
                                     throw error;
                                 });
+                            if (id === undefined) return;
                             open.set(id, quote);
                             pending--;
                             saveOutstanding();
@@ -305,12 +368,13 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                                 ? localize('Awaiting settlement for 1 contract.')
                                 : localize('Awaiting settlement for {{count}} contracts.', { count: String(open.size) })
                         );
-                    } else if (!failure && !rateLimited && !signal.aborted && !stopping.current) {
-                        setStatus('Quote changed. Checking live contracts again.');
+                    } else if (!failure && !rateLimited && !quoteTimedOut && !signal.aborted && !stopping.current) {
+                        setStatus(localize('Quote changed. Refreshing the selected quotes.'));
                         await waitWithCountdown(REQUEST_SPACING_MS);
                     }
                     let batchProfit = 0;
                     const nextWinners = new Map<number, TInsightTrade>();
+                    const losingRanks: number[] = [];
                     while (open.size && !signal.aborted) {
                         const settlementCooldown = getInsightCooldown();
                         if (settlementCooldown > 0) {
@@ -327,11 +391,19 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                                 payload => waitForInsightRequest(ws.send(payload), 'Settlement request timed out.'),
                                 { proposal_open_contract: 1, contract_id: Number(id) },
                                 signal
-                            ).catch(error => {
+                            ).catch(async error => {
+                                if (error instanceof InsightRequestTimeout) {
+                                    await retryAfterTimeout(
+                                        localize('Settlement check timed out. Retrying the open contract check.'),
+                                        true
+                                    );
+                                    return undefined;
+                                }
                                 if (!(error instanceof InsightRateLimitError)) throw error;
                                 return undefined;
                             });
                             if (!response) break;
+                            timeoutRetryMs = INITIAL_TIMEOUT_RETRY_MS;
                             const position = response?.proposal_open_contract;
                             if (response?.error) throw new Error(response.error.message);
                             if (position && String(position.contract_id) === id && Number(position.is_sold) === 1) {
@@ -341,6 +413,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                                 batchProfit = round(batchProfit + profit);
                                 const rank = topQuotes.find(slot => slot.quote === quote)?.rank;
                                 if (profit > 0 && rank !== undefined) nextWinners.set(rank, quote.trade);
+                                if (profit < 0 && rank !== undefined) losingRanks.push(rank);
                                 open.delete(id);
                                 saveOutstanding();
                             }
@@ -353,12 +426,24 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                     if (purchased && !signal.aborted) {
                         net = round(net + batchProfit);
                         winners = nextWinners;
-                        amount = method === 'martingale' && batchProfit < 0 ? round(amount * 2) : stake;
-                        nextComparisonAt = performance.now() + REQUEST_SPACING_MS;
+                        amount = method === 'martingale' && batchProfit < 0 ? round(roundStake * 2) : stake;
+                        rounds++;
+                        if (alternateLosers && rounds < ROUNDS_PER_ANALYSIS) {
+                            for (const rank of losingRanks) {
+                                const replacement = reserves.findIndex(quote => fresh(quote.time) && matchesFilter(quote));
+                                const slot = topQuotes.find(item => item.rank === rank);
+                                if (slot && replacement >= 0) [slot.quote] = reserves.splice(replacement, 1);
+                            }
+                        }
+                        nextRoundAt =
+                            performance.now() +
+                            (rounds === ROUNDS_PER_ANALYSIS ? ANALYSIS_COOLDOWN_MS : ROUND_SPACING_MS);
                     }
                     if (rateLimited && !signal.aborted && !stopping.current) {
                         setStatus(localize('Deriv is limiting quotes. Retrying when the limit clears.'));
                         await waitWithCountdown(Math.max(getInsightCooldown(), REQUEST_SPACING_MS));
+                    } else if (quoteTimedOut && !signal.aborted && !stopping.current && net < tp && net > -stopLimit) {
+                        await retryAfterTimeout(localize('The quote request timed out. Retrying shortly.'));
                     }
                 }
                 if (!signal.aborted) setStatus('Run stopped. Session P/L ' + net + ' ' + currency);
@@ -426,6 +511,15 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                     <option value='second'>{localize('Second only')}</option>
                     <option value='third'>{localize('Third only')}</option>
                 </select>
+            </label>
+            <label>
+                <input
+                    type='checkbox'
+                    checked={alternateLosers}
+                    disabled={running}
+                    onChange={e => setAlternateLosers(e.target.checked)}
+                />{' '}
+                {localize('Replace losing contracts between rounds')}
             </label>
             {!excludeGroup && (
                 <label>

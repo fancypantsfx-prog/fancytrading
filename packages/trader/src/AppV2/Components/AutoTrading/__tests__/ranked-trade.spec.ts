@@ -44,7 +44,7 @@ it('ranks fresh contracts by historical expected payout', async () => {
         sampleAt: now - 240000,
     });
     (fetchStrategyFinder as jest.Mock).mockImplementation(async params => ({
-        rows: params.get('contract') === 'rise_fall' ? [row('A'), row('B')] : [],
+        rows: params.get('contract') === 'rise_fall' && params.get('ticks') !== '5' ? [row('A'), row('B')] : [],
     }));
     (compareRecentTicks as jest.Mock).mockImplementation(async (_, trade) => ({
         lastTick: trade.ticks === 1 ? (now - 190000) / 1000 : Math.floor(now / 1000),
@@ -95,6 +95,19 @@ it('checks live contracts on the selected market when Finder has no rows', async
     expect(comparisons.at(-1)?.[1].candidates).not.toContain('DIGITDIFF:5');
 });
 
+it('ranks a Rise / Fall contract when the market only provides a five-tick quote', async () => {
+    (fetchStrategyFinder as jest.Mock).mockResolvedValue({ rows: [] });
+    (compareRecentTicks as jest.Mock).mockImplementation(async (_, trade) => {
+        if (trade.ticks !== 5) return null;
+        return {
+            lastTick: Math.floor(Date.now() / 1000),
+            rows: [{ candidate: 'CALL', stake: trade.stake, payout: 19, historical: { hits: 55, count: 100 } }],
+        };
+    });
+    const pick = await selectRankedTrade(jest.fn(), 'USD', 10, new AbortController().signal, undefined, undefined, 'R_100');
+    expect(pick?.trade).toMatchObject({ symbol: 'R_100', candidate: 'CALL', ticks: 5 });
+});
+
 it('loads all Finder shortlists concurrently and analyzes contracts on the same market and duration together', async () => {
     const finder = fetchStrategyFinder as jest.Mock;
     const compare = compareRecentTicks as jest.Mock;
@@ -108,7 +121,7 @@ it('loads all Finder shortlists concurrently and analyzes contracts on the same 
     compare.mockResolvedValue(null);
 
     const pending = selectRankedTrade(jest.fn(), 'USD', 10, new AbortController().signal);
-    expect(finder).toHaveBeenCalledTimes(6);
+    expect(finder).toHaveBeenCalledTimes(7);
     expect(finder.mock.calls.map(([params]) => params.get('contract'))).not.toContain('match_diff');
 
     releaseScan({
@@ -120,9 +133,10 @@ it('loads all Finder shortlists concurrently and analyzes contracts on the same 
         })),
     });
     await pending;
-    expect(compare).toHaveBeenCalledTimes(2);
+    expect(compare).toHaveBeenCalledTimes(3);
     expect(compare.mock.calls.map(([, setup]) => [setup.ticks, setup.candidates])).toEqual([
         [1, ['CALL', 'PUT']],
         [3, ['CALL', 'PUT']],
+        [5, ['CALL', 'PUT']],
     ]);
 });

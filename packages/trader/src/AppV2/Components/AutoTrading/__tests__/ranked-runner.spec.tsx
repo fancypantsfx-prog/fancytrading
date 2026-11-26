@@ -2,7 +2,7 @@ import React from 'react';
 import { act, configure, fireEvent, render, screen } from '@testing-library/react';
 import RankedRunner from '../ranked-runner';
 import { selectRankedTrade } from '../ranked-trade';
-import { getInsightCooldown, InsightRateLimitError, sendInsightRequest } from '../tick-insights-data';
+import { getInsightCooldown, InsightRateLimitError, InsightRequestTimeout, sendInsightRequest } from '../tick-insights-data';
 
 jest.mock('../ranked-trade', () => ({
     ...jest.requireActual('../ranked-trade'),
@@ -54,10 +54,10 @@ it.each([
     fireEvent.change(screen.getByLabelText('Strategy'), { target: { value: method } });
     fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '35' } });
     fireEvent.click(screen.getByText('Start trading'));
-    await screen.findByText('Run stopped. Session P/L -34.99 USD');
+    await screen.findByText('Run stopped. Session P/L -34.99 USD', {}, { timeout: 10000 });
     expect(stakes).toEqual(expectedStakes);
     expect(localStorage.getItem('fancy-ranked-purchase:demo-test')).toBeNull();
-});
+}, 15000);
 
 it.each([
     ['automatic', 30, 9.99],
@@ -179,12 +179,24 @@ it.each([true, false])(
         });
         render(<RankedRunner currency='USD' stake={10} account='repeat-winner' block='' buy={buy} />);
         fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '30' } });
-        fireEvent.change(screen.getByLabelText(/Take profit/), { target: { value: '4' } });
+        fireEvent.change(screen.getByLabelText(/Take profit/), { target: { value: '8' } });
         fireEvent.change(screen.getByLabelText('Rank selection'), { target: { value: 'second' } });
-        fireEvent.click(screen.getByText('Start trading'));
-
-        await screen.findByText('Run stopped. Session P/L 4 USD');
+        jest.useFakeTimers();
+        try {
+            await act(async () => fireEvent.click(screen.getByText('Start trading')));
+            await act(async () => jest.advanceTimersByTimeAsync(2000));
+            expect(buy).toHaveBeenCalledTimes(3);
+            expect(screen.getByRole('timer')).toHaveTextContent('Next request in 5 s');
+            await act(async () => jest.advanceTimersByTimeAsync(4999));
+            expect(buy).toHaveBeenCalledTimes(3);
+            await act(async () => jest.advanceTimersByTimeAsync(1));
+            expect(screen.getByText('Run stopped. Session P/L 8 USD')).toBeInTheDocument();
+        } finally {
+            jest.useRealTimers();
+        }
         expect(buy.mock.calls.map(([trade]) => trade)).toEqual([
+            contract,
+            contract,
             contract,
             available ? { ...contract, payout: 16 } : { ...contract, symbol: 'R_100' },
         ]);
@@ -358,6 +370,97 @@ it('checks an open contract again after a settlement rate limit before continuin
         expect(localStorage.getItem('fancy-ranked-purchase:settlement-limit')).toBeNull();
     } finally {
         jest.useRealTimers();
+    }
+});
+
+it('counts down a quote timeout and waits a second after settlement before the next analysis', async () => {
+    jest.useFakeTimers();
+    try {
+        mockRankings(['CALL']);
+        const compare = jest.mocked(selectRankedTrade);
+        compare.mockClear();
+        mockSend.mockImplementation(async ({ contract_id }) => ({
+            proposal_open_contract: { contract_id, is_sold: 1, profit: 2 },
+        }));
+        let id = 0;
+        const buy = jest.fn(async (_trade, _signal, guard) => {
+            guard();
+            return String(++id);
+        });
+        buy.mockRejectedValueOnce(new InsightRequestTimeout());
+        render(<RankedRunner currency='USD' stake={10} account='quote-timeout' block='' buy={buy} />);
+        fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '20' } });
+        fireEvent.change(screen.getByLabelText(/Take profit/), { target: { value: '4' } });
+        await act(async () => fireEvent.click(screen.getByText('Start trading')));
+        expect(screen.getByText('The quote request timed out. Retrying shortly.')).toBeInTheDocument();
+        expect(screen.getByRole('timer')).toHaveTextContent('Next request in 2 s');
+        expect(localStorage.getItem('fancy-ranked-purchase:quote-timeout')).toBeNull();
+
+        await act(async () => jest.advanceTimersByTimeAsync(1999));
+        expect(compare).toHaveBeenCalledTimes(1);
+        await act(async () => jest.advanceTimersByTimeAsync(1));
+        expect(compare).toHaveBeenCalledTimes(1);
+        expect(screen.getByText('Preparing the next trade round.')).toBeInTheDocument();
+
+        await act(async () => jest.advanceTimersByTimeAsync(999));
+        expect(compare).toHaveBeenCalledTimes(1);
+        await act(async () => jest.advanceTimersByTimeAsync(1));
+        expect(compare).toHaveBeenCalledTimes(1);
+        expect(screen.getByText('Run stopped. Session P/L 4 USD')).toBeInTheDocument();
+    } finally {
+        jest.useRealTimers();
+    }
+});
+
+it('replaces only losing ranks with unused eligible contracts from the same analysis', async () => {
+    jest.useFakeTimers();
+    try {
+        mockRankings(['CALL', 'PUT', 'DIGITEVEN', 'CALL', 'PUT']);
+        const compare = jest.mocked(selectRankedTrade);
+        compare.mockClear();
+        mockSend.mockImplementation(async ({ contract_id }) => ({
+            proposal_open_contract: { contract_id, is_sold: 1, profit: contract_id % 2 ? 3 : -1 },
+        }));
+        let id = 0;
+        const buy = jest.fn(async (_trade, _signal, guard) => {
+            guard();
+            return String(++id);
+        });
+        render(<RankedRunner currency='USD' stake={5} account='alternate-losses' block='' buy={buy} />);
+        fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '30' } });
+        fireEvent.change(screen.getByLabelText(/Take profit/), { target: { value: '6' } });
+        fireEvent.change(screen.getByLabelText('Rank selection'), { target: { value: 'topTwo' } });
+        fireEvent.change(screen.getByLabelText('Trade only'), { target: { value: 'rise_fall' } });
+        fireEvent.click(screen.getByLabelText('Replace losing contracts between rounds'));
+        await act(async () => fireEvent.click(screen.getByText('Start trading')));
+        await act(async () => jest.advanceTimersByTimeAsync(2000));
+        expect(screen.getByText('Run stopped. Session P/L 6 USD')).toBeInTheDocument();
+        expect(compare).toHaveBeenCalledTimes(1);
+        expect(buy.mock.calls.map(([trade]) => trade.symbol)).toEqual([
+            'Market 1', 'Market 2', 'Market 1', 'Market 4', 'Market 1', 'Market 5',
+        ]);
+    } finally {
+        jest.useRealTimers();
+    }
+});
+
+it('stops and leaves a pending purchase record if a timeout happens after submission', async () => {
+    mockRankings(['CALL']);
+    const buy = jest.fn(async (_trade, _signal, guard) => {
+        guard();
+        throw new InsightRequestTimeout('Purchase status is unknown.');
+    });
+    const key = 'fancy-ranked-purchase:purchase-timeout';
+    try {
+        render(<RankedRunner currency='USD' stake={10} account='purchase-timeout' block='' buy={buy} />);
+        fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '20' } });
+        fireEvent.click(screen.getByText('Start trading'));
+        await screen.findByText('Purchase status is unknown.');
+        expect(buy).toHaveBeenCalledTimes(1);
+        expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+        expect(localStorage.getItem(key)).toBe('["pending"]');
+    } finally {
+        localStorage.removeItem(key);
     }
 });
 

@@ -17,6 +17,7 @@ import {
 } from './tick-insights-data';
 import type { TInsightRun, TInsightStrategyOption, TInsightTrade, TTickInsights } from './tick-insights-data';
 import RankedRunner from './ranked-runner';
+import { RISE_FALL_FALLBACK_TICKS } from './ranked-trade';
 import MenuHelp from './menu-help';
 import InsightsCompare, { candidateLabel } from './insights-compare';
 import type { TCompareSetup } from './insights-compare';
@@ -970,9 +971,19 @@ const InsightsPanel = ({
                         </table>
                     </div>
                     {!finderRows?.length && !loadingScan && (
-                        <p role='status'>
-                            {localize('No ranked contracts are available for these settings yet.')}
-                        </p>
+                        <>
+                            <p role='status'>
+                                {localize('No ranked contracts are available for these settings yet.')}
+                            </p>
+                            {finderGroup === 'rise_fall' && Number(ticks) < RISE_FALL_FALLBACK_TICKS && (
+                                <button type='button' onClick={() => {
+                                    setTicks(String(RISE_FALL_FALLBACK_TICKS));
+                                    setPresetSaved(false);
+                                }}>
+                                    {localize('Try Rise / Fall at 5 ticks')}
+                                </button>
+                            )}
+                        </>
                     )}
                 </>
             )}

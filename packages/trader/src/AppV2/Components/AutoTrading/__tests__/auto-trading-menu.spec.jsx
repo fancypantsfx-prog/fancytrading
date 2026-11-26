@@ -641,7 +641,8 @@ it('submits all three ranked purchases before confirmation and tracks a partiall
         fireEvent.change(panel.getByLabelText(/Stop loss/), { target: { value: '30' } });
         fireEvent.click(panel.getByRole('button', { name: 'Start trading' }));
         await waitFor(() => expect([...purchases.keys()].sort()).toEqual([...markets].sort()));
-        expect(select.mock.calls.map(([, , stake]) => stake)).toEqual([10, 9.99]);
+        expect(select.mock.calls.map(([, , stake]) => stake)).toEqual([10]);
+        expect(processPurchase.mock.calls.map(([, stake]) => stake)).toEqual([9.99, 9.99, 9.99]);
         purchases.get('R_75').resolve({ buy: { contract_id: 3 } });
         purchases.get('R_25').reject(new Error('Connection interrupted'));
         purchases.get('R_50').resolve({ buy: { contract_id: 1 } });

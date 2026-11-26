@@ -637,7 +637,8 @@ const AutoTrading = observer(
 
         const ensureInsightQuote = (
             draft: TInsightTrade,
-            quote: { ask_price?: string | number; payout?: string | number }
+            quote: { ask_price?: string | number; payout?: string | number },
+            acceptUpdatedPayout = false
         ) => {
             if (Number(quote.ask_price) !== draft.stake) {
                 throw new Error(localize('Deriv quoted a different stake. Go back and request a new quote.'));
@@ -646,7 +647,7 @@ const AutoTrading = observer(
             if (!Number.isFinite(payout) || payout <= draft.stake) {
                 throw new Error(localize('Deriv did not return a valid payout for this trade.'));
             }
-            if (draft.family === 'digital' && payout !== draft.payout) {
+            if (draft.family === 'digital' && payout !== draft.payout && !acceptUpdatedPayout) {
                 throw new InsightQuoteChanged(localize('The quote changed. Review the updated payout and confirm again.'), payout);
             }
         };
@@ -738,7 +739,12 @@ const AutoTrading = observer(
             'Purchase status is unknown. Check Positions or Reports, then reload before buying again.'
         );
 
-        const buyFromInsights = async (draft: TInsightTrade, signal: AbortSignal, beforeRuleBuy?: () => void) => {
+        const buyFromInsights = async (
+            draft: TInsightTrade,
+            signal: AbortSignal,
+            beforeRuleBuy?: () => void,
+            acceptUpdatedPayout = false
+        ) => {
             const batch = beforeRuleBuy && rankedPurchases.current?.signal === signal ? rankedPurchases.current : undefined;
             if (starting.current && !batch) throw new Error(localize('A trade request is already in progress.'));
             if (unconfirmed_buy) throw new Error(unconfirmed_message);
@@ -789,7 +795,7 @@ const AutoTrading = observer(
                 ensureInsightAccess(access);
                 if (ws.getWSUrl?.() !== connection)
                     throw new Error(localize('The market connection changed. Review the trade again.'));
-                ensureInsightQuote(draft, proposal);
+                ensureInsightQuote(draft, proposal, !!beforeRuleBuy && acceptUpdatedPayout);
 
                 const markUnconfirmed = () => {
                     if (beforeRuleBuy) {

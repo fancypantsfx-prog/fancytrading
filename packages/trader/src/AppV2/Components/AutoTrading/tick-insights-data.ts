@@ -89,6 +89,8 @@ export const isInsightPresetValid = ({ stake, ticks, stopLoss, takeProfit }: TIn
     stopLoss >= stake &&
     (takeProfit === undefined || (Number.isFinite(takeProfit) && takeProfit > 0));
 
+export class InsightRequestTimeout extends Error {}
+
 export const waitForInsightRequest = async <T>(
     request: Promise<T>,
     timeoutMessage: string,
@@ -99,7 +101,7 @@ export const waitForInsightRequest = async <T>(
         return await Promise.race([
             request,
             new Promise<never>((_, reject) => {
-                timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+                timer = setTimeout(() => reject(new InsightRequestTimeout(timeoutMessage)), timeoutMs);
             }),
         ]);
     } finally {
