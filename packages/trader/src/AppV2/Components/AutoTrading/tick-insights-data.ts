@@ -1,4 +1,4 @@
-import { fetchTickInsights } from '@deriv/api';
+import { fetchSharedMarketData, fetchTickInsights } from '@deriv/api';
 import type { TPremiumAccess } from '@deriv/api';
 
 type TSample = { hits: number; count: number };
@@ -205,6 +205,12 @@ export const sendInsightRequest = async <T extends TMarketData>(
     throw new InsightRateLimitError();
 };
 
+const sendSharedInsightRequest = (
+    send: (payload: Record<string, unknown>) => Promise<TMarketData>,
+    payload: Record<string, unknown>,
+    signal: AbortSignal
+) => sendInsightRequest(async request => (await fetchSharedMarketData<TMarketData>(signal, payload)) ?? send(request), payload, signal);
+
 export const getLiveInsightQuote = async (
     send: (payload: Record<string, unknown>) => Promise<TMarketData>,
     {
@@ -225,7 +231,7 @@ export const getLiveInsightQuote = async (
     signal: AbortSignal
 ) => {
     const response = await waitForInsightRequest(
-        sendInsightRequest(
+        sendSharedInsightRequest(
             send,
             {
                 proposal: 1,
@@ -256,7 +262,7 @@ export const getInsightMarkets = async (
     send: (payload: Record<string, unknown>) => Promise<TMarketData>,
     signal: AbortSignal
 ) => {
-    const response = await sendInsightRequest(send, { active_symbols: 'brief' }, signal);
+    const response = await sendSharedInsightRequest(send, { active_symbols: 'brief' }, signal);
     if (response.error) throw new Error('Could not load instruments');
     return (response.active_symbols ?? [])
         .filter(item => item.underlying_symbol)
@@ -289,7 +295,7 @@ export const compareRecentTicks = async (
     const marketRequest = (key: string, payload: Record<string, unknown>) => {
         const existing = marketRequests.get(key);
         if (existing) return existing;
-        const request = sendInsightRequest(send, payload, signal);
+        const request = sendSharedInsightRequest(send, payload, signal);
         marketRequests.set(key, request);
         return request;
     };
@@ -307,7 +313,7 @@ export const compareRecentTicks = async (
     const quotesRequest = Promise.allSettled(
         candidates.map(async candidate => {
             const settings = getInsightContract(family, candidate, ticks);
-            const response = await sendInsightRequest(
+            const response = await sendSharedInsightRequest(
                 send,
                 {
                     proposal: 1,

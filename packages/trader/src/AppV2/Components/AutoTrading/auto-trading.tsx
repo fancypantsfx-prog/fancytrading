@@ -1,7 +1,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { observer } from 'mobx-react-lite';
-import { fetchPremiumAccess } from '@deriv/api';
+import { fetchFancyAccount, fetchPremiumAccess, hasFancyAccountGateway } from '@deriv/api';
 import { getDecimalPlaces, useWS } from '@deriv/shared';
 import { useStore } from '@deriv/stores';
 import { localize } from '@deriv-com/translations';
@@ -761,11 +761,62 @@ const AutoTrading = observer(
                 rankedBatch.active++;
                 rankedPurchases.current = rankedBatch;
             }
+            const markUnconfirmed = () => {
+                if (beforeRuleBuy) {
+                    return new Error(localize('Deriv did not confirm the purchase. Press Start to check its status before trading again.'));
+                }
+                setUnconfirmedPurchases(previous => [...previous, purchase_account_id]);
+                return new Error(unconfirmed_message);
+            };
+            const recordPurchase = (purchase?: { contract_id?: number; longcode?: string }) => {
+                if (!purchase?.contract_id) throw markUnconfirmed();
+                if (client.loginid === purchase_account_id && !ui.is_switching_account) {
+                    try {
+                        portfolio?.onBuyResponse({
+                            contract_id: purchase.contract_id,
+                            longcode: purchase.longcode ?? '',
+                            contract_type: template.contract_type,
+                        });
+                    } catch {
+                        // A local positions update cannot change a confirmed broker purchase.
+                    }
+                }
+                return String(purchase.contract_id);
+            };
             starting.current = true;
             try {
                 const access = await accessRequest;
                 ensureInsightAccess(access);
                 checkAccount();
+                if (draft.family === 'digital' && draft.contractTakeProfit === undefined && await hasFancyAccountGateway(signal)) {
+                    checkAccount();
+                    ensureInsightAccess(access);
+                    const requestId = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte =>
+                        byte.toString(16).padStart(2, '0')
+                    ).join('');
+                    beforeRuleBuy?.();
+                    const order = await waitForInsightRequest(
+                        fetchFancyAccount<{
+                            buy?: { contract_id: number; longcode?: string };
+                            error?: { code?: string; message?: string };
+                            payout?: number;
+                        }>({
+                            operation: 'buy', account: purchase_account_id, template: { ...template, proposal: 1 },
+                            requestId, expiresAt: Date.now() + 15000, payout: draft.payout,
+                        }, signal),
+                        unconfirmed_message,
+                        18000
+                    ).catch(() => { throw markUnconfirmed(); });
+                    if (isInsightRateLimit(order)) {
+                        noteInsightRateLimit();
+                        throw new InsightRateLimitError();
+                    }
+                    if (order.error?.code === 'QuoteChanged' || order.error?.code === 'QuoteExpired')
+                        throw new InsightQuoteChanged(localize('The Deriv quote changed.'), order.payout ?? draft.payout);
+                    if (!order.buy && order.error?.message && !['PurchaseUnknown', 'AccountGatewayUnavailable'].includes(order.error.code ?? ''))
+                        throw new Error(order.error.message);
+                    return recordPurchase(order.buy);
+                }
                 // Only streaming proposal IDs can be bought with the current Deriv API.
                 const requestQuote = (payload: Record<string, unknown>) => {
                     checkAccount();
@@ -791,13 +842,6 @@ const AutoTrading = observer(
                     throw new Error(localize('The market connection changed. Review the trade again.'));
                 ensureInsightQuote(draft, proposal);
 
-                const markUnconfirmed = () => {
-                    if (beforeRuleBuy) {
-                        return new Error(localize('Deriv did not confirm the purchase. Press Start to check its status before trading again.'));
-                    }
-                    setUnconfirmedPurchases(previous => [...previous, purchase_account_id]);
-                    return new Error(unconfirmed_message);
-                };
                 if (beforeRuleBuy) {
                     await waitForInsightRequestSlot(signal);
                     checkAccount();
@@ -822,20 +866,7 @@ const AutoTrading = observer(
                 });
                 if (isInsightRateLimit(response)) throw rateLimitError();
                 if (response?.error) throw new Error(response.error.message);
-                const purchase = response?.buy;
-                if (!purchase?.contract_id) throw markUnconfirmed();
-                if (client.loginid === purchase_account_id && !ui.is_switching_account) {
-                    try {
-                        portfolio?.onBuyResponse({
-                            contract_id: purchase.contract_id,
-                            longcode: purchase.longcode,
-                            contract_type: template.contract_type,
-                        });
-                    } catch {
-                        // A local positions update cannot change a confirmed broker purchase.
-                    }
-                }
-                return String(purchase.contract_id);
+                return recordPurchase(response?.buy);
             } finally {
                 if (!rankedBatch || --rankedBatch.active === 0) {
                     rankedPurchases.current = undefined;
@@ -1290,6 +1321,12 @@ const AutoTrading = observer(
                     purchase_block={connection_block || (unconfirmed_buy ? unconfirmed_message : '')}
                     onShowTrade={showInsightTrade}
                     onRankedBuy={buyFromInsights}
+                    onRankedSettlement={async (contractId, signal) => {
+                        if (account_id && await hasFancyAccountGateway(signal)) {
+                            return fetchFancyAccount({ operation: 'settlement', account: account_id, contractId }, signal);
+                        }
+                        return ws.send({ proposal_open_contract: 1, contract_id: contractId, passthrough: { fancytrading_insights: true } });
+                    }}
                     onBuy={buyFromInsights}
                     getStrategies={getInsightStrategyOptions}
                     onRefreshAutomation={eligible && !state.busy ? () => { void controller.current?.refresh(); } : undefined}

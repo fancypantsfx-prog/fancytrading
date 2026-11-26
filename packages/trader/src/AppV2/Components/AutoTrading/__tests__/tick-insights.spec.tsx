@@ -80,6 +80,7 @@ jest.mock('@deriv/shared', () => ({
     getDecimalPlaces: () => 2,
 }));
 jest.mock('@deriv/api', () => ({
+    fetchSharedMarketData: jest.fn(),
     fetchPremiumAccess: jest.fn(),
     fetchStrategyFinder: jest.fn(),
     fetchTickInsights: jest.fn(),

@@ -9,6 +9,18 @@ enabled = true
 [triggers]
 crons = ["* * * * *"]
 
+[[durable_objects.bindings]]
+name = "FANCY_MARKET_DATA"
+class_name = "FancyMarketData"
+
+[[durable_objects.bindings]]
+name = "FANCY_TRADING_ACCOUNT"
+class_name = "FancyTradingAccount"
+
+[[migrations]]
+tag = "fancy-market-data-v1"
+new_sqlite_classes = ["FancyMarketData", "FancyTradingAccount"]
+
 # Add the same KV namespace as STRATEGY_FINDER_CACHE in the Pages project.
 [[kv_namespaces]]
 binding = "STRATEGY_FINDER_CACHE"

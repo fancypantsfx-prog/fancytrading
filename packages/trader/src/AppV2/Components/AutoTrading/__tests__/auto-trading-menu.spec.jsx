@@ -1,6 +1,6 @@
 import React from 'react';
 import { configure, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { fetchPremiumAccess, fetchStrategyFinder } from '@deriv/api';
+import { fetchFancyAccount, fetchPremiumAccess, fetchStrategyFinder, hasFancyAccountGateway } from '@deriv/api';
 import { processPurchase } from 'Stores/Modules/Trading/Actions/purchase';
 import AutoTrading from '../auto-trading';
 import { FancyTradingDialogContext } from '../fancy-trading-dialog-context';
@@ -75,7 +75,10 @@ const mockHost = {
     ui: { is_switching_account: false },
 };
 jest.mock('mobx-react-lite', () => ({ observer: (component) => component }));
-jest.mock('@deriv/api', () => ({ fetchPremiumAccess: jest.fn(), fetchStrategyFinder: jest.fn() }));
+jest.mock('@deriv/api', () => ({
+    fetchFancyAccount: jest.fn(), fetchPremiumAccess: jest.fn(), fetchStrategyFinder: jest.fn(),
+    fetchSharedMarketData: jest.fn(), hasFancyAccountGateway: jest.fn().mockResolvedValue(false),
+}));
 jest.mock('@deriv/shared', () => ({
     getPlatformLogo: () => 'brand/platform-logo.svg',
     useWS: () => mockWS,
@@ -582,6 +585,22 @@ it('requires a fresh confirmation when the streaming payout changes', async () =
     fireEvent.click(screen.getByRole('button', { name: 'Confirm and buy once' }));
     await screen.findByText(/Contract 12345 purchased/);
     expect(processPurchase).toHaveBeenCalledTimes(1);
+});
+
+it('routes the confirmed digital purchase through the account gateway when enabled', async () => {
+    await reviewFancyTrade('CALL', false);
+    hasFancyAccountGateway.mockResolvedValueOnce(true);
+    fetchFancyAccount.mockResolvedValueOnce({ buy: { contract_id: 98765, longcode: 'Rise' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm and buy once' }));
+
+    await screen.findByText(/Contract 98765 purchased/);
+    expect(fetchFancyAccount).toHaveBeenCalledWith(expect.objectContaining({
+        operation: 'buy', account: 'VRTC123', payout: 18,
+        template: expect.objectContaining({ contract_type: 'CALL', amount: 10 }),
+        requestId: expect.any(String), expiresAt: expect.any(Number),
+    }), expect.any(AbortSignal));
+    expect(mockWS.subscribeProposal).not.toHaveBeenCalled();
+    expect(processPurchase).not.toHaveBeenCalled();
 });
 
 it('blocks a second one-off purchase after an unconfirmed broker response', async () => {

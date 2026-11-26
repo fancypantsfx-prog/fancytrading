@@ -7,63 +7,17 @@ import {
     summarizeFinderMarket,
     prepareFinderRankings,
 } from '../premium/strategy-finder.mjs';
+import { openMarketData } from './market-connection.mjs';
+import { accountSessionName } from './account-gateway.mjs';
 
-const DERIV_PUBLIC_WS = 'https://api.derivws.com/trading/v1/options/ws/public';
+export { FancyMarketData } from './market-gateway.mjs';
+export { FancyTradingAccount } from './account-gateway.mjs';
 const REQUEST_SPACING_MS = 1000;
 const RATE_LIMIT_RETRY_MS = 10000;
 const CATALOG_MAX_AGE_MS = 3 * 60 * 1000;
 const REFRESH_BUDGET_MS = 45000;
 
 const isOpen = item => ![0, false].includes(item.exchange_is_open) && ![1, true].includes(item.is_trading_suspended);
-
-const openMarketData = async () => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-    let response;
-    try {
-        response = await fetch(DERIV_PUBLIC_WS, {
-            headers: { Upgrade: 'websocket' },
-            signal: controller.signal,
-        });
-    } finally {
-        clearTimeout(timeout);
-    }
-    const socket = response.webSocket;
-    if (!socket) throw new Error('Deriv market connection unavailable');
-
-    let requestId = 0;
-    let pending;
-    socket.addEventListener('message', ({ data }) => {
-        let result;
-        try {
-            result = JSON.parse(data);
-        } catch {
-            return;
-        }
-        if (pending && result.req_id === pending.id) pending.resolve(result);
-    });
-    socket.addEventListener('close', () => pending?.reject(new Error('Deriv market connection closed')));
-    socket.addEventListener('error', () => pending?.reject(new Error('Deriv market connection failed')));
-    socket.accept();
-
-    return {
-        close: () => socket.close(1000, 'Snapshot complete'),
-        async send(payload) {
-            const id = ++requestId;
-            let timer;
-            try {
-                return await new Promise((resolve, reject) => {
-                    pending = { id, resolve, reject };
-                    timer = setTimeout(() => reject(new Error('Deriv market request timed out')), 8000);
-                    socket.send(JSON.stringify({ ...payload, req_id: id }));
-                });
-            } finally {
-                clearTimeout(timer);
-                pending = undefined;
-            }
-        },
-    };
-};
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -224,6 +178,19 @@ export const warmStrategyFinder = async (cache, connect = openMarketData, wait =
 };
 
 export default {
+    async fetch(request, env) {
+        if (new URL(request.url).pathname === '/account') {
+            const authorization = request.headers.get('Authorization');
+            const account = (await request.clone().json().catch(() => null))?.account;
+            if (request.method !== 'POST' || !/^Bearer \S{1,4096}$/i.test(authorization ?? '') ||
+                typeof account !== 'string' || !/^[a-z0-9_:-]{1,64}$/i.test(account)) {
+                return Response.json({ error: { code: 'AccessDenied' } }, { status: 403 });
+            }
+            const session = await accountSessionName(account, authorization);
+            return env.FANCY_TRADING_ACCOUNT.get(env.FANCY_TRADING_ACCOUNT.idFromName(session)).fetch(request);
+        }
+        return env.FANCY_MARKET_DATA.get(env.FANCY_MARKET_DATA.idFromName('shared')).fetch(request);
+    },
     async scheduled(_event, env) {
         await warmStrategyFinder(env.STRATEGY_FINDER_CACHE);
     },

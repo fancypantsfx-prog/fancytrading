@@ -55,6 +55,7 @@ type TProps = {
     onShowTrade?: (trade: TInsightTrade) => Promise<void>;
     onBuy: (trade: TInsightTrade, signal: AbortSignal) => Promise<string>;
     onRankedBuy?: React.ComponentProps<typeof RankedRunner>['buy'];
+    onRankedSettlement?: React.ComponentProps<typeof RankedRunner>['settle'];
     getStrategies: (contract_type: string) => TInsightStrategyOption[];
     onRefreshAutomation?: () => void;
     onStart: (draft: TInsightRun, signal: AbortSignal) => Promise<string>;
@@ -81,6 +82,7 @@ const InsightsPanel = ({
     preset_key,
     onBuy,
     onRankedBuy,
+    onRankedSettlement,
     onShowTrade,
     getStrategies,
     onRefreshAutomation,
@@ -675,6 +677,7 @@ const InsightsPanel = ({
                     account={account_label}
                     block={execution_block || purchase_block}
                     buy={onRankedBuy}
+                    settle={onRankedSettlement}
                 />
             )}
             {view === 'finder' && starred.length > 0 && (
@@ -872,12 +875,6 @@ const InsightsPanel = ({
                     durations={durations}
                     onDurations={setDurations}
                     send={payload => ws.send(payload)}
-                    subscribeTicks={
-                        ws.subscribeTicks
-                            ? (market, callback) =>
-                                  ws.subscribeTicks(market, callback, { fancytrading_insights: true })
-                            : undefined
-                    }
                     markets={markets}
                     canBuy={!busy && !purchase_block}
                     canReview={contract => !busy && !execution_block && !!getStrategies(contract).length}
