@@ -32,7 +32,7 @@ type Props = {
 type ReviewDecision = RankedQuote | 'batch' | null;
 type RankedSlot = { rank: number; quote: RankedQuote };
 const rankSelections = { all: [0, 1, 2], topTwo: [0, 1], first: [0], second: [1], third: [2] };
-const ROUND_SPACING_MS = 5000;
+const ROUND_SPACING_MS = 7000;
 const ROUNDS_PER_ANALYSIS = 3;
 const ANALYSIS_COOLDOWN_MS = 25000;
 const RECONNECT_CHECK_MS = 1000;
@@ -51,10 +51,16 @@ const contractGroupLabel = (group: RankedContractGroup) => {
     }
 };
 
-export default function RankedRunner({ currency, symbol, stake, account, block, reconnecting = false, buy }: Props) {
+export default function RankedRunner({
+    currency, symbol, stake: defaultStake, account, block, reconnecting = false, buy,
+}: Props) {
     const ws = useWS();
+    const [initialStake, setInitialStake] = React.useState<string>();
+    const stake = Number(initialStake ?? defaultStake);
+    const decimals = getDecimalPlaces(currency);
     const [loss, setLoss] = React.useState('');
-    const [target, setTarget] = React.useState(String(3 * stake));
+    const [target, setTarget] = React.useState<string>();
+    const takeProfit = target ?? (stake > 0 ? String(Number((3 * stake).toFixed(decimals))) : '');
     const [method, setMethod] = React.useState('fixed');
     const [mode, setMode] = React.useState('automatic');
     const [rankSelection, setRankSelection] = React.useState<RankSelection>('all');
@@ -66,6 +72,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
     const [rankings, setRankings] = React.useState<RankedSlot[]>();
     const [running, setRunning] = React.useState(false);
     const [status, setStatus] = React.useState('');
+    const [lastRound, setLastRound] = React.useState<{ number: number; profit: number; net: number }>();
     const [cooldownSeconds, setCooldownSeconds] = React.useState<number>();
     const cancelCooldown = React.useRef<() => void>();
     const current = React.useRef<AbortController>();
@@ -83,8 +90,12 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
     const start = async () => {
         if (current.current || !ws || block || reconnecting) return;
         const sl = Number(loss),
-            tp = Number(target);
-        if (!(Number.isFinite(stake) && stake > 0 && Number.isFinite(sl) && sl > 0 && Number.isFinite(tp) && tp > 0)) {
+            tp = Number(takeProfit);
+        if (!Number.isFinite(stake) || stake <= 0 || Number(stake.toFixed(decimals)) !== stake) {
+            setStatus(localize('Enter a positive initial stake with valid currency precision.'));
+            return;
+        }
+        if (!(Number.isFinite(sl) && sl > 0 && Number.isFinite(tp) && tp > 0)) {
             setStatus(localize('Enter a positive stake, take profit and stop loss.'));
             return;
         }
@@ -93,6 +104,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
         current.current = controller;
         stopping.current = false;
         setRankings(undefined);
+        setLastRound(undefined);
         setRunning(true);
         const send = (payload: Record<string, unknown>) => (latest.current.ws ?? ws).send(payload);
 
@@ -135,6 +147,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                 let winners = new Map<number, TInsightTrade>();
                 let nextRoundAt = 0;
                 let rounds = 0;
+                let settledRounds = 0;
                 let topQuotes: RankedSlot[] = [];
                 let reserves: RankedQuote[] = [];
                 let timeoutRetryMs = INITIAL_TIMEOUT_RETRY_MS;
@@ -145,7 +158,6 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                     await waitWithCountdown(Math.max(delay, getInsightCooldown()), settling);
                 };
                 const skipped = new Set<string>();
-                const decimals = getDecimalPlaces(currency);
                 const round = (value: number) => Number(value.toFixed(decimals));
                 const floorStake = (value: number) => {
                     const rounded = round(value);
@@ -446,6 +458,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                     if (failure?.status === 'rejected' && (pending || !stopping.current)) throw failure.reason;
                     if (purchased && !signal.aborted) {
                         net = round(net + batchProfit);
+                        setLastRound({ number: ++settledRounds, profit: batchProfit, net });
                         winners = nextWinners;
                         amount = method === 'martingale' && batchProfit < 0 ? round(roundStake * 2) : stake;
                         rounds++;
@@ -482,9 +495,18 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
     };
     return (
         <section className='tick-insights__fields'>
-            <p>
-                {account} · Initial stake {stake} {currency}
-            </p>
+            <p>{account}</p>
+            <label>
+                {localize('Initial stake')} ({currency}){' '}
+                <input
+                    type='number'
+                    min={10 ** -decimals}
+                    step={10 ** -decimals}
+                    value={initialStake ?? defaultStake}
+                    disabled={running}
+                    onChange={e => setInitialStake(e.target.value)}
+                />
+            </label>
             <label>
                 Stop loss ({currency}){' '}
                 <input
@@ -500,7 +522,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                 <input
                     type='number'
                     step='any'
-                    value={target}
+                    value={takeProfit}
                     disabled={running}
                     onChange={e => setTarget(e.target.value)}
                 />
@@ -595,6 +617,16 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                 {running ? 'Stop run' : 'Start trading'}
             </button>
             <p role='status'>{running ? status : block || status}</p>
+            {lastRound && (
+                <p aria-live='polite'>
+                    {localize('Round {{round}} P/L: {{profit}} {{currency}}. Session P/L: {{net}} {{currency}}.', {
+                        round: String(lastRound.number),
+                        profit: lastRound.profit.toFixed(decimals),
+                        net: lastRound.net.toFixed(decimals),
+                        currency,
+                    })}
+                </p>
+            )}
             {cooldownSeconds !== undefined && (
                 <p role='timer'>{localize('Next request in {{seconds}} s', { seconds: String(cooldownSeconds) })}</p>
             )}

@@ -64,7 +64,7 @@ it.each([
     expect(screen.getByLabelText('Strategy')).toHaveValue('fixed');
     fireEvent.change(screen.getByLabelText('Strategy'), { target: { value: method } });
     fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '35' } });
-    await finishRun(35000, 'Run stopped. Session P/L -34.99 USD');
+    await finishRun(39000, 'Run stopped. Session P/L -34.99 USD');
     expect(stakes).toEqual(expectedStakes);
     expect(localStorage.getItem('fancy-ranked-purchase:demo-test')).toBeNull();
 });
@@ -194,7 +194,7 @@ it.each([true, false])(
         jest.useFakeTimers();
         try {
             await act(async () => fireEvent.click(screen.getByText('Start trading')));
-            await act(async () => jest.advanceTimersByTimeAsync(10000));
+            await act(async () => jest.advanceTimersByTimeAsync(14000));
             expect(buy).toHaveBeenCalledTimes(3);
             expect(screen.getByRole('timer')).toHaveTextContent('Next request in 25 s');
             await act(async () => jest.advanceTimersByTimeAsync(24999));
@@ -248,7 +248,7 @@ it.each([
         render(<RankedRunner currency='USD' stake={10} account='follow-up' block='' buy={buy} />);
         fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: String(loss) } });
         fireEvent.change(screen.getByLabelText('Rank selection'), { target: { value: ranks } });
-        await finishRun(10000, `Run stopped. Session P/L ${net} USD`);
+        await finishRun(14000, `Run stopped. Session P/L ${net} USD`);
         expect(purchased).toEqual([
             ...markets.map(market => [market, 10]),
             ...nextStakes.flatMap(next => markets.map(market => [market, next])),
@@ -329,7 +329,7 @@ it('keeps the combined stake below the stop loss after a profitable round', asyn
     render(<RankedRunner currency='USD' stake={10} account='absolute-limit' block='' buy={buy} />);
     fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '30' } });
     fireEvent.change(screen.getByLabelText(/Take profit/), { target: { value: '10' } });
-    await finishRun(5000, 'Run stopped. Session P/L 12 USD');
+    await finishRun(7000, 'Run stopped. Session P/L 12 USD');
     expect(buy.mock.calls.map(([trade]) => trade.stake)).toEqual(Array(6).fill(9.99));
 });
 
@@ -381,7 +381,7 @@ it('checks an open contract again after a settlement rate limit before continuin
     }
 });
 
-it('counts down a quote timeout and waits five seconds after settlement before the next round', async () => {
+it('counts down a quote timeout and waits seven seconds after settlement before the next round', async () => {
     jest.useFakeTimers();
     try {
         mockRankings(['CALL']);
@@ -397,6 +397,8 @@ it('counts down a quote timeout and waits five seconds after settlement before t
         });
         buy.mockRejectedValueOnce(new InsightRequestTimeout());
         render(<RankedRunner currency='USD' stake={10} account='quote-timeout' block='' buy={buy} />);
+        fireEvent.change(screen.getByLabelText(/Initial stake/), { target: { value: '7.50' } });
+        expect(screen.getByLabelText(/Take profit/)).toHaveValue(22.5);
         fireEvent.change(screen.getByLabelText(/Stop loss/), { target: { value: '20' } });
         fireEvent.change(screen.getByLabelText(/Take profit/), { target: { value: '4' } });
         await act(async () => fireEvent.click(screen.getByText('Start trading')));
@@ -409,12 +411,16 @@ it('counts down a quote timeout and waits five seconds after settlement before t
         await act(async () => jest.advanceTimersByTimeAsync(1));
         expect(compare).toHaveBeenCalledTimes(1);
         expect(screen.getByText('Preparing the next trade round.')).toBeInTheDocument();
+        expect(screen.getByText('Round 1 P/L: 2.00 USD. Session P/L: 2.00 USD.')).toBeInTheDocument();
+        expect(screen.getByLabelText(/Initial stake/)).toBeDisabled();
 
-        await act(async () => jest.advanceTimersByTimeAsync(4999));
+        await act(async () => jest.advanceTimersByTimeAsync(6999));
         expect(compare).toHaveBeenCalledTimes(1);
         await act(async () => jest.advanceTimersByTimeAsync(1));
         expect(compare).toHaveBeenCalledTimes(1);
         expect(screen.getByText('Run stopped. Session P/L 4 USD')).toBeInTheDocument();
+        expect(screen.getByText('Round 2 P/L: 2.00 USD. Session P/L: 4.00 USD.')).toBeInTheDocument();
+        expect(buy.mock.calls.map(([trade]) => trade.stake)).toEqual([7.5, 7.5, 7.5]);
     } finally {
         jest.useRealTimers();
     }
@@ -444,7 +450,7 @@ it('replaces only losing ranks with unused eligible contracts from the same anal
         fireEvent.click(toggle);
         expect(toggle).toHaveAttribute('aria-checked', 'true');
         await act(async () => fireEvent.click(screen.getByText('Start trading')));
-        await act(async () => jest.advanceTimersByTimeAsync(10000));
+        await act(async () => jest.advanceTimersByTimeAsync(14000));
         expect(screen.getByText('Run stopped. Session P/L 6 USD')).toBeInTheDocument();
         expect(compare).toHaveBeenCalledTimes(1);
         expect(buy.mock.calls.map(([trade]) => trade.symbol)).toEqual([
