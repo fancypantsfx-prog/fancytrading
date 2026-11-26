@@ -21,6 +21,7 @@ type Props = {
     stake: number;
     account: string;
     block: string;
+    reconnecting?: boolean;
     buy: (
         trade: TInsightTrade,
         signal: AbortSignal,
@@ -31,9 +32,10 @@ type Props = {
 type ReviewDecision = RankedQuote | 'batch' | null;
 type RankedSlot = { rank: number; quote: RankedQuote };
 const rankSelections = { all: [0, 1, 2], topTwo: [0, 1], first: [0], second: [1], third: [2] };
-const ROUND_SPACING_MS = 1000;
+const ROUND_SPACING_MS = 5000;
 const ROUNDS_PER_ANALYSIS = 3;
-const ANALYSIS_COOLDOWN_MS = 5000;
+const ANALYSIS_COOLDOWN_MS = 25000;
+const RECONNECT_CHECK_MS = 1000;
 const INITIAL_TIMEOUT_RETRY_MS = 2000;
 const MAX_TIMEOUT_RETRY_MS = 15000;
 type RankSelection = keyof typeof rankSelections;
@@ -49,7 +51,7 @@ const contractGroupLabel = (group: RankedContractGroup) => {
     }
 };
 
-export default function RankedRunner({ currency, symbol, stake, account, block, buy }: Props) {
+export default function RankedRunner({ currency, symbol, stake, account, block, reconnecting = false, buy }: Props) {
     const ws = useWS();
     const [loss, setLoss] = React.useState('');
     const [target, setTarget] = React.useState(String(3 * stake));
@@ -68,8 +70,8 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
     const cancelCooldown = React.useRef<() => void>();
     const current = React.useRef<AbortController>();
     const stopping = React.useRef(false);
-    const latest = React.useRef({ block, buy });
-    latest.current = { block, buy };
+    const latest = React.useRef({ block, reconnecting, buy, ws });
+    latest.current = { block, reconnecting, buy, ws };
     React.useEffect(
         () => () => {
             current.current?.abort();
@@ -79,7 +81,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
     );
     const key = 'fancy-ranked-purchase:' + account;
     const start = async () => {
-        if (current.current || !ws || block) return;
+        if (current.current || !ws || block || reconnecting) return;
         const sl = Number(loss),
             tp = Number(target);
         if (!(Number.isFinite(stake) && stake > 0 && Number.isFinite(sl) && sl > 0 && Number.isFinite(tp) && tp > 0)) {
@@ -92,6 +94,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
         stopping.current = false;
         setRankings(undefined);
         setRunning(true);
+        const send = (payload: Record<string, unknown>) => (latest.current.ws ?? ws).send(payload);
 
         const waitWithCountdown = (ms: number, settling = false) =>
             new Promise<void>(resolve => {
@@ -155,9 +158,14 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                     return !!group && (!onlyGroup || group === onlyGroup) && group !== excludeGroup;
                 };
                 while (!signal.aborted && !stopping.current) {
-                    if (latest.current.block) throw new Error(latest.current.block);
                     const remaining = Math.min(stopLimit, round(net + stopLimit));
                     if (net >= tp || remaining <= 0) break;
+                    if (latest.current.reconnecting) {
+                        setStatus(localize('Waiting for Deriv to reconnect before the next round.'));
+                        await waitWithCountdown(RECONNECT_CHECK_MS);
+                        continue;
+                    }
+                    if (latest.current.block) throw new Error(latest.current.block);
                     const cooldown = getInsightCooldown();
                     if (cooldown > 0) {
                         setStatus(localize('Deriv is limiting quotes. Retrying when the limit clears.'));
@@ -185,7 +193,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                         let compared: RankedQuote[] = [];
                         try {
                             pick = await selectRankedTrade(
-                                payload => waitForInsightRequest(ws.send(payload), 'Comparison request timed out.'),
+                                payload => waitForInsightRequest(send(payload), 'Comparison request timed out.'),
                                 currency,
                                 amount,
                                 signal,
@@ -197,6 +205,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                                 [...winners.values()]
                             );
                         } catch (error) {
+                            if (latest.current.reconnecting) continue;
                             if (error instanceof InsightRequestTimeout) {
                                 await retryAfterTimeout(localize('Comparison timed out. Retrying shortly.'));
                                 continue;
@@ -311,7 +320,9 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                         batch.map(async quote => {
                             let submitted = false;
                             const beforeBuy = () => {
-                                    if (signal.aborted || stopping.current || latest.current.block)
+                                    if (
+                                        signal.aborted || stopping.current || latest.current.block || latest.current.reconnecting
+                                    )
                                         throw new Error('Trading conditions changed before purchase.');
                                     if (!fresh(quote.time))
                                         throw new InsightQuoteChanged(
@@ -325,6 +336,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                             const id = await latest.current
                                 .buy(quote.trade, signal, beforeBuy, mode === 'automatic')
                                 .catch(error => {
+                                    if (!submitted && latest.current.reconnecting) return undefined;
                                     if (!submitted && error instanceof InsightQuoteChanged && fresh(quote.time)) {
                                         const slot = topQuotes.find(item => item.quote === quote);
                                         if (slot) {
@@ -368,7 +380,10 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                                 ? localize('Awaiting settlement for 1 contract.')
                                 : localize('Awaiting settlement for {{count}} contracts.', { count: String(open.size) })
                         );
-                    } else if (!failure && !rateLimited && !quoteTimedOut && !signal.aborted && !stopping.current) {
+                    } else if (
+                        !failure && !rateLimited && !quoteTimedOut && !signal.aborted && !stopping.current &&
+                        !latest.current.reconnecting
+                    ) {
                         setStatus(localize('Quote changed. Refreshing the selected quotes.'));
                         await waitWithCountdown(REQUEST_SPACING_MS);
                     }
@@ -376,6 +391,11 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                     const nextWinners = new Map<number, TInsightTrade>();
                     const losingRanks: number[] = [];
                     while (open.size && !signal.aborted) {
+                        if (latest.current.reconnecting) {
+                            setStatus(localize('Waiting for Deriv to reconnect to check open contracts.'));
+                            await waitWithCountdown(RECONNECT_CHECK_MS, true);
+                            continue;
+                        }
                         const settlementCooldown = getInsightCooldown();
                         if (settlementCooldown > 0) {
                             setStatus(localize('Deriv is limiting requests. Waiting to check open contracts.'));
@@ -388,10 +408,11 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                                 error?: { message: string };
                                 proposal_open_contract?: { contract_id: number; is_sold: number; profit: number };
                             }>(
-                                payload => waitForInsightRequest(ws.send(payload), 'Settlement request timed out.'),
+                                payload => waitForInsightRequest(send(payload), 'Settlement request timed out.'),
                                 { proposal_open_contract: 1, contract_id: Number(id) },
                                 signal
                             ).catch(async error => {
+                                if (latest.current.reconnecting) return undefined;
                                 if (error instanceof InsightRequestTimeout) {
                                     await retryAfterTimeout(
                                         localize('Settlement check timed out. Retrying the open contract check.'),
@@ -418,7 +439,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                                 saveOutstanding();
                             }
                         }
-                        if (open.size && !signal.aborted && getInsightCooldown() === 0) {
+                        if (open.size && !signal.aborted && !latest.current.reconnecting && getInsightCooldown() === 0) {
                             await waitWithCountdown(750, true);
                         }
                     }
@@ -512,15 +533,18 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                     <option value='third'>{localize('Third only')}</option>
                 </select>
             </label>
-            <label>
-                <input
-                    type='checkbox'
-                    checked={alternateLosers}
-                    disabled={running}
-                    onChange={e => setAlternateLosers(e.target.checked)}
-                />{' '}
+            <button
+                type='button'
+                role='switch'
+                className='tick-insights__toggle'
+                aria-checked={alternateLosers}
+                aria-label={localize('Replace losing contracts between rounds')}
+                disabled={running}
+                onClick={() => setAlternateLosers(value => !value)}
+            >
                 {localize('Replace losing contracts between rounds')}
-            </label>
+                <span aria-hidden='true'>{alternateLosers ? localize('On') : localize('Off')}</span>
+            </button>
             {!excludeGroup && (
                 <label>
                     {localize('Trade only')}{' '}
@@ -557,7 +581,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
             )}
             <button
                 type='button'
-                disabled={!running && !!block}
+                disabled={!running && (!!block || reconnecting)}
                 onClick={() => {
                     if (running) {
                         stopping.current = true;
@@ -570,7 +594,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
             >
                 {running ? 'Stop run' : 'Start trading'}
             </button>
-            <p role='status'>{block || status}</p>
+            <p role='status'>{running ? status : block || status}</p>
             {cooldownSeconds !== undefined && (
                 <p role='timer'>{localize('Next request in {{seconds}} s', { seconds: String(cooldownSeconds) })}</p>
             )}

@@ -23,7 +23,6 @@ export const rankedContractGroup = (candidate: string) => {
 };
 
 const durations = [1, 3];
-export const RISE_FALL_FALLBACK_TICKS = 5;
 
 export async function selectRankedTrade(
     send: Parameters<typeof compareRecentTicks>[0],
@@ -35,11 +34,9 @@ export async function selectRankedTrade(
     fallbackSymbol?: string,
     repeat: readonly TInsightTrade[] = []
 ) {
-    const searchDurations = [...durations, RISE_FALL_FALLBACK_TICKS];
     const shortlists = await Promise.all(
-        searchDurations.flatMap(ticks => {
-            const groups = ticks === RISE_FALL_FALLBACK_TICKS ? ['rise_fall'] : Object.keys(contractsByGroup);
-            return groups.map(async contract => {
+        durations.flatMap(ticks =>
+            Object.keys(contractsByGroup).map(async contract => {
                 const settings = new URLSearchParams({ contract, ticks: String(ticks), barrier: '5' });
                 const scan = await fetchStrategyFinder<{ rows: Row[] }>(settings, signal);
                 if (!scan) throw new Error('Strategy Finder access is required.');
@@ -53,8 +50,8 @@ export async function selectRankedTrade(
                     .sort((a, b) => Number(fresh(b.sampleAt)) - Number(fresh(a.sampleAt)))
                     .slice(0, 2)
                     .map(row => ({ ...row, ticks }));
-            });
-        })
+            })
+        )
     );
     const setups = new Map<string, { symbol: string; ticks: number; contracts: string[] }>();
     for (const { symbol, ticks, candidate } of [...repeat, ...shortlists.flat()]) {
@@ -112,20 +109,9 @@ export async function selectRankedTrade(
     };
 
     await compareSetups(setups.values());
-    if (fallbackSymbol) {
-        const fallbacks = [];
-        if (!quotes.length) {
-            const contracts = Object.values(contractsByGroup).flat();
-            fallbacks.push(...durations.map(ticks => ({ symbol: fallbackSymbol, ticks, contracts })));
-        }
-        if (!quotes.some(({ trade }) => rankedContractGroup(trade.candidate) === 'rise_fall')) {
-            fallbacks.push({
-                symbol: fallbackSymbol,
-                ticks: RISE_FALL_FALLBACK_TICKS,
-                contracts: contractsByGroup.rise_fall,
-            });
-        }
-        await compareSetups(fallbacks);
+    if (fallbackSymbol && !quotes.some(quote => fresh(quote.time))) {
+        const contracts = Object.values(contractsByGroup).flat();
+        await compareSetups(durations.map(ticks => ({ symbol: fallbackSymbol, ticks, contracts })));
     }
     const ranked = quotes
         .filter(quote => fresh(quote.time))

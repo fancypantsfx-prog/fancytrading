@@ -17,7 +17,6 @@ import {
 } from './tick-insights-data';
 import type { TInsightRun, TInsightStrategyOption, TInsightTrade, TTickInsights } from './tick-insights-data';
 import RankedRunner from './ranked-runner';
-import { RISE_FALL_FALLBACK_TICKS } from './ranked-trade';
 import MenuHelp from './menu-help';
 import InsightsCompare, { candidateLabel } from './insights-compare';
 import type { TCompareSetup } from './insights-compare';
@@ -52,6 +51,7 @@ type TProps = {
     account_label: string;
     execution_block: string;
     purchase_block: string;
+    ranked_reconnecting?: boolean;
     preset_key?: string;
     onShowTrade?: (trade: TInsightTrade) => Promise<void>;
     onBuy: (trade: TInsightTrade, signal: AbortSignal) => Promise<string>;
@@ -79,6 +79,7 @@ const InsightsPanel = ({
     account_label,
     execution_block,
     purchase_block,
+    ranked_reconnecting,
     preset_key,
     onBuy,
     onRankedBuy,
@@ -675,6 +676,7 @@ const InsightsPanel = ({
                     stake={initial_stake}
                     account={account_label}
                     block={execution_block || purchase_block}
+                    reconnecting={ranked_reconnecting}
                     buy={onRankedBuy}
                 />
             )}
@@ -971,19 +973,9 @@ const InsightsPanel = ({
                         </table>
                     </div>
                     {!finderRows?.length && !loadingScan && (
-                        <>
-                            <p role='status'>
-                                {localize('No ranked contracts are available for these settings yet.')}
-                            </p>
-                            {finderGroup === 'rise_fall' && Number(ticks) < RISE_FALL_FALLBACK_TICKS && (
-                                <button type='button' onClick={() => {
-                                    setTicks(String(RISE_FALL_FALLBACK_TICKS));
-                                    setPresetSaved(false);
-                                }}>
-                                    {localize('Try Rise / Fall at 5 ticks')}
-                                </button>
-                            )}
-                        </>
+                        <p role='status'>
+                            {localize('No ranked contracts are available for these settings yet.')}
+                        </p>
                     )}
                 </>
             )}

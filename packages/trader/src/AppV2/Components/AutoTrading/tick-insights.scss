@@ -208,6 +208,24 @@
             color: #fff;
             font-weight: 600;
         }
+
+        button.tick-insights__toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+
+            span {
+                min-width: 40px;
+                padding: 2px 8px;
+                border-radius: 20px;
+                background: var(--general-section-1, #f2f4f7);
+            }
+
+            &[aria-checked='true'] span {
+                background: var(--brand-red-coral, #ff444f);
+                color: #fff;
+            }
+        }
     }
 
     &__preset {

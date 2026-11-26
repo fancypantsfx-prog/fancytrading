@@ -1294,6 +1294,7 @@ const AutoTrading = observer(
                     }
                     execution_block={insight_block}
                     purchase_block={connection_block || (unconfirmed_buy ? unconfirmed_message : '')}
+                    ranked_reconnecting={!eligible || (!state.ready && !state.error && !state.uncertain && !active_run)}
                     onShowTrade={showInsightTrade}
                     onRankedBuy={buyFromInsights}
                     onBuy={buyFromInsights}
