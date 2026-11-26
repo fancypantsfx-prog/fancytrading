@@ -33,8 +33,10 @@ type TFinderReport = {
     access: TPremiumAccess;
     rows: TFinderRow[];
     ticks: number;
+    availableTicks?: number[];
     settings?: string;
 };
+const finderTickOptions = Array.from({ length: 20 }, (_, index) => index + 1);
 const finderContracts = {
     rise_fall: ['CALL', 'PUT'],
     even_odd: ['DIGITEVEN', 'DIGITODD'],
@@ -206,6 +208,13 @@ const InsightsPanel = ({
     const hasScanAccess = typeof access !== 'string' && access.access !== 'locked';
 
     const report = snapshot?.settings === scanSettings ? snapshot : undefined;
+    const snapshotSettings = new URLSearchParams(snapshot?.settings);
+    const matchesFinderGroup =
+        snapshotSettings.get('contract') === finderGroup && snapshotSettings.get('barrier') === finderBarrier;
+    const rankedTicks = matchesFinderGroup ? snapshot?.availableTicks : undefined;
+    const tickOptions = rankedTicks?.length
+        ? finderTickOptions.filter(duration => rankedTicks.includes(duration) || duration === Number(ticks))
+        : finderTickOptions;
     const finderRows = finderGroup === 'rise_fall'
         ? report?.rows.filter(({ historical }) => historical.hits / historical.count < 0.9)
         : report?.rows;
@@ -762,19 +771,22 @@ const InsightsPanel = ({
                     <div className='tick-insights__field-help'>
                         <label>
                             {localize('Tick target')}
-                            <input
-                                type='number'
-                                required
-                                min='1'
-                                max='20'
-                                step='1'
+                            <select
                                 value={ticks}
                                 disabled={busy}
                                 onChange={e => {
                                     setTicks(e.target.value);
                                     setPresetSaved(false);
                                 }}
-                            />
+                            >
+                                {tickOptions.map(duration => (
+                                    <option key={duration} value={duration}>
+                                        {duration === 1
+                                            ? localize('1 tick')
+                                            : localize('{{count}} ticks', { count: String(duration) })}
+                                    </option>
+                                ))}
+                            </select>
                         </label>
                         <MenuHelp
                             label={localize('Tick target')}

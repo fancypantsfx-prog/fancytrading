@@ -4,6 +4,7 @@ import { analyzeTickInsights } from './tick-insights.mjs';
 import { onRequestPost } from '../functions/api/premium/tick-insights/analysis.js';
 import { onRequestGet } from '../functions/api/premium/tick-insights/scan.js';
 import { warmStrategyFinder } from '../strategy-finder-worker/worker.mjs';
+import { finderRankingKey, summarizeFinderMarket } from './strategy-finder.mjs';
 
 const ticks = {
     prices: Array.from({ length: 400 }, (_, i) => (i < 200 ? 100 + i : 500 - i)),
@@ -258,8 +259,33 @@ test('a scheduled refresh prepares only eligible tick rankings before any Pages 
         return response.json();
     };
     const snapshotAtFiveTicks = await scan(5);
+    assert.deepEqual(snapshotAtFiveTicks.availableTicks, [5, 6, 7, 8, 9, 10]);
     assert.deepEqual(snapshotAtFiveTicks.rows.map(row => [row.symbol, row.candidate]), [['OPEN', 'CALL'], ['STALE', 'CALL']]);
     assert.deepEqual((await scan(4)).rows, []);
     assert.deepEqual((await scan(11)).rows, []);
     assert.equal(requests.length, requestCount);
+});
+
+test('Rise/Fall can use historical tick data when the prepared bucket and contract list are missing rows', async () => {
+    const now = Date.now();
+    const lastTick = Math.floor(now / 1000);
+    const summaries = summarizeFinderMarket(ticks);
+    const snapshot = {
+        updatedAt: now,
+        markets: ['WAITING_FOR_LIST', 'CHECKED_UNSUPPORTED'].map(symbol => ({
+            symbol, lastTick, summaries, groups: ['rise_fall'],
+        })),
+        rankings: { [finderRankingKey('rise_fall', 5)]: [] },
+        contractLists: {
+            CHECKED_UNSUPPORTED: { checkedAt: now, contracts: [{ type: 'CALL', minimum: 7, maximum: 10 }] },
+        },
+    };
+    const response = await onRequestGet({
+        request: new Request('https://fancytrading.org/api/premium/tick-insights/scan?contract=rise_fall&ticks=5'),
+        env: { STRATEGY_FINDER_CACHE: { get: async () => snapshot } },
+    });
+    const { rows } = await response.json();
+    assert.deepEqual(rows.map(({ symbol, candidate }) => [symbol, candidate]), [
+        ['WAITING_FOR_LIST', 'CALL'], ['WAITING_FOR_LIST', 'PUT'],
+    ]);
 });

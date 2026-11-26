@@ -174,6 +174,24 @@ it('loads older cloud rankings without broker verification on load or refresh', 
     expect(props.onStart).not.toHaveBeenCalled();
 });
 
+it('uses the available ranked durations in the Tick target dropdown', async () => {
+    (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
+    (fetchStrategyFinder as jest.Mock).mockResolvedValue({
+        access: { access: 'free' }, ticks: 5, availableTicks: [5, 7], rows: [],
+    });
+    render(
+        <FancyTradingDialogContext.Provider value={{ open: true, setOpen: jest.fn() }}>
+            <TickInsights {...props} />
+        </FancyTradingDialogContext.Provider>
+    );
+    const menu = await screen.findByRole('combobox', { name: /Tick target/ });
+    await waitFor(() => expect(within(menu).getAllByRole('option').map(option => option.textContent)).toEqual(['5 ticks', '7 ticks']));
+    fireEvent.change(menu, { target: { value: '7' } });
+    await waitFor(() => expect(fetchStrategyFinder).toHaveBeenLastCalledWith(
+        new URLSearchParams({ contract: 'rise_fall', ticks: '7', barrier: '5' }), expect.any(AbortSignal)
+    ));
+});
+
 it('loads the saved automatic settings for the matching account and currency', async () => {
     (fetchPremiumAccess as jest.Mock).mockResolvedValue({ access: 'free' });
     localStorage.setItem(props.preset_key, JSON.stringify({ stake: 12, ticks: 7, stopLoss: 24, takeProfit: 16 }));
@@ -185,7 +203,7 @@ it('loads the saved automatic settings for the matching account and currency', a
         </FancyTradingDialogContext.Provider>
     );
     expect(await screen.findByRole('spinbutton', { name: /Stake per contract/ })).toHaveValue(12);
-    expect(screen.getByRole('spinbutton', { name: /Tick target/ })).toHaveValue(7);
+    expect(screen.getByRole('combobox', { name: /Tick target/ })).toHaveValue('7');
     fireEvent.click(screen.getByRole('button', { name: 'Automatic settings' }));
     expect(screen.getByLabelText(/Run stop loss/)).toHaveValue(24);
     expect(screen.getByLabelText(/Run take profit/)).toHaveValue(16);

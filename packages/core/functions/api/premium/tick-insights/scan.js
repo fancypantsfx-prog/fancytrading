@@ -24,10 +24,17 @@ export const onRequestGet = async ({ request, env }) => {
         const snapshot = await env.STRATEGY_FINDER_CACHE?.get(SCAN_CACHE_KEY, { type: 'json', cacheTtl: 30 });
 
         const markets = (snapshot?.markets ?? []).filter(market => market.groups.includes(contract));
-        const prepared = snapshot?.rankings?.[finderRankingKey(contract, ticks, barrier)];
-        if (prepared) {
+        const rankings = snapshot?.rankings;
+        const prepared = rankings?.[finderRankingKey(contract, ticks, barrier)];
+        const availableTicks = Array.from({ length: 20 }, (_, index) => index + 1).filter(duration =>
+            rankings?.[finderRankingKey(contract, duration, barrier)]?.some(row =>
+                contract !== 'rise_fall' || row.historical.hits / row.historical.count < 0.9
+            )
+        );
+        const hasPreparedRows = contract !== 'rise_fall' || availableTicks.includes(ticks);
+        if (prepared && hasPreparedRows) {
             return premiumResponse({
-                access, rows: prepared, ticks, updatedAt: snapshot.updatedAt, marketsScanned: markets.length,
+                access, rows: prepared, ticks, availableTicks, updatedAt: snapshot.updatedAt, marketsScanned: markets.length,
                 instrumentsTotal: snapshot.instrumentsByGroup?.[contract] ?? markets.length,
             });
         }
@@ -82,6 +89,7 @@ export const onRequestGet = async ({ request, env }) => {
             access,
             rows,
             ticks,
+            availableTicks,
             updatedAt: snapshot?.updatedAt ?? 0,
             marketsScanned: new Set(rows.map(row => row.symbol)).size,
             instrumentsTotal: snapshot?.instrumentsByGroup?.[contract] ?? markets.length,
