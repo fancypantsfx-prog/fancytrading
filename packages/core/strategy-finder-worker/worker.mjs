@@ -228,3 +228,14 @@ export default {
         await warmStrategyFinder(env.STRATEGY_FINDER_CACHE);
     },
 };
+
+// Keep the deployed Durable Object class names so existing storage survives the rollback.
+// The scheduled Finder does not bind or call either retired object.
+class RetiredGateway {
+    fetch() {
+        return new Response('This gateway has been retired.', { status: 410 });
+    }
+}
+
+export class FancyMarketData extends RetiredGateway {}
+export class FancyTradingAccount extends RetiredGateway {}
