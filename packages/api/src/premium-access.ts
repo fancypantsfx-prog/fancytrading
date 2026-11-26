@@ -36,37 +36,3 @@ export const fetchStrategyFinder = async <T>(settings: URLSearchParams, signal: 
     if (!response.ok) throw new Error('Cached market data is unavailable');
     return response.json();
 };
-
-let sharedMarketUnavailable = false;
-
-export const fetchSharedMarketData = async <T>(signal: AbortSignal, input: object): Promise<T | undefined> => {
-    if (sharedMarketUnavailable) return undefined;
-    const response = await requestPremium('tick-insights/market', signal, input);
-    if (response.status === 404) {
-        sharedMarketUnavailable = true;
-        return undefined;
-    }
-    const data = (await response.json()) as T & { error?: { code?: string } };
-    if (response.status === 503 && data.error?.code === 'BackendDisabled') {
-        sharedMarketUnavailable = true;
-        return undefined;
-    }
-    return data;
-};
-
-let accountGatewayEnabled: boolean | undefined;
-
-export const hasFancyAccountGateway = async (signal: AbortSignal): Promise<boolean> => {
-    if (accountGatewayEnabled !== undefined) return accountGatewayEnabled;
-    const response = await requestPremium('tick-insights/account', signal);
-    if (response.status === 404) return (accountGatewayEnabled = false);
-    if (!response.ok) throw new Error('Unable to check the FancyTrading backend.');
-    const data = await response.json();
-    accountGatewayEnabled = data.enabled === true;
-    return accountGatewayEnabled;
-};
-
-export const fetchFancyAccount = async <T>(input: object, signal: AbortSignal): Promise<T> => {
-    const response = await requestPremium('tick-insights/account', signal, input);
-    return response.json();
-};

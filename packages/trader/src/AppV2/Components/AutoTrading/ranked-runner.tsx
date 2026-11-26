@@ -14,11 +14,6 @@ import {
 } from './tick-insights-data';
 import type { TInsightTrade } from './tick-insights-data';
 
-type Settlement = {
-    error?: { message: string };
-    proposal_open_contract?: { contract_id: number; is_sold: number; profit: number };
-};
-
 type Props = {
     currency: string;
     symbol?: string;
@@ -26,7 +21,6 @@ type Props = {
     account: string;
     block: string;
     buy: (trade: TInsightTrade, signal: AbortSignal, beforeBuy: () => void) => Promise<string>;
-    settle?: (contractId: number, signal: AbortSignal) => Promise<Settlement>;
 };
 type ReviewDecision = RankedQuote | 'batch' | null;
 type RankedSlot = { rank: number; quote: RankedQuote };
@@ -44,7 +38,7 @@ const contractGroupLabel = (group: RankedContractGroup) => {
     }
 };
 
-export default function RankedRunner({ currency, symbol, stake, account, block, buy, settle }: Props) {
+export default function RankedRunner({ currency, symbol, stake, account, block, buy }: Props) {
     const ws = useWS();
     const [loss, setLoss] = React.useState('');
     const [target, setTarget] = React.useState(String(3 * stake));
@@ -283,10 +277,7 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                                     submitted = true;
                                 })
                                 .catch(error => {
-                                    if (
-                                        submitted &&
-                                        (error instanceof InsightRateLimitError || error instanceof InsightQuoteChanged)
-                                    ) {
+                                    if (submitted && error instanceof InsightRateLimitError) {
                                         pending--;
                                         saveOutstanding();
                                     }
@@ -329,12 +320,11 @@ export default function RankedRunner({ currency, symbol, stake, account, block, 
                         }
                         for (const [id, quote] of open) {
                             if (signal.aborted) break;
-                            const response = await sendInsightRequest<Settlement>(
-                                payload =>
-                                    waitForInsightRequest(
-                                        settle ? settle(Number(id), signal) : ws.send(payload),
-                                        'Settlement request timed out.'
-                                    ),
+                            const response = await sendInsightRequest<{
+                                error?: { message: string };
+                                proposal_open_contract?: { contract_id: number; is_sold: number; profit: number };
+                            }>(
+                                payload => waitForInsightRequest(ws.send(payload), 'Settlement request timed out.'),
                                 { proposal_open_contract: 1, contract_id: Number(id) },
                                 signal
                             ).catch(error => {

@@ -18,7 +18,7 @@ jobs:
       - name: Set up Node
         uses: ./.github/actions/setup_node
       - name: Verify the Worker and Pages endpoint
-        run: node --test packages/core/premium/tick-insights.test.mjs packages/core/strategy-finder-worker/gateway.test.mjs
+        run: node --test packages/core/premium/tick-insights.test.mjs
       - name: Deploy the scheduled Worker
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
